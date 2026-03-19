@@ -16,11 +16,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <header className="w-full flex items-center justify-between px-6 py-4 z-50 bg-black/20 backdrop-blur-md border-b border-white/5">
           <div className="flex items-center space-x-8">
             
-            {/* Upgraded GateGuard Logo */}
+            {/* Custom GateGuard Logo */}
             <Link href="/" className="flex items-center space-x-3 cursor-pointer group">
-              <div className="w-10 h-10 bg-black/40 border border-emerald-500/50 backdrop-blur-md rounded-xl flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.2)] group-hover:shadow-[0_0_25px_rgba(16,185,129,0.5)] transition-all relative overflow-hidden">
-                <div className="absolute inset-0 bg-gradient-to-br from-emerald-400 to-cyan-500 opacity-20"></div>
-                <svg className="w-6 h-6 text-emerald-400" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L3 6v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V6l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V7.53l7-3.11v8.57z"/></svg>
+              <div className="w-10 h-10 rounded-xl overflow-hidden flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.2)] group-hover:shadow-[0_0_25px_rgba(16,185,129,0.5)] transition-all bg-white/5">
+                {/* Ensure Logo.jp2 is in your /public folder! */}
+                <img src="/Logo.jp2" alt="GateGuard Logo" className="w-full h-full object-cover" />
               </div>
               <span className="text-xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-slate-400 tracking-widest">GateGuard</span>
             </Link>
@@ -28,7 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {/* Global Links */}
             <nav className="hidden lg:flex space-x-2 bg-white/5 border border-white/10 p-1.5 rounded-2xl">
               <Link href="/dashboard" className="px-6 py-1.5 text-sm font-bold rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition-all">Dashboard</Link>
-              <Link href="/alarms" className="px-6 py-1.5 text-sm font-bold rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition-all">Alarms</Link>
+              <Link href="/alarms" className="px-6 py-1.5 text-sm font-bold rounded-xl text-white bg-gradient-to-r from-emerald-500/80 to-teal-500/80 shadow-lg shadow-emerald-500/20 transition-all">Alarms</Link>
               <Link href="/setup" className="px-6 py-1.5 text-sm font-bold rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition-all">Setup</Link>
             </nav>
           </div>
@@ -40,7 +40,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </header>
 
-        {/* PAGE CONTENT INJECTED HERE */}
+        {/* PAGE CONTENT */}
         <main className="flex-1 relative w-full h-full">
           {children}
         </main>
