@@ -67,15 +67,13 @@ export default function AlarmsPage() {
     fetchStream();
   }, [activeCameraId, activeSite.name]);
 
-// 2. Attach HLS.js when we get a valid URL
+  // 2. Attach HLS.js when we get a valid URL
   useEffect(() => {
     if (videoUrl && videoRef.current) {
       const token = localStorage.getItem(`een_token_${activeSite.name}`) || '';
       
-      // Determine the EEN cluster URL from our config so we can reconstruct chunks properly
       const SITES_CONFIG = [
         { siteName: "Pegasus Properties - Marbella Place", cluster: "https://media.c031.eagleeyenetworks.com" },
-        // Fallback for demo, assuming c031
       ];
       const activeConfig = SITES_CONFIG.find(s => s.siteName === activeSite.name);
       const clusterBase = activeConfig ? activeConfig.cluster : "https://media.c031.eagleeyenetworks.com";
@@ -85,24 +83,17 @@ export default function AlarmsPage() {
             xhrSetup: function(xhr, url) {
                 let finalUrl = url;
 
-                // If the player asks for a chunk (like getMpegTsFile...), 
-                // it usually sends a relative path or accidentally prepends localhost/vercel.
-                // We MUST force it to point to the EEN media server.
                 if (url.includes('getMpegTsFile') && !url.includes('eagleeyenetworks.com')) {
-                    // Extract just the path and query params, ignoring the Vercel domain if present
                     const urlObj = new URL(url, 'http://dummy.com'); 
                     let path = urlObj.pathname + urlObj.search;
                     
-                    // The path might include /api/een/proxy... we just want the getMpegTsFile part
                     if (path.includes('getMpegTsFile')) {
                         path = path.substring(path.indexOf('getMpegTsFile'));
                     }
                     
-                    // Reconstruct the exact URL EEN expects
                     finalUrl = `${clusterBase}/media/streams/main/hls/${path}`;
                 }
 
-                // Proxy ALL requests going to EEN (both the playlist and the reconstructed chunks)
                 if (finalUrl.includes('eagleeyenetworks.com')) {
                     const proxyUrl = `/api/een/proxy?url=${encodeURIComponent(finalUrl)}&token=${encodeURIComponent(token)}`;
                     xhr.open('GET', proxyUrl, true);
@@ -139,27 +130,6 @@ export default function AlarmsPage() {
   const handleCameraSelect = (camId: string, camName: string) => {
     setActiveCameraId(camId);
     setActiveCameraName(camName);
-  };
-
-  // UI STATE (Concierge / Notes)
-  const [idCaptured, setIdCaptured] = useState(false);
-  const [workflowStep, setWorkflowStep] = useState("greeting");
-  const [callingResident, setCallingResident] = useState(false);
-  const [customSnooze, setCustomSnooze] = useState("");
-  const [newNote, setNewNote] = useState("");
-  const [notes, setNotes] = useState([
-    { id: 1, text: "Property manager on vacation until 3/25. Escalate to Assistant GM.", author: "System", type: "general" },
-    { id: 2, text: "Main gate arm is sticking. Use 2-way audio to advise backing up.", author: "Admin", type: "warning" }
-  ]);
-
-  const handleAddNote = () => {
-    if (!newNote.trim()) return;
-    setNotes([{ id: Date.now(), text: newNote, author: "RF (You)", type: "general" }, ...notes]);
-    setNewNote("");
-  };
-
-  const clearNote = (id: number) => {
-    setNotes(notes.filter(n => n.id !== id));
   };
 
   return (
@@ -245,13 +215,39 @@ export default function AlarmsPage() {
                 </div>
             )}
 
-            <div className="absolute bottom-6 right-6 flex gap-3 z-20 overflow-x-auto max-w-[50%] snap-x p-1 custom-scrollbar pointer-events-auto">
-                {activeSite.cameras.map((cam) => (
-                    <div key={cam.id} onClick={() => handleCameraSelect(cam.id, cam.name)} className={`shrink-0 w-36 aspect-video bg-black/80 backdrop-blur-md border-2 rounded-xl cursor-pointer flex flex-col justify-end p-2 snap-center relative overflow-hidden transition-all hover:scale-105 origin-bottom ${activeCameraId === cam.id ? 'border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]' : 'border-white/20 hover:border-white/50'}`}>
-                        <span className="text-[10px] font-bold text-white drop-shadow-md relative z-10 bg-black/70 px-1.5 py-0.5 rounded w-fit">{cam.name}</span>
-                        {activeCameraId === cam.id && <span className="absolute top-2 right-2 flex h-2 w-2 relative"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span></span>}
-                    </div>
-                ))}
+            {/* BOTTOM RIGHT: Dynamic EEN Camera Thumbnails */}
+            <div className="absolute bottom-6 right-6 flex gap-3 z-20 overflow-x-auto max-w-[60%] snap-x p-1 custom-scrollbar pointer-events-auto">
+                {activeSite.cameras.map((cam) => {
+                    const token = typeof window !== 'undefined' ? localStorage.getItem(`een_token_${activeSite.name}`) || '' : '';
+                    const imageUrl = token 
+                        ? `/api/een/image?siteName=${encodeURIComponent(activeSite.name)}&cameraId=${cam.id}&token=${encodeURIComponent(token)}`
+                        : '';
+
+                    return (
+                        <div 
+                            key={cam.id} 
+                            onClick={() => handleCameraSelect(cam.id, cam.name)} 
+                            className={`shrink-0 w-40 aspect-video bg-slate-900 border-2 rounded-xl cursor-pointer flex flex-col justify-end p-2 snap-center relative overflow-hidden transition-all hover:scale-105 origin-bottom ${activeCameraId === cam.id ? 'border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)] scale-105 z-30' : 'border-white/20 hover:border-white/50'}`}
+                        >
+                            {imageUrl && (
+                                <img 
+                                    src={imageUrl} 
+                                    alt={cam.name} 
+                                    className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${activeCameraId === cam.id ? 'opacity-40' : 'opacity-80 hover:opacity-100'}`} 
+                                />
+                            )}
+                            <span className="text-[10px] font-bold text-white drop-shadow-md relative z-10 bg-black/70 px-1.5 py-0.5 rounded w-fit border border-white/10 backdrop-blur-sm">
+                                {cam.name}
+                            </span>
+                            {activeCameraId === cam.id && (
+                                <span className="absolute top-2 right-2 flex h-2 w-2 relative z-10">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></span>
+                                </span>
+                            )}
+                        </div>
+                    );
+                })}
             </div>
           </div>
         ) : (
