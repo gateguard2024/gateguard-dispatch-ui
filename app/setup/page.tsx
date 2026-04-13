@@ -13,7 +13,7 @@ export default function SetupPage() {
     "Elevate Greene": { status: "Offline", cams: "--", connected: false, id: "SITE-8261" }
   });
 
-  // 2. Logic to check for active tokens and pull live camera counts
+// 2. Logic to check for active tokens and pull live camera counts
   useEffect(() => {
     const checkConnections = async () => {
       const updatedSites = { ...siteData };
@@ -24,8 +24,21 @@ export default function SetupPage() {
         
         if (token) {
           try {
-            // This calls the method we just added to eagleEyeService
-            const cameras = await eagleEyeService.getCameras(token, siteName);
+            console.log(`Checking cameras for ${siteName} via PROXY...`);
+            
+            // WE CALL OUR VERCEL API DIRECTLY HERE
+            const response = await fetch('/api/een/cameras', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ token, siteName })
+            });
+
+            if (!response.ok) {
+              throw new Error(`Proxy error: ${response.status}`);
+            }
+
+            const cameras = await response.json();
+            console.log("Cameras received:", cameras);
             
             updatedSites[siteName] = {
               ...updatedSites[siteName],
@@ -35,8 +48,9 @@ export default function SetupPage() {
             };
             hasChanges = true;
           } catch (err) {
-            console.error(`Token expired or invalid for ${siteName}:`, err);
-            localStorage.removeItem(`een_token_${siteName}`);
+            console.error(`Error for ${siteName}:`, err);
+            // Optionally remove token if it's completely dead
+            // localStorage.removeItem(`een_token_${siteName}`);
           }
         }
       }
@@ -44,7 +58,7 @@ export default function SetupPage() {
     };
 
     checkConnections();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="w-full h-full flex flex-col p-8 overflow-y-auto custom-scrollbar relative">
