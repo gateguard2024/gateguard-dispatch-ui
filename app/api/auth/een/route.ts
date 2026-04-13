@@ -12,18 +12,19 @@ export async function POST(request: Request) {
 
     const authHeader = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
 
+    // Reverting to JSON, but keeping the critical `scope` parameter
     const response = await fetch('https://auth.eagleeyenetworks.com/oauth2/token', {
       method: 'POST',
       headers: {
         'Authorization': `Basic ${authHeader}`,
-        'x-api-key': config.apiKey,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'x-api-key': config.apiKey // EEN sometimes requires this on the auth endpoint
       },
       body: JSON.stringify({
         grant_type: 'authorization_code',
-        code,
+        code: code,
         redirect_uri: REDIRECT_URI,
-        scope: 'vms.all' // <--- THE MISSING PIECE FROM THE DOCS
+        scope: 'vms.all'
       })
     });
 
