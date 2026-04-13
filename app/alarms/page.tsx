@@ -106,6 +106,22 @@ export default function AlarmsPage() {
       }
     }
   }, [videoUrl, activeSite.name]);
+        // Load the RAW url. xhrSetup will intercept this very first request and proxy it.
+        hls.loadSource(videoUrl); 
+        hls.attachMedia(videoRef.current);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          videoRef.current?.play().catch(e => console.error("Autoplay blocked:", e));
+        });
+      } else if (videoRef.current.canPlayType('application/vnd.apple.mpegurl')) {
+        // Native fallback (Safari doesn't use Hls.js, so we MUST proxy the initial URL here)
+        const proxiedVideoUrl = `/api/een/proxy?url=${encodeURIComponent(videoUrl)}&token=${encodeURIComponent(token || '')}`;
+        videoRef.current.src = proxiedVideoUrl;
+        videoRef.current.addEventListener('loadedmetadata', () => {
+          videoRef.current?.play().catch(e => console.error("Autoplay blocked:", e));
+        });
+      }
+    }
+  }, [videoUrl, activeSite.name]);
 
   // Handler for clicking an alarm
   const handleAlarmClick = (alarm: any) => {
