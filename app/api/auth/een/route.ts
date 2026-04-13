@@ -22,7 +22,8 @@ export async function POST(request: Request) {
       body: JSON.stringify({
         grant_type: 'authorization_code',
         code,
-        redirect_uri: REDIRECT_URI
+        redirect_uri: REDIRECT_URI,
+        scope: 'vms.all' // <--- THE MISSING PIECE FROM THE DOCS
       })
     });
 
