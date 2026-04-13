@@ -19,34 +19,34 @@ export async function GET(request: Request) {
     if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
     if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
-    // 1. Ask the V3 Feeds API for the live Preview Stream (MJPEG)
-    const feedUrl = `${baseUrl}/api/v3.0/feeds?deviceId=${cameraId}&type=preview&include=multipartUrl`;
-    const feedRes = await fetch(feedUrl, {
+    // Use the extremely reliable V2 Image API and pass the token as a URL param
+    // We add a random cache_buster so the browser doesn't load a stale image
+    const timestamp = new Date().getTime();
+    const targetUrl = `${baseUrl}/api/v2.0/cameras/${cameraId}/image?access_token=${token}&c=${timestamp}`;
+
+    const response = await fetch(targetUrl, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/json'
+        'Accept': 'image/jpeg'
       },
+      // Ensure Vercel never caches this response
       cache: 'no-store'
     });
 
-    if (!feedRes.ok) {
-      return new NextResponse(`EEN Feeds API Error: ${feedRes.status}`, { status: feedRes.status });
+    if (!response.ok) {
+        return new NextResponse(`EEN API Error: ${response.status}`, { status: response.status });
     }
 
-    const feedData = await feedRes.json();
-    const previewFeed = feedData.results?.find((r: any) => r.type === 'preview');
+    const imageBuffer = await response.arrayBuffer();
     
-    if (previewFeed && previewFeed.multipartUrl) {
-      // 2. Append the token to the URL so the browser is authorized when it follows the redirect!
-      const authUrl = new URL(previewFeed.multipartUrl);
-      authUrl.searchParams.append('access_token', token);
-      
-      // 3. Redirect the frontend <img> tag directly to the authorized Eagle Eye stream
-      return NextResponse.redirect(authUrl.toString());
-    } else {
-      return new NextResponse('No preview URL found for this camera', { status: 404 });
-    }
+    return new NextResponse(imageBuffer, {
+      headers: {
+        'Content-Type': 'image/jpeg',
+        'Cache-Control': 'public, max-age=10', // Cache in browser for 10 seconds to prevent flickering
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+
   } catch (error) {
     console.error("Image proxy failed:", error);
     return new NextResponse('Image proxy crashed', { status: 500 });
