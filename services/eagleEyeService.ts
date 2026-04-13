@@ -1,11 +1,10 @@
 // services/eagleEyeService.ts
 
-// Parse the JSON config from Vercel
 const SITES = JSON.parse(process.env.NEXT_PUBLIC_SITE_CONFIG || '[]');
 const REDIRECT_URI = process.env.NEXT_PUBLIC_EEN_REDIRECT_URI;
 
 export const eagleEyeService = {
-  // 1. Redirects user to the Eagle Eye Login page
+  // 1. Redirects to Eagle Eye
   login: (siteName: string) => {
     const config = SITES.find((s: any) => s.siteName === siteName);
     if (!config) return console.error("Site not configured");
@@ -19,32 +18,24 @@ export const eagleEyeService = {
       state: siteName 
     });
 
-    window.location.href = `https://auth.eagleeyenetworks.com/oauth2/authorize?${params.toString()}`;
+    window.location.href = `https://auth.eagleeyenetworks.com/authorize?${params.toString()}`;
   },
 
-// 2. Updated exchangeCode to use our new proxy route
+  // 2. Talks to OUR Vercel API (Solves CORS)
   exchangeCode: async (code: string, siteName: string) => {
     const response = await fetch('/api/auth/een', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, siteName })
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Token exchange failed');
+      throw new Error("Token exchange failed at API level");
     }
-    
     return response.json();
   },
 
-    if (!response.ok) throw new Error("Token exchange failed");
-    return response.json();
-  },
-
-  // 3. THE MISSING METHOD: Fetches real camera list from the site's cluster
+  // 3. Fetches cameras using the site's specific cluster
   getCameras: async (token: string, siteName: string) => {
     const config = SITES.find((s: any) => s.siteName === siteName);
     if (!config) throw new Error("Config missing for camera fetch");
