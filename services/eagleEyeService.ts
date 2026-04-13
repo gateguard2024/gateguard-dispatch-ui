@@ -37,14 +37,22 @@ export const eagleEyeService = {
   },
 
   // 3. Fetches cameras using the site's specific cluster
-  getCameras: async (token: string, siteName: string) => {
+getCameras: async (token: string, siteName: string) => {
     const config = SITES.find((s: any) => s.siteName === siteName);
     if (!config) throw new Error("Config missing for camera fetch");
 
-    // Ensure the cluster URL doesn't have a trailing slash before appending path
-    const baseUrl = config.cluster.endsWith('/') ? config.cluster.slice(0, -1) : config.cluster;
+    // We force the URL to be absolute so the browser doesn't 
+    // try to look for it on gateguard-dispatch-ui.vercel.app
+    let baseUrl = config.cluster.trim();
+    
+    if (!baseUrl.startsWith('http')) {
+      baseUrl = `https://${baseUrl}`;
+    }
 
-    const response = await fetch(`${baseUrl}/api/v3.0/cameras`, {
+    // This ensures we have a clean URL like https://api.c031.eagleeyenetworks.com
+    const cleanUrl = new URL('/api/v3.0/cameras', baseUrl).toString();
+
+    const response = await fetch(cleanUrl, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -53,7 +61,6 @@ export const eagleEyeService = {
       }
     });
 
-    if (!response.ok) throw new Error("Failed to fetch cameras");
+    if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
     return response.json();
   }
-};
