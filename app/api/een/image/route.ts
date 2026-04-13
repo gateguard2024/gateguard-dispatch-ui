@@ -19,22 +19,22 @@ export async function GET(request: Request) {
     if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
     if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
-    // Use the extremely reliable V2 Image API and pass the token as a URL param
-    // We add a random cache_buster so the browser doesn't load a stale image
-    const timestamp = new Date().getTime();
-    const targetUrl = `${baseUrl}/api/v2.0/cameras/${cameraId}/image?access_token=${token}&c=${timestamp}`;
+    // This is the V3 way to request a single JPEG snapshot from a camera
+    const targetUrl = `${baseUrl}/api/v3.0/cameras/${cameraId}/images`;
 
     const response = await fetch(targetUrl, {
       method: 'GET',
       headers: {
+        'Authorization': `Bearer ${token}`,
         'Accept': 'image/jpeg'
       },
-      // Ensure Vercel never caches this response
       cache: 'no-store'
     });
 
     if (!response.ok) {
-        return new NextResponse(`EEN API Error: ${response.status}`, { status: response.status });
+        const errorText = await response.text();
+        console.error("EEN V3 Image Fetch Failed:", response.status, errorText);
+        return new NextResponse(`EEN V3 API Error: ${response.status}`, { status: response.status });
     }
 
     const imageBuffer = await response.arrayBuffer();
@@ -42,7 +42,7 @@ export async function GET(request: Request) {
     return new NextResponse(imageBuffer, {
       headers: {
         'Content-Type': 'image/jpeg',
-        'Cache-Control': 'public, max-age=10', // Cache in browser for 10 seconds to prevent flickering
+        'Cache-Control': 'public, max-age=10', // Cache in browser for 10 seconds
         'Access-Control-Allow-Origin': '*'
       }
     });
