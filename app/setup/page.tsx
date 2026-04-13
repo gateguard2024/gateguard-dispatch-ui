@@ -38,12 +38,38 @@ export default function SetupPage() {
             }
 
             const cameras = await response.json();
-            console.log("Cameras received:", cameras);
+            
+            // --- SMART FILTER V2 LOGIC START ---
+            const allCameras = cameras.results || [];
+            
+            // X-RAY VISION: Log one camera to see properties for future debugging
+            if (allCameras.length > 0) {
+              console.log(`🔍 Sample Camera from Portfolio:`, allCameras[0]);
+            }
+
+            // Extract the specific property name (e.g., "Marbella Place")
+            const siteKeyword = siteName.includes(" - ") 
+              ? siteName.split(" - ")[1].trim().toLowerCase() 
+              : siteName.toLowerCase();
+
+            // Filter the cameras down to just the ones for this site
+            const siteCameras = allCameras.filter((cam: any) => {
+              const camName = (cam.name || "").toLowerCase();
+              const bridgeName = (cam.bridgeName || "").toLowerCase(); 
+              const tags = Array.isArray(cam.tags) ? cam.tags.join(" ").toLowerCase() : "";
+
+              return camName.includes(siteKeyword) || 
+                     bridgeName.includes(siteKeyword) || 
+                     tags.includes(siteKeyword);
+            });
+
+            console.log(`${siteName} has ${siteCameras.length} allocated cameras out of ${allCameras.length} total.`);
+            // --- SMART FILTER V2 LOGIC END ---
             
             updatedSites[siteName] = {
               ...updatedSites[siteName],
               status: "Online",
-              cams: Array.isArray(cameras) ? cameras.length : 0,
+              cams: siteCameras.length, // Update UI with the filtered count!
               connected: true
             };
             hasChanges = true;
