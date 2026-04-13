@@ -265,8 +265,10 @@ export default function AlarmsPage() {
                     // This prevents 404s if it falls back to "cam2"
                     const isValidId = cam.id && cam.id.length === 8 && !cam.id.startsWith('cam');
                     
+                    // We append a timestamp to the URL to completely bypass the aggressive Next.js cache
+                    const timestamp = new Date().getTime();
                     const imageUrl = (activeToken && isValidId)
-                        ? `/api/een/image?siteName=${encodeURIComponent(activeSite.name)}&cameraId=${cam.id}&token=${encodeURIComponent(activeToken)}`
+                        ? `/api/een/image?siteName=${encodeURIComponent(activeSite.name)}&cameraId=${cam.id}&token=${encodeURIComponent(activeToken)}&_t=${timestamp}`
                         : '';
 
                     return (
