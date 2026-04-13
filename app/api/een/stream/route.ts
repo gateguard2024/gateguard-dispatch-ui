@@ -13,8 +13,11 @@ export async function POST(request: Request) {
     if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
     if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
-    // EEN V3 API endpoint for retrieving the live HLS stream URL
-    const response = await fetch(`${baseUrl}/api/v3.0/cameras/${cameraId}/streams/primary`, {
+    // EEN V3 live video feed endpoint. We ask for the "main" high-quality stream 
+    // and explicitly tell it to include the "hlsUrl" in the response.
+    const url = `${baseUrl}/api/v3.0/feeds?deviceId=${cameraId}&include=hlsUrl`;
+    
+    const response = await fetch(url, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -28,16 +31,19 @@ export async function POST(request: Request) {
       return NextResponse.json(data, { status: response.status });
     }
 
-    // EEN sometimes returns the URL inside different properties based on the cluster.
-    // We will extract it safely.
-    const streamUrl = data.url || (data.data && data.data.url) || data.streamUrl;
+    // The API returns an array of results. We need to find the one that has the hlsUrl.
+    const results = data.results || [];
+    const streamData = results.find((feed: any) => feed.hlsUrl);
 
-    if (!streamUrl) {
-       return NextResponse.json({ error: 'Stream URL missing in EEN response', data }, { status: 404 });
+    if (!streamData || !streamData.hlsUrl) {
+       return NextResponse.json({ error: 'HLS stream URL missing in EEN response', data }, { status: 404 });
     }
 
-    return NextResponse.json({ url: streamUrl });
+    // Return the actual HLS streaming URL back to the Alarms page
+    return NextResponse.json({ url: streamData.hlsUrl });
+    
   } catch (error) {
+    console.error("Proxy Error:", error);
     return NextResponse.json({ error: 'Internal Server Proxy Error' }, { status: 500 });
   }
 }
