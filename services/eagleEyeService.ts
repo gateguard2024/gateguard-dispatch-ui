@@ -22,24 +22,23 @@ export const eagleEyeService = {
     window.location.href = `https://auth.eagleeyenetworks.com/oauth2/authorize?${params.toString()}`;
   },
 
-  // 2. Exchanges the one-time code for an Access Token
+// 2. Updated exchangeCode to use our new proxy route
   exchangeCode: async (code: string, siteName: string) => {
-    const config = SITES.find((s: any) => s.siteName === siteName);
-    const authHeader = btoa(`${config.clientId}:${config.clientSecret}`);
-
-    const response = await fetch('https://auth.eagleeyenetworks.com/oauth2/token', {
+    const response = await fetch('/api/auth/een', {
       method: 'POST',
       headers: {
-        'Authorization': `Basic ${authHeader}`,
-        'x-api-key': config.apiKey,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: REDIRECT_URI
-      })
+      body: JSON.stringify({ code, siteName })
     });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Token exchange failed');
+    }
+    
+    return response.json();
+  },
 
     if (!response.ok) throw new Error("Token exchange failed");
     return response.json();
