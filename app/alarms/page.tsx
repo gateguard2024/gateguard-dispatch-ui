@@ -258,23 +258,21 @@ export default function AlarmsPage() {
                 </div>
             )}
 
-{/* BOTTOM RIGHT: Dynamic EEN Camera Thumbnails (Using Video Streams) */}
+{/* BOTTOM RIGHT: Dynamic EEN Camera Thumbnails (DIRECT LOAD) */}
             <div className="absolute bottom-6 right-6 flex gap-3 z-20 overflow-x-auto max-w-[60%] snap-x p-1 custom-scrollbar pointer-events-auto">
                 {dynamicCameras.map((cam) => {
                     const isValidId = cam.id && cam.id.length === 8 && !cam.id.startsWith('cam');
                     
-                    // We use the exact same proxy pattern we used for the main video!
-                    // We ask for the preview stream, which is lower res and faster to load.
                     const SITES_CONFIG = [
                         { siteName: "Pegasus Properties - Marbella Place", cluster: "https://media.c031.eagleeyenetworks.com" },
                     ];
                     const activeConfig = SITES_CONFIG.find(s => s.siteName === activeSite.name);
                     const clusterBase = activeConfig ? activeConfig.cluster : "https://media.c031.eagleeyenetworks.com";
                     
-                    const m3u8Url = `${clusterBase}/media/streams/preview/hls/getPlaylist.m3u8?esn=${cam.id}`;
-                    
-                    const proxiedStreamUrl = (activeToken && isValidId)
-                        ? `/api/een/proxy?url=${encodeURIComponent(m3u8Url)}&token=${encodeURIComponent(activeToken)}`
+                    // MAGIC: <img> tags ignore CORS! We can just hit Eagle Eye directly!
+                    const timestamp = new Date().getTime();
+                    const directImageUrl = (activeToken && isValidId) 
+                        ? `${clusterBase}/api/v2.0/cameras/${cam.id}/image?access_token=${activeToken}&_t=${timestamp}` 
                         : '';
 
                     return (
@@ -283,19 +281,13 @@ export default function AlarmsPage() {
                             onClick={() => handleCameraSelect(cam.id, cam.name)} 
                             className={`shrink-0 w-40 aspect-video bg-slate-900 border-2 rounded-xl cursor-pointer flex flex-col justify-end p-2 snap-center relative overflow-hidden transition-all hover:scale-105 origin-bottom ${activeCameraId === cam.id ? 'border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)] scale-105 z-30' : 'border-white/20 hover:border-white/50'}`}
                         >
-                            {proxiedStreamUrl ? (
-                                // Render a native video tag. Safari will play this natively. 
-                                // Chrome will try, and usually succeed with modern HLS if the proxy is clean.
-                                <video 
-                                    src={proxiedStreamUrl}
-                                    autoPlay 
-                                    muted 
-                                    playsInline 
-                                    loop
-                                    className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${activeCameraId === cam.id ? 'opacity-40' : 'opacity-80 hover:opacity-100'}`}
+                            {directImageUrl ? (
+                                <img 
+                                    src={directImageUrl} 
+                                    alt={cam.name} 
+                                    className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${activeCameraId === cam.id ? 'opacity-40' : 'opacity-80 hover:opacity-100'}`} 
                                     onError={(e) => {
-                                        // If the video fails to load, hide it and show "NO FEED"
-                                        (e.target as HTMLVideoElement).style.display = 'none';
+                                        (e.target as HTMLImageElement).style.display = 'none';
                                     }}
                                 />
                             ) : (
