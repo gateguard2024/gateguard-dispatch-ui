@@ -258,10 +258,14 @@ export default function AlarmsPage() {
                 </div>
             )}
 
-            {/* BOTTOM RIGHT: Dynamic EEN Camera Thumbnails */}
+{/* BOTTOM RIGHT: Dynamic EEN Camera Thumbnails */}
             <div className="absolute bottom-6 right-6 flex gap-3 z-20 overflow-x-auto max-w-[60%] snap-x p-1 custom-scrollbar pointer-events-auto">
                 {dynamicCameras.map((cam) => {
-                    const imageUrl = activeToken 
+                    // Safety check: Real EEN IDs are usually 8 hex chars. 
+                    // This prevents 404s if it falls back to "cam2"
+                    const isValidId = cam.id && cam.id.length === 8 && !cam.id.startsWith('cam');
+                    
+                    const imageUrl = (activeToken && isValidId)
                         ? `/api/een/image?siteName=${encodeURIComponent(activeSite.name)}&cameraId=${cam.id}&token=${encodeURIComponent(activeToken)}`
                         : '';
 
@@ -271,7 +275,7 @@ export default function AlarmsPage() {
                             onClick={() => handleCameraSelect(cam.id, cam.name)} 
                             className={`shrink-0 w-40 aspect-video bg-slate-900 border-2 rounded-xl cursor-pointer flex flex-col justify-end p-2 snap-center relative overflow-hidden transition-all hover:scale-105 origin-bottom ${activeCameraId === cam.id ? 'border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)] scale-105 z-30' : 'border-white/20 hover:border-white/50'}`}
                         >
-                            {imageUrl && (
+                            {imageUrl ? (
                                 <img 
                                     src={imageUrl} 
                                     alt={cam.name} 
@@ -280,6 +284,10 @@ export default function AlarmsPage() {
                                         (e.target as HTMLImageElement).style.display = 'none';
                                     }}
                                 />
+                            ) : (
+                                <div className="absolute inset-0 flex items-center justify-center bg-slate-800">
+                                   <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">No Feed</span>
+                                </div>
                             )}
                             <span className="text-[10px] font-bold text-white drop-shadow-md relative z-10 bg-black/70 px-1.5 py-0.5 rounded w-fit border border-white/10 backdrop-blur-sm truncate max-w-[90%]">
                                 {cam.name}
