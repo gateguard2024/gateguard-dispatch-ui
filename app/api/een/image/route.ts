@@ -8,11 +8,10 @@ export async function GET(request: Request) {
   const token = searchParams.get('token');
 
   if (!cameraId || !siteName || !token) {
-    return new NextResponse('Missing required parameters', { status: 400 });
+    return NextResponse.json({ error: 'Missing required parameters' }, { status: 400 });
   }
 
   try {
-    // 1. Get the cluster URL for this specific site
     const SITES = JSON.parse(process.env.NEXT_PUBLIC_SITE_CONFIG || '[]');
     const config = SITES.find((s: any) => s.siteName === siteName);
     
@@ -20,33 +19,40 @@ export async function GET(request: Request) {
     if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
     if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
-    // 2. Ask EEN for the current camera snapshot
-    const response = await fetch(`${baseUrl}/api/v3.0/cameras/${cameraId}/image`, {
+    // Let's try the "/preview" endpoint which is standard in many V3 systems
+    const targetUrl = `${baseUrl}/api/v3.0/cameras/${cameraId}/preview`;
+
+    const response = await fetch(targetUrl, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${token}`
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'image/jpeg'
       },
-      // We don't want Vercel to permanently cache an old image
       cache: 'no-store'
     });
 
     if (!response.ok) {
-      return new NextResponse(`EEN Image Error: ${response.status}`, { status: response.status });
+      // If EEN rejects it, we return a JSON error so we can read it in the browser!
+      const errorText = await response.text();
+      return NextResponse.json({ 
+        proxy_error: "Eagle Eye rejected the request",
+        een_status: response.status,
+        een_message: errorText,
+        url_tried: targetUrl
+      }, { status: 404 });
     }
 
-    // 3. Return the raw binary image data back to the frontend
     const imageBuffer = await response.arrayBuffer();
     const contentType = response.headers.get('content-type') || 'image/jpeg';
 
     return new NextResponse(imageBuffer, {
       headers: {
         'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=5', // Cache in the browser for 5 seconds
+        'Cache-Control': 'public, max-age=5',
         'Access-Control-Allow-Origin': '*'
       }
     });
   } catch (error) {
-    console.error("Image proxy failed:", error);
-    return new NextResponse('Image proxy failed', { status: 500 });
+    return NextResponse.json({ error: 'Image proxy crashed' }, { status: 500 });
   }
 }
