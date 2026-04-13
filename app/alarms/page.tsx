@@ -15,21 +15,23 @@ const MOCK_ALARMS = [
 ];
 
 export default function AlarmsPage() {
+  // --- CORE VIEW STATE ---
   const [leftPanelMode, setLeftPanelMode] = useState<"alarms" | "patrol">("alarms");
   const [canvasView, setCanvasView] = useState<"live" | "map">("live");
   const [rightPanelTab, setRightPanelTab] = useState<"action" | "controls" | "notes">("action");
 
+  // --- ACTIVE SELECTION STATE ---
   const [activeSite, setActiveSite] = useState(MOCK_SITES[0]);
   const [activeAlarm, setActiveAlarm] = useState(MOCK_ALARMS[0]);
   const [activeCameraId, setActiveCameraId] = useState(MOCK_ALARMS[0].cameraId);
   const [activeCameraName, setActiveCameraName] = useState(MOCK_ALARMS[0].camName);
 
+  // --- LIVE VIDEO STATE ---
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isVideoLoading, setIsVideoLoading] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
-
-  // Safely hold the token in state to avoid React Hydration errors
   const [activeToken, setActiveToken] = useState<string>("");
+  const [dynamicCameras, setDynamicCameras] = useState(MOCK_SITES[0].cameras);
 
   // 0. Load the token from localStorage ONLY on the client side
   useEffect(() => {
@@ -37,15 +39,45 @@ export default function AlarmsPage() {
     setActiveToken(token);
   }, [activeSite.name]);
 
+  // 0.5 Load REAL cameras from the Setup page data
+  useEffect(() => {
+    const savedCameras = localStorage.getItem(`een_cameras_${activeSite.name}`);
+    if (savedCameras) {
+      try {
+        const parsed = JSON.parse(savedCameras);
+        if (parsed && parsed.length > 0) {
+          const realCameras = parsed.map((cam: any) => ({
+            // EEN API returns different structures depending on the endpoint used (array vs object)
+            id: cam.camera_id || cam.id || cam.esn || (Array.isArray(cam) ? cam[1] : "unknown"), 
+            name: cam.name || (Array.isArray(cam) ? cam[2] : "Unnamed Camera")
+          })).filter((c: any) => c.id && c.id !== "unknown");
+
+          if (realCameras.length > 0) {
+            setDynamicCameras(realCameras);
+            
+            // Auto-select the first real camera if our current active ID isn't in the real list
+            if (!realCameras.find((c: any) => c.id === activeCameraId)) {
+              setActiveCameraId(realCameras[0].id);
+              setActiveCameraName(realCameras[0].name);
+            }
+            return;
+          }
+        }
+      } catch (e) {
+        console.error("Failed to load real cameras from storage", e);
+      }
+    }
+    // Fallback to mock if nothing is saved
+    setDynamicCameras(activeSite.cameras);
+  }, [activeSite.name]); // Intentionally omitting activeCameraId to avoid re-triggering loops
+
   // 1. Fetch Stream URL whenever the active camera changes
   useEffect(() => {
     const fetchStream = async () => {
-      if (activeCameraId !== "10054b8c") {
+      if (!activeToken || !activeCameraId) {
         setVideoUrl(null);
         return;
       }
-
-      if (!activeToken) return;
 
       setIsVideoLoading(true);
       try {
@@ -63,6 +95,7 @@ export default function AlarmsPage() {
         }
       } catch (err) {
         console.error("Stream Proxy Error:", err);
+        setVideoUrl(null);
       } finally {
         setIsVideoLoading(false);
       }
@@ -80,8 +113,10 @@ export default function AlarmsPage() {
       const activeConfig = SITES_CONFIG.find(s => s.siteName === activeSite.name);
       const clusterBase = activeConfig ? activeConfig.cluster : "https://media.c031.eagleeyenetworks.com";
 
+      let hls: Hls | null = null;
+
       if (Hls.isSupported()) {
-        const hls = new Hls({
+        hls = new Hls({
             xhrSetup: function(xhr, url) {
                 let finalUrl = url;
 
@@ -117,6 +152,12 @@ export default function AlarmsPage() {
           videoRef.current?.play().catch(e => console.error("Autoplay blocked:", e));
         });
       }
+
+      return () => {
+        if (hls) {
+          hls.destroy();
+        }
+      };
     }
   }, [videoUrl, activeSite.name, activeToken]);
 
@@ -168,9 +209,9 @@ export default function AlarmsPage() {
           <div className="flex flex-col gap-3 overflow-y-auto custom-scrollbar pr-2">
             <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold mb-2">Select Site to Tour</p>
             {MOCK_SITES.map((site) => (
-              <div key={site.id} onClick={() => { setActiveSite(site); setActiveCameraId(site.cameras[0].id); setActiveCameraName(site.cameras[0].name); setCanvasView("live"); }} className={`rounded-2xl p-4 cursor-pointer border transition-all ${activeSite.id === site.id ? 'bg-indigo-900/20 border-indigo-500/50' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}>
+              <div key={site.id} onClick={() => { setActiveSite(site); setCanvasView("live"); }} className={`rounded-2xl p-4 cursor-pointer border transition-all ${activeSite.id === site.id ? 'bg-indigo-900/20 border-indigo-500/50' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}>
                 <h3 className="font-bold text-sm text-white mb-1">{site.name}</h3>
-                <p className="text-slate-500 text-xs">{site.cameras.length} Cameras Available</p>
+                <p className="text-slate-500 text-xs">{site.id === activeSite.id ? dynamicCameras.length : site.cameras.length} Cameras Available</p>
               </div>
             ))}
           </div>
@@ -219,8 +260,7 @@ export default function AlarmsPage() {
 
             {/* BOTTOM RIGHT: Dynamic EEN Camera Thumbnails */}
             <div className="absolute bottom-6 right-6 flex gap-3 z-20 overflow-x-auto max-w-[60%] snap-x p-1 custom-scrollbar pointer-events-auto">
-                {activeSite.cameras.map((cam) => {
-                    // Use the safely loaded state token instead of calling localStorage directly in the render
+                {dynamicCameras.map((cam) => {
                     const imageUrl = activeToken 
                         ? `/api/een/image?siteName=${encodeURIComponent(activeSite.name)}&cameraId=${cam.id}&token=${encodeURIComponent(activeToken)}`
                         : '';
@@ -237,12 +277,11 @@ export default function AlarmsPage() {
                                     alt={cam.name} 
                                     className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${activeCameraId === cam.id ? 'opacity-40' : 'opacity-80 hover:opacity-100'}`} 
                                     onError={(e) => {
-                                        // Hide broken images if the proxy returns a 404
                                         (e.target as HTMLImageElement).style.display = 'none';
                                     }}
                                 />
                             )}
-                            <span className="text-[10px] font-bold text-white drop-shadow-md relative z-10 bg-black/70 px-1.5 py-0.5 rounded w-fit border border-white/10 backdrop-blur-sm">
+                            <span className="text-[10px] font-bold text-white drop-shadow-md relative z-10 bg-black/70 px-1.5 py-0.5 rounded w-fit border border-white/10 backdrop-blur-sm truncate max-w-[90%]">
                                 {cam.name}
                             </span>
                             {activeCameraId === cam.id && (
