@@ -3,17 +3,27 @@
 import React, { useState, useEffect } from "react";
 import { eagleEyeService } from "@/services/eagleEyeService";
 
+// ============================================================================
+// 📍 HARDWARE MAPPING: Map your Bridge ESNs to your Sites here.
+// You can add multiple bridges per site like: ["1003476d", "1004abcd"]
+// ============================================================================
+const SITE_BRIDGES: Record<string, string[]> = {
+  "Pegasus Properties - Marbella Place": ["10071c5d"], // The ESN from your screenshot!
+  "Elevate Eagles Landing": [], // Add Eagles Landing ESNs here later
+  "Elevate Greene": []          // Add Greene ESNs here later
+};
+
 export default function SetupPage() {
   const [activeConfigMenu, setActiveConfigMenu] = useState("sites");
   
-  // 1. Initialize state with the EXACT names used in your Vercel NEXT_PUBLIC_SITE_CONFIG
+  // Initialize state with the EXACT names used in your Vercel NEXT_PUBLIC_SITE_CONFIG
   const [siteData, setSiteData] = useState<any>({
     "Pegasus Properties - Marbella Place": { status: "Offline", cams: "--", connected: false, id: "SITE-8259" },
     "Elevate Eagles Landing": { status: "Offline", cams: "--", connected: false, id: "SITE-8260" },
     "Elevate Greene": { status: "Offline", cams: "--", connected: false, id: "SITE-8261" }
   });
 
-// 2. Logic to check for active tokens and pull live camera counts
+  // Logic to check for active tokens and pull live camera counts
   useEffect(() => {
     const checkConnections = async () => {
       const updatedSites = { ...siteData };
@@ -26,48 +36,51 @@ export default function SetupPage() {
           try {
             console.log(`Checking cameras for ${siteName} via PROXY...`);
             
-            // WE CALL OUR VERCEL API DIRECTLY HERE
             const response = await fetch('/api/een/cameras', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ token, siteName })
             });
 
-            if (!response.ok) {
-              throw new Error(`Proxy error: ${response.status}`);
-            }
+            if (!response.ok) throw new Error(`Proxy error: ${response.status}`);
 
             const cameras = await response.json();
-            
-            // --- SMART FILTER V2 LOGIC START ---
             const allCameras = cameras.results || [];
             
-            // X-RAY VISION: Log one camera to see properties for future debugging
-            if (allCameras.length > 0) {
-              console.log(`🔍 Sample Camera from Portfolio:`, allCameras[0]);
-            }
-
-            // Extract the specific property name (e.g., "Marbella Place")
+            // Extract keyword for Direct-to-Cloud fallback (e.g., "Marbella Place")
             const siteKeyword = siteName.includes(" - ") 
               ? siteName.split(" - ")[1].trim().toLowerCase() 
               : siteName.toLowerCase();
 
-            // TEMPORARY BYPASS: Just assign all 38 cameras to the active site for testing
-            const siteCameras = allCameras; 
+            // Get the allowed Bridge ESNs for this specific site
+            const allowedBridges = SITE_BRIDGES[siteName] || [];
 
-            console.log(`${siteName} has ${siteCameras.length} allocated cameras out of ${allCameras.length} total.`);
+            // --- THE HYBRID FILTER ---
+            const siteCameras = allCameras.filter((cam: any) => {
+              const camName = (cam.name || "").toLowerCase();
+              const bridgeId = cam.bridgeId || "";
+              
+              // Condition 1: Does the camera live on an approved Bridge?
+              const isOnApprovedBridge = allowedBridges.includes(bridgeId);
+              
+              // Condition 2: Is it a Direct-to-Cloud camera with the site name?
+              const isDirectToCloudMatch = camName.includes(siteKeyword);
+
+              // If either is true, this camera belongs to this site!
+              return isOnApprovedBridge || isDirectToCloudMatch;
+            });
+
+            console.log(`✅ ${siteName} filtered to ${siteCameras.length} cameras.`);
             
             updatedSites[siteName] = {
               ...updatedSites[siteName],
               status: "Online",
-              cams: siteCameras.length, // Update UI with the filtered count!
+              cams: siteCameras.length, 
               connected: true
             };
             hasChanges = true;
           } catch (err) {
             console.error(`Error for ${siteName}:`, err);
-            // Optionally remove token if it's completely dead
-            // localStorage.removeItem(`een_token_${siteName}`);
           }
         }
       }
@@ -146,7 +159,7 @@ export default function SetupPage() {
                         <span className="text-[10px] text-slate-500 uppercase tracking-widest">{siteData[name].id}</span>
                       </div>
                       
-                      {/* AUTH BUTTON: Switches to checkmark if connected */}
+                      {/* AUTH BUTTON */}
                       {siteData[name].connected ? (
                         <div className="bg-emerald-500/20 text-emerald-400 text-[9px] font-black px-3 py-2 rounded-xl border border-emerald-500/50 flex items-center gap-2">
                           ✓ API ACTIVE
