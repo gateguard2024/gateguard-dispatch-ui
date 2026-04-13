@@ -67,35 +67,41 @@ export default function AlarmsPage() {
     fetchStream();
   }, [activeCameraId, activeSite.name]);
 
-  // 2. Attach HLS.js when we get a valid URL
+// 2. Attach HLS.js when we get a valid URL
   useEffect(() => {
     if (videoUrl && videoRef.current) {
       const token = localStorage.getItem(`een_token_${activeSite.name}`) || '';
       
-      // Pass the raw URL to hls.loadSource, NOT the proxied one.
-      // We will let the xhrSetup handle the proxying for EVERYTHING.
       if (Hls.isSupported()) {
         const hls = new Hls({
+            // This is the magic interceptor
             xhrSetup: function(xhr, url) {
-                // If the URL is going to Eagle Eye, proxy it!
-                if (url.includes('eagleeyenetworks.com')) {
-                    const proxyUrl = `/api/een/proxy?url=${encodeURIComponent(url)}&token=${encodeURIComponent(token)}`;
-                    xhr.open('GET', proxyUrl, true);
-                } else {
-                    // Otherwise, just load it normally
-                    xhr.open('GET', url, true);
+                let finalUrl = url;
+
+                // 1. If HLS.js tries to load a relative path (the .ts chunks), 
+                // we need to reconstruct the full Eagle Eye URL first.
+                if (!url.startsWith('http')) {
+                    // Extract the base URL from the original videoUrl
+                    const baseUrlObj = new URL(videoUrl);
+                    // Remove the last part of the path (getPlaylist) to get the directory
+                    const basePath = baseUrlObj.pathname.substring(0, baseUrlObj.pathname.lastIndexOf('/'));
+                    finalUrl = `${baseUrlObj.origin}${basePath}/${url}`;
                 }
+
+                // 2. Now that we have a full URL, send it through our Vercel Proxy
+                const proxyUrl = `/api/een/proxy?url=${encodeURIComponent(finalUrl)}&token=${encodeURIComponent(token)}`;
+                xhr.open('GET', proxyUrl, true);
             }
         });
         
-        // Load the RAW url. xhrSetup will intercept this very first request and proxy it.
+        // Let the xhrSetup handle ALL proxying, including this very first call
         hls.loadSource(videoUrl); 
         hls.attachMedia(videoRef.current);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           videoRef.current?.play().catch(e => console.error("Autoplay blocked:", e));
         });
       } else if (videoRef.current.canPlayType('application/vnd.apple.mpegurl')) {
-        // Native fallback (Safari doesn't use Hls.js, so we MUST proxy the initial URL here)
+        // Native fallback for Safari
         const proxiedVideoUrl = `/api/een/proxy?url=${encodeURIComponent(videoUrl)}&token=${encodeURIComponent(token)}`;
         videoRef.current.src = proxiedVideoUrl;
         videoRef.current.addEventListener('loadedmetadata', () => {
