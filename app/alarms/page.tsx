@@ -15,40 +15,44 @@ const MOCK_ALARMS = [
 ];
 
 export default function AlarmsPage() {
-  // --- CORE VIEW STATE ---
   const [leftPanelMode, setLeftPanelMode] = useState<"alarms" | "patrol">("alarms");
   const [canvasView, setCanvasView] = useState<"live" | "map">("live");
   const [rightPanelTab, setRightPanelTab] = useState<"action" | "controls" | "notes">("action");
 
-  // --- ACTIVE SELECTION STATE ---
   const [activeSite, setActiveSite] = useState(MOCK_SITES[0]);
   const [activeAlarm, setActiveAlarm] = useState(MOCK_ALARMS[0]);
   const [activeCameraId, setActiveCameraId] = useState(MOCK_ALARMS[0].cameraId);
   const [activeCameraName, setActiveCameraName] = useState(MOCK_ALARMS[0].camName);
 
-  // --- LIVE VIDEO STATE ---
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isVideoLoading, setIsVideoLoading] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  // Safely hold the token in state to avoid React Hydration errors
+  const [activeToken, setActiveToken] = useState<string>("");
+
+  // 0. Load the token from localStorage ONLY on the client side
+  useEffect(() => {
+    const token = localStorage.getItem(`een_token_${activeSite.name}`) || "";
+    setActiveToken(token);
+  }, [activeSite.name]);
+
   // 1. Fetch Stream URL whenever the active camera changes
   useEffect(() => {
     const fetchStream = async () => {
-      // For this demo, we only have a real EEN token/ID for Marbella's Amenity Hall
       if (activeCameraId !== "10054b8c") {
         setVideoUrl(null);
         return;
       }
 
-      const token = localStorage.getItem(`een_token_${activeSite.name}`);
-      if (!token) return;
+      if (!activeToken) return;
 
       setIsVideoLoading(true);
       try {
         const response = await fetch('/api/een/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token, siteName: activeSite.name, cameraId: activeCameraId })
+          body: JSON.stringify({ token: activeToken, siteName: activeSite.name, cameraId: activeCameraId })
         });
 
         const data = await response.json();
@@ -65,13 +69,11 @@ export default function AlarmsPage() {
     };
 
     fetchStream();
-  }, [activeCameraId, activeSite.name]);
+  }, [activeCameraId, activeSite.name, activeToken]);
 
   // 2. Attach HLS.js when we get a valid URL
   useEffect(() => {
-    if (videoUrl && videoRef.current) {
-      const token = localStorage.getItem(`een_token_${activeSite.name}`) || '';
-      
+    if (videoUrl && videoRef.current && activeToken) {
       const SITES_CONFIG = [
         { siteName: "Pegasus Properties - Marbella Place", cluster: "https://media.c031.eagleeyenetworks.com" },
       ];
@@ -95,7 +97,7 @@ export default function AlarmsPage() {
                 }
 
                 if (finalUrl.includes('eagleeyenetworks.com')) {
-                    const proxyUrl = `/api/een/proxy?url=${encodeURIComponent(finalUrl)}&token=${encodeURIComponent(token)}`;
+                    const proxyUrl = `/api/een/proxy?url=${encodeURIComponent(finalUrl)}&token=${encodeURIComponent(activeToken)}`;
                     xhr.open('GET', proxyUrl, true);
                 } else {
                     xhr.open('GET', url, true);
@@ -109,14 +111,14 @@ export default function AlarmsPage() {
           videoRef.current?.play().catch(e => console.error("Autoplay blocked:", e));
         });
       } else if (videoRef.current.canPlayType('application/vnd.apple.mpegurl')) {
-        const proxiedVideoUrl = `/api/een/proxy?url=${encodeURIComponent(videoUrl)}&token=${encodeURIComponent(token)}`;
+        const proxiedVideoUrl = `/api/een/proxy?url=${encodeURIComponent(videoUrl)}&token=${encodeURIComponent(activeToken)}`;
         videoRef.current.src = proxiedVideoUrl;
         videoRef.current.addEventListener('loadedmetadata', () => {
           videoRef.current?.play().catch(e => console.error("Autoplay blocked:", e));
         });
       }
     }
-  }, [videoUrl, activeSite.name]);
+  }, [videoUrl, activeSite.name, activeToken]);
 
   const handleAlarmClick = (alarm: any) => {
     setActiveAlarm(alarm);
@@ -218,9 +220,9 @@ export default function AlarmsPage() {
             {/* BOTTOM RIGHT: Dynamic EEN Camera Thumbnails */}
             <div className="absolute bottom-6 right-6 flex gap-3 z-20 overflow-x-auto max-w-[60%] snap-x p-1 custom-scrollbar pointer-events-auto">
                 {activeSite.cameras.map((cam) => {
-                    const token = typeof window !== 'undefined' ? localStorage.getItem(`een_token_${activeSite.name}`) || '' : '';
-                    const imageUrl = token 
-                        ? `/api/een/image?siteName=${encodeURIComponent(activeSite.name)}&cameraId=${cam.id}&token=${encodeURIComponent(token)}`
+                    // Use the safely loaded state token instead of calling localStorage directly in the render
+                    const imageUrl = activeToken 
+                        ? `/api/een/image?siteName=${encodeURIComponent(activeSite.name)}&cameraId=${cam.id}&token=${encodeURIComponent(activeToken)}`
                         : '';
 
                     return (
@@ -234,6 +236,10 @@ export default function AlarmsPage() {
                                     src={imageUrl} 
                                     alt={cam.name} 
                                     className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${activeCameraId === cam.id ? 'opacity-40' : 'opacity-80 hover:opacity-100'}`} 
+                                    onError={(e) => {
+                                        // Hide broken images if the proxy returns a 404
+                                        (e.target as HTMLImageElement).style.display = 'none';
+                                    }}
                                 />
                             )}
                             <span className="text-[10px] font-bold text-white drop-shadow-md relative z-10 bg-black/70 px-1.5 py-0.5 rounded w-fit border border-white/10 backdrop-blur-sm">
