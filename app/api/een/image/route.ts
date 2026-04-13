@@ -8,7 +8,7 @@ export async function GET(request: Request) {
   const token = searchParams.get('token');
 
   if (!cameraId || !siteName || !token) {
-    return NextResponse.json({ error: 'Missing required parameters' }, { status: 400 });
+    return new NextResponse('Missing required parameters', { status: 400 });
   }
 
   try {
@@ -19,40 +19,33 @@ export async function GET(request: Request) {
     if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
     if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
-    // Let's try the "/preview" endpoint which is standard in many V3 systems
-    const targetUrl = `${baseUrl}/api/v3.0/cameras/${cameraId}/preview`;
-
-    const response = await fetch(targetUrl, {
+    // 1. Ask the V3 Feeds API for the live Preview Stream (MJPEG)
+    const feedUrl = `${baseUrl}/api/v3.0/feeds?deviceId=${cameraId}&type=preview&include=multipartUrl`;
+    const feedRes = await fetch(feedUrl, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`,
-        'Accept': 'image/jpeg'
+        'Accept': 'application/json'
       },
       cache: 'no-store'
     });
 
-    if (!response.ok) {
-      // If EEN rejects it, we return a JSON error so we can read it in the browser!
-      const errorText = await response.text();
-      return NextResponse.json({ 
-        proxy_error: "Eagle Eye rejected the request",
-        een_status: response.status,
-        een_message: errorText,
-        url_tried: targetUrl
-      }, { status: 404 });
+    if (!feedRes.ok) {
+      return new NextResponse(`EEN Feeds API Error: ${feedRes.status}`, { status: feedRes.status });
     }
 
-    const imageBuffer = await response.arrayBuffer();
-    const contentType = response.headers.get('content-type') || 'image/jpeg';
-
-    return new NextResponse(imageBuffer, {
-      headers: {
-        'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=5',
-        'Access-Control-Allow-Origin': '*'
-      }
-    });
+    const feedData = await feedRes.json();
+    const previewFeed = feedData.results?.find((r: any) => r.type === 'preview');
+    
+    if (previewFeed && previewFeed.multipartUrl) {
+      // 2. Redirect the frontend <img> tag directly to the live Eagle Eye stream!
+      // This bypasses CORS automatically and saves Vercel bandwidth.
+      return NextResponse.redirect(previewFeed.multipartUrl);
+    } else {
+      return new NextResponse('No preview URL found for this camera', { status: 404 });
+    }
   } catch (error) {
-    return NextResponse.json({ error: 'Image proxy crashed' }, { status: 500 });
+    console.error("Image proxy failed:", error);
+    return new NextResponse('Image proxy crashed', { status: 500 });
   }
 }
