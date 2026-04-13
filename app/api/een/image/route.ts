@@ -38,9 +38,12 @@ export async function GET(request: Request) {
     const previewFeed = feedData.results?.find((r: any) => r.type === 'preview');
     
     if (previewFeed && previewFeed.multipartUrl) {
-      // 2. Redirect the frontend <img> tag directly to the live Eagle Eye stream!
-      // This bypasses CORS automatically and saves Vercel bandwidth.
-      return NextResponse.redirect(previewFeed.multipartUrl);
+      // 2. Append the token to the URL so the browser is authorized when it follows the redirect!
+      const authUrl = new URL(previewFeed.multipartUrl);
+      authUrl.searchParams.append('access_token', token);
+      
+      // 3. Redirect the frontend <img> tag directly to the authorized Eagle Eye stream
+      return NextResponse.redirect(authUrl.toString());
     } else {
       return new NextResponse('No preview URL found for this camera', { status: 404 });
     }
