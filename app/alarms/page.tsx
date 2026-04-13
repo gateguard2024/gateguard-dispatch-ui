@@ -1,6 +1,12 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
+// Import Hls.js to play the HLS stream format returned by EEN
+import Hls from "hls.js";
+
+// Hardcoded for testing. Later we will make this dynamic based on the active event!
+const TEST_SITE = "Pegasus Properties - Marbella Place";
+const TEST_CAMERA_ID = "10054b8c"; // Amenity Hall Camera
 
 export default function BaselineAlarmsPage() {
   // Navigation & View State
@@ -21,6 +27,67 @@ export default function BaselineAlarmsPage() {
     { id: 1, text: "Property manager on vacation until 3/25. Escalate to Assistant GM.", author: "System", type: "general" },
     { id: 2, text: "Main gate arm is sticking. Use 2-way audio to advise backing up.", author: "Admin", type: "warning" }
   ]);
+
+  // --- LIVE VIDEO STATE ---
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // 1. Fetch the Stream URL from our Proxy when the component loads
+  useEffect(() => {
+    const fetchStream = async () => {
+      const token = localStorage.getItem(`een_token_${TEST_SITE}`);
+      if (!token) {
+        console.error("No token found for Marbella Place. Go to Setup page first.");
+        return;
+      }
+
+      try {
+        console.log("Requesting stream URL for camera:", TEST_CAMERA_ID);
+        const response = await fetch('/api/een/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            token, 
+            siteName: TEST_SITE,
+            cameraId: TEST_CAMERA_ID 
+          })
+        });
+
+        const data = await response.json();
+        
+        if (response.ok && data.url) {
+            console.log("Stream URL acquired:", data.url);
+            setVideoUrl(data.url);
+        } else {
+            console.error("Failed to get stream:", data);
+        }
+      } catch (err) {
+        console.error("Stream Proxy Error:", err);
+      }
+    };
+
+    fetchStream();
+  }, []);
+
+  // 2. Attach the stream URL to the Video Player using HLS.js
+  useEffect(() => {
+    if (videoUrl && videoRef.current) {
+      if (Hls.isSupported()) {
+        const hls = new Hls();
+        hls.loadSource(videoUrl);
+        hls.attachMedia(videoRef.current);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          videoRef.current?.play().catch(e => console.error("Autoplay blocked:", e));
+        });
+      } else if (videoRef.current.canPlayType('application/vnd.apple.mpegurl')) {
+        // Native fallback for Safari
+        videoRef.current.src = videoUrl;
+        videoRef.current.addEventListener('loadedmetadata', () => {
+          videoRef.current?.play().catch(e => console.error("Autoplay blocked:", e));
+        });
+      }
+    }
+  }, [videoUrl]);
 
   const handleAddNote = () => {
     if (!newNote.trim()) return;
@@ -112,7 +179,21 @@ export default function BaselineAlarmsPage() {
             {/* Standard Event Live Feed */}
             {activeEvent === 1 && (
               <>
-                <img src="https://images.unsplash.com/photo-1621252179027-94459d278660?q=80&w=2070&auto=format&fit=crop" alt="Live Feed" className="absolute inset-0 w-full h-full object-cover opacity-80" />
+                {/* --- LIVE EEN VIDEO FEED RENDERS HERE --- */}
+                {videoUrl ? (
+                   <video 
+                     ref={videoRef} 
+                     className="absolute inset-0 w-full h-full object-cover opacity-90"
+                     autoPlay 
+                     muted 
+                     playsInline
+                   />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center bg-slate-900">
+                     <span className="text-emerald-500 text-sm font-bold tracking-widest animate-pulse">CONNECTING TO EEN STREAM...</span>
+                  </div>
+                )}
+                
                 <div className="absolute bottom-6 left-6 w-80 aspect-video bg-black rounded-2xl overflow-hidden shadow-[0_0_30px_rgba(0,0,0,0.8)] border border-white/20 z-20 group/pip hover:scale-105 transition-transform cursor-pointer origin-bottom-left">
                   <div className="absolute top-2 left-2 bg-rose-500/90 backdrop-blur px-2 py-0.5 rounded text-[9px] font-black text-white uppercase tracking-wider z-10 shadow-md">10s Pre-Alarm</div>
                   <img src="https://images.unsplash.com/photo-1549317661-bd32c8ce0db2?q=80&w=2070&auto=format&fit=crop" alt="Pre-Alarm" className="w-full h-full object-cover opacity-90" />
