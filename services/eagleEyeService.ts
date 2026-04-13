@@ -33,33 +33,17 @@ export const eagleEyeService = {
     return response.json();
   },
 
-  // 3. Fetches cameras (FIXED: Forces the URL to be external)
+ // 3. Fetches cameras through our internal proxy to bypass CORS
   getCameras: async (token: string, siteName: string) => {
-    const config = SITES.find((s: any) => s.siteName === siteName);
-    if (!config) throw new Error("Config missing for camera fetch");
-
-    // We force the URL to be absolute so it leaves your website
-    let clusterUrl = config.cluster.trim();
-    if (!clusterUrl.startsWith('http')) {
-      clusterUrl = `https://${clusterUrl}`;
-    }
-    
-    // Clean up the URL to ensure no double slashes
-    const baseUrl = clusterUrl.endsWith('/') ? clusterUrl.slice(0, -1) : clusterUrl;
-    const finalUrl = `${baseUrl}/api/v3.0/cameras`;
-
-    console.log("Hitting Eagle Eye API at:", finalUrl);
-
-    const response = await fetch(finalUrl, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'x-api-key': config.apiKey,
-        'Accept': 'application/json'
-      }
+    const response = await fetch('/api/een/cameras', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, siteName })
     });
 
-    if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`Proxy failed to fetch cameras: ${response.status}`);
+    }
+    
     return response.json();
   }
-};
