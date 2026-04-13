@@ -52,19 +52,10 @@ export default function SetupPage() {
               ? siteName.split(" - ")[1].trim().toLowerCase() 
               : siteName.toLowerCase();
 
-            // Filter the cameras down to just the ones for this site
-            const siteCameras = allCameras.filter((cam: any) => {
-              const camName = (cam.name || "").toLowerCase();
-              const bridgeName = (cam.bridgeName || "").toLowerCase(); 
-              const tags = Array.isArray(cam.tags) ? cam.tags.join(" ").toLowerCase() : "";
-
-              return camName.includes(siteKeyword) || 
-                     bridgeName.includes(siteKeyword) || 
-                     tags.includes(siteKeyword);
-            });
+            // TEMPORARY BYPASS: Just assign all 38 cameras to the active site for testing
+            const siteCameras = allCameras; 
 
             console.log(`${siteName} has ${siteCameras.length} allocated cameras out of ${allCameras.length} total.`);
-            // --- SMART FILTER V2 LOGIC END ---
             
             updatedSites[siteName] = {
               ...updatedSites[siteName],
