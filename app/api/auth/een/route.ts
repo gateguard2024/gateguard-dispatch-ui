@@ -12,20 +12,20 @@ export async function POST(request: Request) {
 
     const authHeader = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
 
-    // Reverting to JSON, but keeping the critical `scope` parameter
+    // Official OAuth 2.0 formatting: URLSearchParams + .toString()
+    const params = new URLSearchParams();
+    params.append('grant_type', 'authorization_code');
+    params.append('code', code);
+    params.append('redirect_uri', REDIRECT_URI);
+    params.append('scope', 'vms.all'); // Crucial for getting actual camera permissions
+
     const response = await fetch('https://auth.eagleeyenetworks.com/oauth2/token', {
       method: 'POST',
       headers: {
         'Authorization': `Basic ${authHeader}`,
-        'Content-Type': 'application/json',
-        'x-api-key': config.apiKey // EEN sometimes requires this on the auth endpoint
+        'Content-Type': 'application/x-www-form-urlencoded'
       },
-      body: JSON.stringify({
-        grant_type: 'authorization_code',
-        code: code,
-        redirect_uri: REDIRECT_URI,
-        scope: 'vms.all'
-      })
+      body: params.toString() // This ensures it sends as a proper form string, not an object!
     });
 
     const data = await response.json();
