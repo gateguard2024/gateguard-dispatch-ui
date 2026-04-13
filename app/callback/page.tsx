@@ -1,9 +1,11 @@
 "use client";
-import { useEffect } from 'react';
+
+import { useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { eagleEyeService } from '@/services/eagleEyeService';
 
-export default function CallbackPage() {
+// 1. We move the logic into a separate "Content" component
+function CallbackContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
@@ -14,12 +16,15 @@ export default function CallbackPage() {
     if (code && siteName) {
       eagleEyeService.exchangeCode(code, siteName)
         .then(tokens => {
+          // Store token labeled by site name
           localStorage.setItem(`een_token_${siteName}`, tokens.access_token);
-          // Redirect to the alarms page once authorized
+          console.log(`Successfully authorized: ${siteName}`);
+          
+          // Redirect to the alarms page
           router.push('/alarms');
         })
         .catch(err => {
-          console.error("Auth failed:", err);
+          console.error("Auth Error:", err);
           router.push('/setup?error=auth_failed');
         });
     }
@@ -33,5 +38,18 @@ export default function CallbackPage() {
         <p className="text-slate-500 text-sm mt-2">Connecting to Pegasus Properties Portfolio</p>
       </div>
     </div>
+  );
+}
+
+// 2. The main page component wraps the content in Suspense
+export default function CallbackPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex h-screen items-center justify-center bg-black text-white">
+        <p className="text-slate-500 animate-pulse">Initializing Handshake...</p>
+      </div>
+    }>
+      <CallbackContent />
+    </Suspense>
   );
 }
