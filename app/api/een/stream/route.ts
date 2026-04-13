@@ -13,8 +13,8 @@ export async function POST(request: Request) {
     if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
     if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
-    // Request the HLS stream for the specific camera
-    const response = await fetch(`${baseUrl}/api/v3.0/cameras/${cameraId}/video`, {
+    // EEN V3 API endpoint for retrieving the live HLS stream URL
+    const response = await fetch(`${baseUrl}/api/v3.0/cameras/${cameraId}/streams/primary`, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -28,7 +28,15 @@ export async function POST(request: Request) {
       return NextResponse.json(data, { status: response.status });
     }
 
-    return NextResponse.json(data);
+    // EEN sometimes returns the URL inside different properties based on the cluster.
+    // We will extract it safely.
+    const streamUrl = data.url || (data.data && data.data.url) || data.streamUrl;
+
+    if (!streamUrl) {
+       return NextResponse.json({ error: 'Stream URL missing in EEN response', data }, { status: 404 });
+    }
+
+    return NextResponse.json({ url: streamUrl });
   } catch (error) {
     return NextResponse.json({ error: 'Internal Server Proxy Error' }, { status: 500 });
   }
