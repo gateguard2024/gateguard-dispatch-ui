@@ -37,7 +37,7 @@ export const eagleEyeService = {
   },
 
   // 3. Fetches cameras using the site's specific cluster
-getCameras: async (token: string, siteName: string) => {
+  getCameras: async (token: string, siteName: string) => {
     const config = SITES.find((s: any) => s.siteName === siteName);
     if (!config) throw new Error("Config missing for camera fetch");
 
