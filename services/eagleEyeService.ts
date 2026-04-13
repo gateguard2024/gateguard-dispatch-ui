@@ -4,7 +4,7 @@ const SITES = JSON.parse(process.env.NEXT_PUBLIC_SITE_CONFIG || '[]');
 const REDIRECT_URI = process.env.NEXT_PUBLIC_EEN_REDIRECT_URI;
 
 export const eagleEyeService = {
-  // 1. Redirects to Eagle Eye (Corrected Path: /oauth2/authorize)
+  // 1. Redirects to Eagle Eye
   login: (siteName: string) => {
     const config = SITES.find((s: any) => s.siteName === siteName);
     if (!config) return console.error("Site not configured");
@@ -18,7 +18,6 @@ export const eagleEyeService = {
       state: siteName 
     });
 
-    // Added /oauth2/ to the path
     window.location.href = `https://auth.eagleeyenetworks.com/oauth2/authorize?${params.toString()}`;
   },
 
@@ -30,29 +29,28 @@ export const eagleEyeService = {
       body: JSON.stringify({ code, siteName })
     });
 
-    if (!response.ok) {
-      throw new Error("Token exchange failed at API level");
-    }
+    if (!response.ok) throw new Error("Token exchange failed");
     return response.json();
   },
 
-  // 3. Fetches cameras using the site's specific cluster
+  // 3. Fetches cameras (FIXED: Forces the URL to be external)
   getCameras: async (token: string, siteName: string) => {
     const config = SITES.find((s: any) => s.siteName === siteName);
     if (!config) throw new Error("Config missing for camera fetch");
 
-    // We force the URL to be absolute so the browser doesn't 
-    // try to look for it on gateguard-dispatch-ui.vercel.app
-    let baseUrl = config.cluster.trim();
-    
-    if (!baseUrl.startsWith('http')) {
-      baseUrl = `https://${baseUrl}`;
+    // We force the URL to be absolute so it leaves your website
+    let clusterUrl = config.cluster.trim();
+    if (!clusterUrl.startsWith('http')) {
+      clusterUrl = `https://${clusterUrl}`;
     }
+    
+    // Clean up the URL to ensure no double slashes
+    const baseUrl = clusterUrl.endsWith('/') ? clusterUrl.slice(0, -1) : clusterUrl;
+    const finalUrl = `${baseUrl}/api/v3.0/cameras`;
 
-    // This ensures we have a clean URL like https://api.c031.eagleeyenetworks.com
-    const cleanUrl = new URL('/api/v3.0/cameras', baseUrl).toString();
+    console.log("Hitting Eagle Eye API at:", finalUrl);
 
-    const response = await fetch(cleanUrl, {
+    const response = await fetch(finalUrl, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -64,3 +62,4 @@ export const eagleEyeService = {
     if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
     return response.json();
   }
+};
