@@ -1,26 +1,96 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Core Palette */
+  --background: #030406;
+  --surface: #0a0c10;
+  --surface-elevated: #11141a;
+  --accent: #6366f1; /* GateGuard Indigo */
+  --accent-glow: rgba(99, 102, 241, 0.2);
+  --success: #10b981;
+  --danger: #ef4444;
+  
+  /* Text */
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #475569;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+@layer base {
+  html, body {
+    @apply h-full bg-[#030406] text-slate-200 antialiased overflow-hidden;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  h1, h2, h3 {
+    @apply tracking-tighter font-black;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  /* Premium App Containers */
+  .columbia-panel {
+    @apply bg-[#0a0c10] border border-white/5 shadow-2xl;
+  }
+
+  .columbia-button-primary {
+    @apply bg-indigo-600 hover:bg-indigo-500 text-white font-black tracking-widest 
+           transition-all duration-300 active:scale-95 shadow-lg shadow-indigo-900/20;
+  }
+
+  .columbia-button-secondary {
+    @apply bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 
+           font-black tracking-widest transition-all active:scale-95;
+  }
+
+  /* Video Feed Styling */
+  .video-container-premium {
+    @apply bg-black border border-white/5 rounded-[2rem] overflow-hidden 
+           shadow-[0_0_50px_rgba(0,0,0,0.5)] relative;
+  }
+
+  /* Checklist Styling */
+  .sop-checkbox {
+    @apply w-5 h-5 border-2 border-white/10 rounded-lg bg-black/40 
+           group-hover:border-indigo-500 transition-all shadow-inner;
+  }
+
+  /* Custom Scrollbar */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-white/10 rounded-full transition-colors hover:bg-indigo-500/50;
+  }
+}
+
+/* Animations for that "Live" SOC Feel */
+@keyframes soft-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.7; transform: scale(0.95); }
+}
+
+.animate-soft-pulse {
+  animation: soft-pulse 3s infinite ease-in-out;
+}
+
+@keyframes status-glow {
+  0%, 100% { box-shadow: 0 0 5px #10b981; }
+  50% { box-shadow: 0 0 15px #10b981; }
+}
+
+.status-online {
+  @apply w-2 h-2 rounded-full bg-emerald-500;
+  animation: status-glow 2s infinite ease-in-out;
+}
+
+/* Glassmorphism Overlays */
+.glass-header {
+  @apply bg-[#0a0c10]/80 backdrop-blur-xl border-b border-white/5;
 }
