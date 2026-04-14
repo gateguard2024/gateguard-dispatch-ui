@@ -1,37 +1,29 @@
-// app/api/auth/een/route.ts
 import { NextResponse } from 'next/server';
+import { getValidEENToken } from '@/lib/een';
+import { supabase } from '@/lib/supabase';
 
 export async function POST(request: Request) {
   try {
-    const { code, siteName } = await request.json();
-    const SITES = JSON.parse(process.env.NEXT_PUBLIC_SITE_CONFIG || '[]');
-    // Added fallback to satisfy TypeScript's strict null checks
-    const REDIRECT_URI = process.env.NEXT_PUBLIC_EEN_REDIRECT_URI || '';
-    const config = SITES.find((s: any) => s.siteName === siteName);
-    
-    if (!config) return NextResponse.json({ error: 'Config missing' }, { status: 400 });
+    const { siteId } = await request.json();
+    const { token, cluster } = await getValidEENToken(siteId);
 
-    const authHeader = Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64');
-
-    // Official OAuth 2.0 formatting: URLSearchParams
-    const params = new URLSearchParams();
-    params.append('grant_type', 'authorization_code');
-    params.append('code', code);
-    params.append('redirect_uri', REDIRECT_URI);
-    params.append('scope', 'vms.all'); // Crucial for getting actual camera permissions
-
-    const response = await fetch('https://auth.eagleeyenetworks.com/oauth2/token', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Basic ${authHeader}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: params.toString() // This ensures it sends as a proper form string
+    const response = await fetch(`https://${cluster}/api/v3.0/cameras`, {
+      headers: { 'Authorization': `Bearer ${token}` }
     });
+    
+    const cameras = await response.json();
 
-    const data = await response.json();
-    return NextResponse.json(data);
-  } catch (error) {
-    return NextResponse.json({ error: 'Auth server error' }, { status: 500 });
+    const cameraRows = cameras.map((cam: any) => ({
+      site_id: siteId,
+      een_esn: cam.esn,
+      name: cam.name,
+      status: cam.status
+    }));
+
+    await supabase.from('cameras').upsert(cameraRows, { onConflict: 'een_esn' });
+
+    return NextResponse.json({ success: true, count: cameras.length });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
