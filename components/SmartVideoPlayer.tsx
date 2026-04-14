@@ -1,15 +1,10 @@
-'use client';
+// components/SmartVideoPlayer.tsx
+"use client";
 
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 
-interface SmartVideoPlayerProps {
-  siteId: string;
-  cameraEsn: string;
-  streamType?: 'main' | 'preview'; // main = high res, preview = low res/fast load
-}
-
-export default function SmartVideoPlayer({ siteId, cameraEsn, streamType = 'main' }: SmartVideoPlayerProps) {
+export default function SmartVideoPlayer({ siteId, cameraId }: { siteId: string, cameraId: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -17,44 +12,48 @@ export default function SmartVideoPlayer({ siteId, cameraEsn, streamType = 'main
   useEffect(() => {
     let hls: Hls;
 
-    const initializeStream = async () => {
+    const startStream = async () => {
       try {
-        setIsLoading(true);
-        // 1. Get the dynamic, valid token and cluster for this specific site
-        const response = await fetch(`/api/video/token?siteId=${siteId}`);
-        if (!response.ok) throw new Error('Failed to load secure video token');
+        // 1. Ask our backend for the URL and Auth Token
+        const res = await fetch('/api/cameras/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ siteId, cameraId })
+        });
         
-        const { token, cluster } = await response.json();
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
 
-        // 2. Construct the Eagle Eye HLS Stream URL
-        // Notice we append ?A=token so the EEN servers authorize the direct media request
-        const streamUrl = `https://${cluster}/api/v3.0/cameras/${cameraEsn}/media/streams/${streamType}/hls/getPlaylist.m3u8?A=${token}`;
+        const video = videoRef.current;
+        if (!video) return;
 
-        // 3. Attach it to the Video element
-        if (videoRef.current) {
-          if (Hls.isSupported()) {
-            hls = new Hls({
-              // EEN specific tweaks for lower latency
-              lowLatencyMode: true,
-              liveSyncDurationCount: 3, 
-            });
-            hls.loadSource(streamUrl);
-            hls.attachMedia(videoRef.current);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {
-              setIsLoading(false);
-              videoRef.current?.play().catch(e => console.log("Auto-play prevented", e));
-            });
-            hls.on(Hls.Events.ERROR, (event, data) => {
-              if (data.fatal) setError('Stream connection failed');
-            });
-          } else if (videoRef.current.canPlayType('application/vnd.apple.mpegurl')) {
-            // Fallback for Safari which has native HLS support
-            videoRef.current.src = streamUrl;
-            videoRef.current.addEventListener('loadedmetadata', () => {
-              setIsLoading(false);
-              videoRef.current?.play();
-            });
-          }
+        // 2. Mount HLS Player and inject the EEN Auth Token
+        if (Hls.isSupported()) {
+          hls = new Hls({
+            xhrSetup: (xhr) => {
+              xhr.setRequestHeader('Authorization', `Bearer ${data.token}`);
+            }
+          });
+
+          hls.loadSource(data.hlsUrl);
+          hls.attachMedia(video);
+          
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            setIsLoading(false);
+            video.play().catch(() => console.log("Autoplay blocked. User must click play."));
+          });
+
+          hls.on(Hls.Events.ERROR, (event, data) => {
+            if (data.fatal) setError("Stream connection lost.");
+          });
+        } 
+        // Safari fallback
+        else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = data.hlsUrl;
+          video.addEventListener('loadedmetadata', () => {
+            setIsLoading(false);
+            video.play();
+          });
         }
       } catch (err: any) {
         setError(err.message);
@@ -62,44 +61,34 @@ export default function SmartVideoPlayer({ siteId, cameraEsn, streamType = 'main
       }
     };
 
-    initializeStream();
+    startStream();
 
-    // Cleanup when the component unmounts
     return () => {
       if (hls) hls.destroy();
     };
-  }, [siteId, cameraEsn, streamType]);
+  }, [siteId, cameraId]);
 
   return (
-    <div className="relative w-full h-full bg-black rounded-lg overflow-hidden border border-[#2A2A2A]">
-      {isLoading && !error && (
-        <div className="absolute inset-0 flex items-center justify-center text-[#00E5FF] font-mono text-xs">
-          ESTABLISHING SECURE CONNECTION...
+    <div className="relative w-full h-full bg-black flex items-center justify-center">
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center text-[10px] text-emerald-500 font-bold tracking-widest animate-pulse z-10 bg-black/50">
+          CONNECTING VAULT...
         </div>
       )}
       
       {error && (
-        <div className="absolute inset-0 flex items-center justify-center text-red-500 font-mono text-xs text-center p-4">
-          SIGNAL LOST: {error}
+        <div className="absolute inset-0 flex items-center justify-center text-[10px] text-red-500 font-bold tracking-widest bg-black/90 z-10 text-center px-4">
+          ❌ {error.toUpperCase()}
         </div>
       )}
 
       <video 
         ref={videoRef} 
-        className="w-full h-full object-contain"
         autoPlay 
         muted 
-        playsInline 
+        playsInline
+        className="w-full h-full object-cover"
       />
-      
-      {/* Tactical UI Overlay */}
-      <div className="absolute top-3 left-3 bg-black/60 px-2 py-1 rounded text-[10px] font-mono text-white/70 border border-white/10 backdrop-blur-md">
-        ESN: {cameraEsn} • {streamType.toUpperCase()}
-      </div>
-      <div className="absolute top-3 right-3 flex items-center space-x-2">
-        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></div>
-        <span className="text-[10px] font-mono text-red-500 font-bold tracking-widest">LIVE</span>
-      </div>
     </div>
   );
 }
