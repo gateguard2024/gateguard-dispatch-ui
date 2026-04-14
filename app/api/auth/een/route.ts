@@ -13,12 +13,13 @@ export async function POST(request: Request) {
     
     const cameras = await response.json();
 
-    const cameraRows = cameras.map((cam: any) => ({
-      site_id: siteId,
-      een_esn: cam.esn,
-      name: cam.name,
-      status: cam.status
-    }));
+   const cameraRows = cameras.map((cam: any) => ({
+  site_id: siteId,
+  een_esn: cam.esn,
+  name: cam.name,
+  status: cam.status,
+  metadata: cam // Store the full EEN response here just in case
+}));
 
     await supabase.from('cameras').upsert(cameraRows, { onConflict: 'een_esn' });
 
