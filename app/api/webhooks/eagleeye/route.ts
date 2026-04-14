@@ -1,56 +1,29 @@
-import { NextResponse } from 'next/server';
-import { supabase } from '../../../../lib/supabase'; // Using the relative path to avoid Vercel build errors!
-
 export async function POST(request: Request) {
-  try {
-    // 1. Catch the incoming JSON payload from Eagle Eye
-    const payload = await request.json();
-    
-    // EEN might send a single object or an array of results. We normalize it here.
-    const alertData = payload.results ? payload.results[0] : payload;
+  const payload = await request.json();
+  const { esn, event_type, timestamp } = payload;
 
-    // 2. Extract the critical data
-    const cameraEsn = alertData.actorId; 
-    const eventName = alertData.alertName || alertData.eventType || 'Unknown Event';
-    const priorityLevel = alertData.priority === 0 ? 50 : alertData.priority; // Default to 50 if 0
+  // 1. Find which site this ESN belongs to
+  const { data: camera } = await supabase
+    .from('cameras')
+    .select('id, site_id, name')
+    .eq('een_esn', esn)
+    .single();
 
-    if (!cameraEsn) {
-      return NextResponse.json({ error: 'No actorId (ESN) found in payload' }, { status: 400 });
-    }
+  if (!camera) return NextResponse.json({ error: "Unknown Camera ESN" }, { status: 404 });
 
-    // 3. Look up the Camera in our Supabase database
-    const { data: cameraData, error: camError } = await supabase
-      .from('cameras')
-      .select('id, site_id')
-      .eq('een_esn', cameraEsn)
-      .single();
+  // 2. Create the Alarm record
+  const { data: alarm, error } = await supabase
+    .from('alarms')
+    .insert({
+      site_id: camera.site_id,
+      camera_id: camera.id,
+      event_type: event_type || 'Motion Detected',
+      status: 'pending',
+      event_timestamp: timestamp, // Crucial for the "Pre-Alarm" video clip
+      priority: 100
+    })
+    .select()
+    .single();
 
-    if (camError || !cameraData) {
-      console.warn(`Webhook caught for ESN ${cameraEsn}, but it is not mapped in our DB.`);
-      return NextResponse.json({ message: 'Camera not mapped, ignoring.' }, { status: 200 });
-    }
-
-    // 4. Insert the Alarm into the Dispatch Queue
-    const { error: alarmError } = await supabase
-      .from('alarms')
-      .insert({
-        site_id: cameraData.site_id,
-        camera_id: cameraData.id,
-        status: 'pending',
-        priority: priorityLevel,
-        event_type: eventName,
-      });
-
-    if (alarmError) {
-      console.error("Failed to insert alarm:", alarmError);
-      return NextResponse.json({ error: 'Database insert failed' }, { status: 500 });
-    }
-
-    // 5. Send a 200 OK back to Eagle Eye so they know we got it
-    return NextResponse.json({ success: true, message: 'Alarm queued successfully' }, { status: 200 });
-
-  } catch (error) {
-    console.error("Webhook processing error:", error);
-    return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
-  }
+  return NextResponse.json({ success: true, alarmId: alarm.id });
 }
