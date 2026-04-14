@@ -9,10 +9,8 @@ export async function POST(request: Request) {
 
     if (!siteId) throw new Error("Missing siteId in request body");
 
-    // 1. Get credentials (and auto-refresh if expired!)
     const { token, cluster, apiKey } = await getValidEENToken(siteId);
 
-    // 2. Discovery: Get all cameras from EEN
     const response = await fetch(`https://${cluster}/api/v3.0/cameras`, {
       method: 'GET',
       headers: { 
@@ -27,20 +25,25 @@ export async function POST(request: Request) {
       throw new Error(`Eagle Eye API Error (${response.status}): ${errText}`);
     }
 
-    const cameras = await response.json();
-    console.log(`🎥 SUCCESS! Retrieved ${cameras.length || 0} cameras from EEN.`);
+    const rawData = await response.json();
 
-    if (cameras && cameras.length > 0) {
-      // 3. Map & Store
-      const cameraMappings = cameras.map((cam: any) => ({
+    // 🚨 THE FIX: Target the 'results' array exactly as the EEN docs specify
+    const cameraArray = rawData.results || [];
+
+    console.log(`🎥 SUCCESS! Found ${cameraArray.length} cameras inside the 'results' array.`);
+
+    if (cameraArray.length > 0) {
+      // Map & Store
+      const cameraMappings = cameraArray.map((cam: any) => ({
         site_id: siteId,
-        een_camera_id: cam.id || cam.esn, // The unique EEN hardware ID
-        name: cam.name,
-        status: cam.status || 'unknown',
-        metadata: cam // Stores the raw EEN object for future use
+        een_camera_id: cam.id, // The docs state 'id' is the required string
+        name: cam.name || 'Unnamed Camera',
+        // The docs state status is an object. We stringify it so it saves safely in Supabase.
+        status: cam.status ? JSON.stringify(cam.status) : 'unknown', 
+        metadata: cam 
       }));
 
-      // 4. Save to Database
+      // Save to Database
       const { error } = await supabase
         .from('cameras')
         .upsert(cameraMappings, { onConflict: 'een_camera_id' }); 
@@ -51,8 +54,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ 
       success: true,
-      message: `Successfully synced ${cameras.length} cameras.`,
-      count: cameras.length 
+      message: `Successfully synced ${cameraArray.length} cameras.`,
+      count: cameraArray.length
     });
     
   } catch (error: any) {
