@@ -258,45 +258,44 @@ export default function AlarmsPage() {
                 </div>
             )}
 
-{/* BOTTOM RIGHT: Dynamic EEN Camera Thumbnails (Proxy Images) */}
+{/* BOTTOM RIGHT: Camera Status Grid (No API Image Fetching) */}
             <div className="absolute bottom-6 right-6 flex gap-3 z-20 overflow-x-auto max-w-[60%] snap-x p-1 custom-scrollbar pointer-events-auto">
                 {dynamicCameras.map((cam) => {
-                    const isValidId = cam.id && cam.id.length === 8 && !cam.id.startsWith('cam');
-                    
-                    const timestamp = new Date().getTime();
-                    const imageUrl = (activeToken && isValidId)
-                        ? `/api/een/image?siteName=${encodeURIComponent(activeSite.name)}&cameraId=${cam.id}&token=${encodeURIComponent(activeToken)}&_t=${timestamp}`
-                        : '';
+                    const isSelected = activeCameraId === cam.id;
 
                     return (
                         <div 
                             key={cam.id} 
                             onClick={() => handleCameraSelect(cam.id, cam.name)} 
-                            className={`shrink-0 w-40 aspect-video bg-slate-900 border-2 rounded-xl cursor-pointer flex flex-col justify-end p-2 snap-center relative overflow-hidden transition-all hover:scale-105 origin-bottom ${activeCameraId === cam.id ? 'border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)] scale-105 z-30' : 'border-white/20 hover:border-white/50'}`}
+                            className={`shrink-0 w-40 aspect-video bg-slate-900 border-2 rounded-xl cursor-pointer flex flex-col items-center justify-center p-2 snap-center relative overflow-hidden transition-all hover:scale-105 origin-bottom ${isSelected ? 'border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)] scale-105 z-30' : 'border-white/10 hover:border-white/30'}`}
                         >
-                            {imageUrl ? (
-                                <img 
-                                    src={imageUrl}
-                                    alt={cam.name}
-                                    className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${activeCameraId === cam.id ? 'opacity-40' : 'opacity-80 hover:opacity-100'}`}
-                                    onError={(e) => {
-                                        (e.target as HTMLImageElement).style.display = 'none';
-                                    }}
-                                />
-                            ) : (
-                                <div className="absolute inset-0 flex items-center justify-center bg-slate-800">
-                                   <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">No Feed</span>
+                            {/* Animated Radar/Status Background */}
+                            <div className="absolute inset-0 flex items-center justify-center opacity-20">
+                                <div className={`w-16 h-16 rounded-full border border-white/20 ${isSelected ? 'animate-ping border-emerald-500' : ''}`}></div>
+                                <div className="absolute w-24 h-24 rounded-full border border-white/10"></div>
+                            </div>
+                            
+                            {/* Status Icon */}
+                            <div className="flex flex-col items-center z-10 gap-2">
+                                <div className="relative flex h-3 w-3">
+                                  {isSelected ? (
+                                      <>
+                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                        <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,1)]"></span>
+                                      </>
+                                  ) : (
+                                      <span className="relative inline-flex rounded-full h-3 w-3 bg-slate-500"></span>
+                                  )}
                                 </div>
-                            )}
-                            <span className="text-[10px] font-bold text-white drop-shadow-md relative z-10 bg-black/70 px-1.5 py-0.5 rounded w-fit border border-white/10 backdrop-blur-sm truncate max-w-[90%]">
+                                <span className={`text-[10px] font-black uppercase tracking-widest ${isSelected ? 'text-emerald-400' : 'text-slate-500'}`}>
+                                    {isSelected ? 'STREAMING' : 'STANDBY'}
+                                </span>
+                            </div>
+
+                            {/* Camera Name */}
+                            <span className="absolute bottom-2 left-2 right-2 text-center text-[11px] font-bold text-white drop-shadow-md z-10 bg-black/80 px-2 py-1 rounded-md border border-white/10 backdrop-blur-sm truncate">
                                 {cam.name}
                             </span>
-                            {activeCameraId === cam.id && (
-                                <span className="absolute top-2 right-2 flex h-2 w-2 relative z-10">
-                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></span>
-                                </span>
-                            )}
                         </div>
                     );
                 })}
