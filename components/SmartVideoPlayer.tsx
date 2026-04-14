@@ -27,15 +27,19 @@ export default function SmartVideoPlayer({ siteId, cameraId }: { siteId: string,
         const video = videoRef.current;
         if (!video) return;
 
-        // 2. Mount HLS Player and inject the EEN Auth Token
+// 2. Mount HLS Player and inject the Proxy URL
         if (Hls.isSupported()) {
           hls = new Hls({
             xhrSetup: (xhr) => {
+              // We still need to pass the token to OUR proxy!
               xhr.setRequestHeader('Authorization', `Bearer ${data.token}`);
             }
           });
 
-          hls.loadSource(data.hlsUrl);
+          // 🚨 THE FIX: Instead of giving hls.js the EEN URL, we wrap it in our proxy URL!
+          const proxyUrl = `/api/cameras/proxy?url=${encodeURIComponent(data.hlsUrl)}`;
+          hls.loadSource(proxyUrl);
+          
           hls.attachMedia(video);
           
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
