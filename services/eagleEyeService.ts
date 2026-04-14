@@ -1,49 +1,20 @@
-// services/eagleEyeService.ts
+import { NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase';
 
-const SITES = JSON.parse(process.env.NEXT_PUBLIC_SITE_CONFIG || '[]');
-const REDIRECT_URI = process.env.NEXT_PUBLIC_EEN_REDIRECT_URI;
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const name = searchParams.get('name');
 
-export const eagleEyeService = {
-  // 1. Direct login redirect (This is fine to go direct)
-  login: (siteName: string) => {
-    const config = SITES.find((s: any) => s.siteName === siteName);
-    if (!config) return console.error("Site not configured");
+  const { data, error } = await supabase
+    .from('sites')
+    .select('een_client_id, een_api_key')
+    .eq('name', name)
+    .single();
 
-    const params = new URLSearchParams({
-      client_id: config.clientId,
-      response_type: 'code',
-      redirect_uri: REDIRECT_URI!,
-      scope: 'vms.all',
-      'x-api-key': config.apiKey,
-      state: siteName 
-    });
+  if (error || !data) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-    window.location.href = `https://auth.eagleeyenetworks.com/oauth2/authorize?${params.toString()}`;
-  },
-
-  // 2. Exchange Code (Points to YOUR API)
-  exchangeCode: async (code: string, siteName: string) => {
-    const response = await fetch('/api/auth/een', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, siteName })
-    });
-    if (!response.ok) throw new Error("Auth exchange failed");
-    return response.json();
-  },
-
-  // 3. Fetch Cameras (Points to YOUR API - This fixes CORS)
-  getCameras: async (token: string, siteName: string) => {
-    const response = await fetch('/api/een/cameras', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token, siteName }) // We pass the token to our server proxy
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Camera fetch failed');
-    }
-    return response.json();
-  }
-};
+  return NextResponse.json({
+    clientId: data.een_client_id,
+    apiKey: data.een_api_key
+  });
+}
