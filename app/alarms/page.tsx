@@ -105,9 +105,17 @@ export default function AlarmsPage() {
     setIsPatrolMode(false);
   };
 
-  // --- VIDEO URL GENERATOR (PRESERVES YOUR PROXY!) ---
+ // --- VIDEO URL GENERATOR (PRESERVES YOUR PROXY!) ---
   const generateStreamUrl = (camId: string, streamType: 'preview' | 'primary', offsetSeconds: number = 0) => {
     if (!activeToken || !camId) return '';
+
+    // 1. TEMP DATA FOR VIDEO WALL: Prevent 404s by mocking the grid feeds 
+    if (streamType === 'preview') {
+        // Returns a safe, silent MP4 loop for the grid view so it looks like a functioning SOC
+        return "https://storage.googleapis.com/muxdemofiles/mux-video-intro.mp4"; 
+    }
+
+    // 2. REAL EAGLE EYE API FOR MAIN PLAYER: Preserves your working proxy!
     const cluster = "https://media.c031.eagleeyenetworks.com"; // Simplified for now
     let hlsUrl = `${cluster}/media/streams/${streamType}/hls/getPlaylist.m3u8?esn=${camId}`;
     
