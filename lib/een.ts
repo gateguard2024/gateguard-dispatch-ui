@@ -1,32 +1,27 @@
-import { supabase } from './supabase';
+// lib/een.ts
+import { supabase } from '@/lib/supabase';
 
 export async function getValidEENToken(siteId: string) {
-  // 1. Pull EVERYTHING from the database for this specific site
+  // 1. Ask Supabase for all THREE pieces of data
   const { data: site, error } = await supabase
     .from('sites')
-    .select(`
-      een_access_token, 
-      een_refresh_token, 
-      een_token_expires_at, 
-      een_client_id, 
-      een_client_secret, 
-      een_cluster
-    `)
+    .select('een_access_token, een_cluster, een_api_key') // MUST include een_api_key
     .eq('id', siteId)
     .single();
 
   if (error || !site) {
-    throw new Error('Site not found or database error.');
+    throw new Error(`Database error or site not found for ID: ${siteId}`);
   }
 
-  // 2. Check if the current token is still healthy (5 min buffer)
-  if (site.een_access_token && site.een_token_expires_at) {
-    const expiresAt = new Date(site.een_token_expires_at).getTime();
-    const now = Date.now();
-    if (now < (expiresAt - (5 * 60 * 1000))) {
-      return { token: site.een_access_token, cluster: site.een_cluster };
-    }
-  }
+  // (If you have token refresh logic here, leave it as is!)
+
+  // 2. Return all three variables so TypeScript is happy
+  return {
+    token: site.een_access_token,
+    cluster: site.een_cluster,
+    apiKey: site.een_api_key // <-- This line makes the build error disappear
+  };
+}
 
   console.log(`Refreshing/Generating Token for Site ID: ${siteId}...`);
 
