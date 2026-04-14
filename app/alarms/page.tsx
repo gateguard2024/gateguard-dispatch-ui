@@ -3,6 +3,53 @@
 import React, { useState, useEffect, useRef } from "react";
 
 // ============================================================================
+// SMART VIDEO PLAYER (Prevents Eagle Eye API 404s from rapid re-mounting)
+// ============================================================================
+const SmartVideoPlayer = ({ src, className, controls = false }: { src: string, className?: string, controls?: boolean }) => {
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const [safeSrc, setSafeSrc] = useState<string>('');
+
+    useEffect(() => {
+        // Clear the source immediately when the prop changes
+        setSafeSrc('');
+        
+        if (!src) return;
+
+        // Artificial delay: Let React finish mounting the DOM before we hammer the Eagle Eye proxy.
+        // This gives EEN time to close old sessions and prevents rate-limit 404s.
+        const timer = setTimeout(() => {
+            setSafeSrc(src);
+        }, 300);
+
+        return () => clearTimeout(timer);
+    }, [src]);
+
+    if (!safeSrc) {
+        return (
+            <div className={`flex items-center justify-center bg-black/80 text-emerald-500 font-mono text-[10px] tracking-widest uppercase animate-pulse ${className || ''}`}>
+                Negotiating Stream...
+            </div>
+        );
+    }
+
+    return (
+        <video 
+            ref={videoRef}
+            src={safeSrc} 
+            autoPlay 
+            muted 
+            playsInline 
+            controls={controls}
+            className={className} 
+            onError={(e) => {
+                console.error("SmartPlayer Video Error:", e);
+                // Optionally hide or show a fallback if it genuinely fails after delay
+            }}
+        />
+    );
+};
+
+// ============================================================================
 // MOCK DATA (The "Sockets" for our future API hookups)
 // ============================================================================
 const MOCK_ALARMS = [
@@ -218,11 +265,17 @@ export default function AlarmsPage() {
                 </div>
             )}
 
-            {/* SINGLE CAM VIEW */}
+         {/* SINGLE CAM VIEW */}
             {canvasView === 'live' && activeCameraId && (
                 <div className="absolute inset-0 flex flex-col">
                     <div className="flex-1 relative">
-                        <video key={`live-${activeCameraId}-${dvrOffset}`} src={generateStreamUrl(activeCameraId, 'primary', dvrOffset)} autoPlay muted playsInline className="w-full h-full object-contain" />
+                        {/* 🛑 CHANGED TO SmartVideoPlayer */}
+                        <SmartVideoPlayer 
+                            key={`live-${activeCameraId}-${dvrOffset}`} 
+                            src={generateStreamUrl(activeCameraId, 'primary', dvrOffset)} 
+                            className="w-full h-full object-contain bg-black" 
+                            controls={true}
+                        />
                         <div className="absolute top-4 left-4 flex gap-2">
                             <span className={`px-3 py-1 rounded text-[10px] font-black tracking-widest backdrop-blur-md ${dvrOffset === 0 ? 'bg-red-500/20 text-red-400 border border-red-500/50' : 'bg-amber-500/20 text-amber-400 border border-amber-500/50'}`}>
                                 {dvrOffset === 0 ? '● LIVE' : `DVR (-${dvrOffset}s)`}
@@ -247,14 +300,24 @@ export default function AlarmsPage() {
                 <div className="absolute inset-0 flex">
                     <div className="flex-1 border-r border-white/10 relative">
                         {/* DVR Playback Left */}
-                        <video key={`incident-${activeCameraId}-${dvrOffset}`} src={generateStreamUrl(activeCameraId, 'primary', dvrOffset || 15)} autoPlay muted playsInline className="w-full h-full object-contain" />
+                        {/* 🛑 CHANGED TO SmartVideoPlayer */}
+                        <SmartVideoPlayer 
+                            key={`incident-${activeCameraId}-${dvrOffset}`} 
+                            src={generateStreamUrl(activeCameraId, 'primary', dvrOffset || 15)} 
+                            className="w-full h-full object-contain bg-black" 
+                        />
                         <span className="absolute top-4 left-4 bg-amber-500/20 text-amber-400 border border-amber-500/50 px-3 py-1 rounded text-[10px] font-black tracking-widest backdrop-blur-md">
                             INCIDENT PLAYBACK
                         </span>
                     </div>
                     <div className="flex-1 relative">
                         {/* Live Feed Right */}
-                        <video key={`live-${activeCameraId}`} src={generateStreamUrl(activeCameraId, 'primary', 0)} autoPlay muted playsInline className="w-full h-full object-contain" />
+                        {/* 🛑 CHANGED TO SmartVideoPlayer */}
+                        <SmartVideoPlayer 
+                            key={`live-${activeCameraId}`} 
+                            src={generateStreamUrl(activeCameraId, 'primary', 0)} 
+                            className="w-full h-full object-contain bg-black" 
+                        />
                         <span className="absolute top-4 left-4 bg-red-500/20 text-red-400 border border-red-500/50 px-3 py-1 rounded text-[10px] font-black tracking-widest backdrop-blur-md">
                             LIVE STATUS
                         </span>
