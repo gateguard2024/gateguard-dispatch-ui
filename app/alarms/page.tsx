@@ -321,7 +321,7 @@ export default function AlarmsPage() {
                     <div className="flex-1 relative bg-black">
                         <SmartVideoPlayer 
                             key={`live-${activeCameraId}-${dvrOffset}`} 
-                            src={generateStreamUrl(activeCameraId, 'primary', dvrOffset)} 
+                            src={generateStreamUrl(activeCameraId, 'main', dvrOffset)} 
                             className="w-full h-full object-contain"
                             controls={true}
                         />
@@ -350,7 +350,7 @@ export default function AlarmsPage() {
                     <div className="flex-1 border-r border-white/10 relative bg-black">
                         <SmartVideoPlayer 
                             key={`incident-dvr-${activeCameraId}-${dvrOffset}`} 
-                            src={generateStreamUrl(activeCameraId, 'primary', dvrOffset || 15)} 
+                            src={generateStreamUrl(activeCameraId, 'main', dvrOffset || 15)} 
                             className="w-full h-full object-contain"
                             controls={true}
                         />
@@ -361,7 +361,7 @@ export default function AlarmsPage() {
                     <div className="flex-1 relative bg-black">
                         <SmartVideoPlayer 
                             key={`incident-live-${activeCameraId}`} 
-                            src={generateStreamUrl(activeCameraId, 'primary', 0)} 
+                            src={generateStreamUrl(activeCameraId, 'main', 0)} 
                             className="w-full h-full object-contain" 
                         />
                         <span className="absolute top-4 left-4 bg-red-500/20 text-red-400 border border-red-500/50 px-3 py-1 rounded text-[10px] font-black tracking-widest backdrop-blur-md shadow-[0_0_15px_rgba(220,38,38,0.2)]">
