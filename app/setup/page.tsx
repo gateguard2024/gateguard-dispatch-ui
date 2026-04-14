@@ -22,6 +22,32 @@ export default function SetupPage() {
 
   useEffect(() => { fetchSites(); }, []);
 
+  // NEW: The Hardware Sync Function
+  const handleSyncCameras = async (siteName: string) => {
+    try {
+      console.log(`⏳ Starting sync for ${siteName}...`);
+      
+      // Look up the internal Site ID
+      const { data: site, error } = await supabase
+        .from('sites')
+        .select('id')
+        .eq('name', siteName)
+        .single();
+
+      if (error || !site) throw new Error("Could not find Site ID in database");
+
+      // Trigger the backend API route
+      const result = await eagleEyeService.syncHardware(site.id);
+      
+      console.log("✅ Sync Complete!", result);
+      alert(`✅ Successfully synced ${result.count} cameras! Check console for details.`);
+
+    } catch (err: any) {
+      console.error("❌ Sync Failed:", err.message);
+      alert(`Sync failed: ${err.message}. Check the console.`);
+    }
+  };
+
   return (
     <div className="w-full h-full flex flex-col p-8 overflow-y-auto">
       <div className="flex justify-between items-end mb-8">
@@ -61,14 +87,24 @@ export default function SetupPage() {
                       <span className="text-[10px] text-slate-500 uppercase">ID: {site.id.slice(0,8)}</span>
                     </div>
 
+                    {/* NEW: Updated Button Logic */}
                     {site.een_refresh_token ? (
-                      <div className="bg-emerald-500/20 text-emerald-400 text-[9px] font-black px-3 py-2 rounded-xl border border-emerald-500/50">
-                        ✓ API ACTIVE
+                      <div className="flex flex-col items-end gap-2">
+                        <div className="bg-emerald-500/20 text-emerald-400 text-[9px] font-black px-3 py-2 rounded-xl border border-emerald-500/50">
+                          ✓ API ACTIVE
+                        </div>
+                        {/* The Sync Button Appears Once API is Active */}
+                        <button 
+                          onClick={() => handleSyncCameras(site.name)}
+                          className="bg-green-600 hover:bg-green-500 text-white text-[10px] font-black px-4 py-2 rounded-xl transition-all"
+                        >
+                          SYNC CAMERAS
+                        </button>
                       </div>
                     ) : (
                       <button 
                         onClick={() => eagleEyeService.login(site.name)}
-                        className="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-black px-4 py-2 rounded-xl"
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-black px-4 py-2 rounded-xl transition-all"
                       >
                         CONNECT API
                       </button>
