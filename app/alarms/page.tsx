@@ -1,41 +1,10 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { supabase } from "@/lib/supabase"; // <-- Bringing in our new CNS (Central Nervous System)
 
 // ============================================================================
-// 🏢 MOCK DATA (Will be replaced by Supabase + EEN API)
-// ============================================================================
-const MOCK_ALARMS = [
-  {
-    id: "ALM-001",
-    time: "08:25:40 AM",
-    site: "Marbella Place",
-    cameraName: "Leasing Lobby",
-    cameraId: "100c2e51", // Actual ESN
-    event: "Motion Detected - Default Alarm",
-    priority: 100
-  },
-  {
-    id: "ALM-002",
-    time: "08:55:34 AM",
-    site: "Elevate Eagles Landing",
-    cameraName: "Front Gate Entrance",
-    cameraId: "10059648", // Actual ESN
-    event: "Vehicle Detected - Gate Trigger",
-    priority: 80
-  }
-];
-
-const SITE_CAMERAS = [
-  { id: "10059648", name: "Front Gate Entrance" },
-  { id: "100ba88a", name: "Dumpster Area" },
-  { id: "100ebfc5", name: "Main Gate Exit" },
-  { id: "1009a37e", name: "Gym Interior" },
-  { id: "100c2e51", name: "Leasing Lobby" }
-];
-
-// ============================================================================
-// STABLE HLS PLAYER (Zero Handshake)
+// STABLE HLS PLAYER (Direct Cluster / Zero Handshake)
 // ============================================================================
 const SmartVideoPlayer = ({ camId, token, type = 'main', offsetSeconds = 0 }: any) => {
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -82,79 +51,151 @@ const SmartVideoPlayer = ({ camId, token, type = 'main', offsetSeconds = 0 }: an
 };
 
 // ============================================================================
-// MAIN SOC INTERFACE
+// MAIN SOC INTERFACE (Now Supabase-Powered)
 // ============================================================================
 export default function AlarmsPage() {
   const [activeToken, setActiveToken] = useState<string | null>(null);
+  
+  // Real Data States
+  const [alarms, setAlarms] = useState<any[]>([]);
   const [processingAlarm, setProcessingAlarm] = useState<any | null>(null);
-  const [unacknowledged, setUnacknowledged] = useState(MOCK_ALARMS.length);
+  const [siteCameras, setSiteCameras] = useState<any[]>([]);
+  
+  // UI States
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [centerTab, setCenterTab] = useState<'cameras' | 'history' | 'notes'>('cameras');
+  const [operatorNotes, setOperatorNotes] = useState("");
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // 1. Get Token
+  // 1. Initialization (Token & Audio)
   useEffect(() => {
+    // Note: We use Marbella as the default token for now
     const token = localStorage.getItem(`een_token_Pegasus Properties - Marbella Place`);
     if (token) setActiveToken(token);
     
-    // Create audio element for the alarm beep
     audioRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
     audioRef.current.loop = true;
   }, []);
 
-  // 2. Alarm Beep Logic
+  // 2. Fetch Initial Alarms & Listen for New Ones (The Magic)
+  useEffect(() => {
+    const fetchAlarms = async () => {
+      const { data, error } = await supabase
+        .from('alarms')
+        .select(`
+          id, priority, event_type, status, created_at,
+          sites ( id, name ),
+          cameras ( id, name, een_esn )
+        `)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false });
+
+      if (error) console.error("Error fetching alarms:", error);
+      else setAlarms(data || []);
+    };
+
+    fetchAlarms();
+
+    // Subscribe to REALTIME Inserts
+    const subscription = supabase
+      .channel('public:alarms')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'alarms' }, payload => {
+        // If anything changes in the alarms table, just refetch the fresh list
+        fetchAlarms();
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(subscription); };
+  }, []);
+
+  // 3. Audio Beep Logic (Only beeps if there are pending alarms and you aren't processing one)
+  const unacknowledgedCount = alarms.length;
   useEffect(() => {
     if (audioEnabled && audioRef.current) {
-      if (unacknowledged > 0 && !processingAlarm) {
-        audioRef.current.play().catch(() => console.log("Audio play blocked by browser"));
+      if (unacknowledgedCount > 0 && !processingAlarm) {
+        audioRef.current.play().catch(() => console.log("Audio blocked by browser"));
       } else {
         audioRef.current.pause();
         audioRef.current.currentTime = 0;
       }
     }
-  }, [unacknowledged, processingAlarm, audioEnabled]);
+  }, [unacknowledgedCount, processingAlarm, audioEnabled]);
 
-  const handleProcessAlarm = (alarm: any) => {
-    setAudioEnabled(true); // User interacted, safe to play audio later if needed
+  // 4. Operator Actions
+  const handleProcessAlarm = async (alarm: any) => {
+    setAudioEnabled(true); 
     setProcessingAlarm(alarm);
+    
+    // Immediately fetch the other cameras for this specific site to populate the bottom tab
+    const { data } = await supabase
+      .from('cameras')
+      .select('*')
+      .eq('site_id', alarm.sites.id);
+    
+    setSiteCameras(data || []);
   };
 
-  const handleDismiss = () => {
-    setUnacknowledged(prev => Math.max(0, prev - 1));
+  const handleResolveAndDismiss = async () => {
+    if (!processingAlarm) return;
+
+    // 1. Update the alarm status in Supabase so it clears from the queue
+    await supabase
+      .from('alarms')
+      .update({ status: 'resolved' })
+      .eq('id', processingAlarm.id);
+
+    // 2. (Optional) Log to audit_logs table
+    await supabase
+      .from('audit_logs')
+      .insert({
+        alarm_id: processingAlarm.id,
+        operator_id: 'operator-1', // Will be Clerk ID later
+        action_taken: 'Resolved Alarm',
+        notes: operatorNotes || 'No notes provided.'
+      });
+
+    // Reset UI
     setProcessingAlarm(null);
+    setOperatorNotes("");
   };
 
-  const isFlashing = unacknowledged > 0 && !processingAlarm;
+  const isFlashing = unacknowledgedCount > 0 && !processingAlarm;
 
   return (
     <div className="w-full h-full flex flex-col p-4 bg-[#030406] text-white overflow-hidden font-sans">
       
-      {/* HEADER */}
+      {/* 🚀 HEADER */}
       <div className={`flex justify-between items-center mb-4 border rounded-2xl p-4 backdrop-blur-md transition-all duration-500 ${isFlashing ? 'bg-red-950/40 border-red-500 shadow-[0_0_30px_rgba(239,68,68,0.3)]' : 'bg-[#0a0c10] border-white/5 shadow-2xl'}`}>
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-black tracking-tighter">DISPATCH STATION</h1>
           {!audioEnabled && (
-             <button onClick={() => setAudioEnabled(true)} className="bg-indigo-600 px-3 py-1 rounded text-[10px] font-bold uppercase tracking-widest animate-pulse">Go On Duty (Enable Audio)</button>
+             <button onClick={() => setAudioEnabled(true)} className="bg-indigo-600 px-3 py-1 rounded text-[10px] font-bold uppercase tracking-widest animate-pulse shadow-lg shadow-indigo-900/40">
+               Go On Duty (Enable Audio)
+             </button>
           )}
         </div>
 
         <div className="flex gap-4">
             <div className="flex flex-col items-end">
                 <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Active Alarms</span>
-                <span className={`text-xl font-black ${unacknowledged > 0 ? 'text-red-500' : 'text-emerald-500'}`}>{unacknowledged}</span>
+                <span className={`text-xl font-black ${unacknowledgedCount > 0 ? 'text-red-500' : 'text-emerald-500'}`}>{unacknowledgedCount}</span>
             </div>
         </div>
       </div>
 
       <div className="flex flex-1 gap-4 overflow-hidden">
         
-        {/* 🚨 LEFT: ALARM QUEUE */}
+        {/* 🚨 LEFT: LIVE ALARM QUEUE */}
         <div className={`w-[350px] border rounded-[2rem] p-4 flex flex-col shadow-xl transition-all duration-500 ${isFlashing ? 'bg-red-950/20 border-red-500/50' : 'bg-[#0a0c10] border-white/5'}`}>
           <h3 className="text-[10px] font-black text-slate-500 uppercase mb-4 tracking-widest text-center border-b border-white/5 pb-2">Pending Events</h3>
           
           <div className="space-y-3 overflow-y-auto custom-scrollbar flex-1 pr-1">
-            {MOCK_ALARMS.map((alarm) => (
+            {alarms.length === 0 && (
+                <div className="text-center text-slate-600 text-xs font-bold uppercase tracking-widest mt-10">Queue Empty</div>
+            )}
+            
+            {alarms.map((alarm) => (
               <div 
                 key={alarm.id}
                 className={`p-4 rounded-2xl border transition-all ${
@@ -167,10 +208,12 @@ export default function AlarmsPage() {
               >
                 <div className="flex justify-between items-start mb-2">
                   <span className={`text-[9px] font-black uppercase tracking-widest ${processingAlarm?.id === alarm.id ? 'text-indigo-400' : 'text-red-400'}`}>Priority {alarm.priority}</span>
-                  <span className="text-[9px] text-slate-400 font-mono">{alarm.time}</span>
+                  <span className="text-[9px] text-slate-400 font-mono">
+                      {new Date(alarm.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'})}
+                  </span>
                 </div>
-                <span className="text-sm font-bold text-white block truncate">{alarm.site}</span>
-                <span className="text-xs text-slate-400 block truncate mb-3">{alarm.event}</span>
+                <span className="text-sm font-bold text-white block truncate">{alarm.sites?.name || 'Unknown Site'}</span>
+                <span className="text-xs text-slate-400 block truncate mb-3">{alarm.event_type} - {alarm.cameras?.name}</span>
                 
                 <button 
                     onClick={() => handleProcessAlarm(alarm)}
@@ -187,21 +230,22 @@ export default function AlarmsPage() {
         <div className="flex-1 bg-black border border-white/5 rounded-[2.5rem] relative overflow-hidden shadow-inner flex flex-col">
           {!processingAlarm ? (
              <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#05070a]">
-                 <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-4">
+                 <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-4 border border-white/5">
                      <span className="text-2xl">🛡️</span>
                  </div>
                  <span className="text-slate-500 text-[11px] font-black tracking-[0.5em] uppercase">Awaiting Operator Action</span>
              </div>
           ) : (
-            <div className="flex-1 flex flex-col h-full">
-                {/* TOP: Dual Video Players (IMMIX Style) */}
+            <div className="flex-1 flex flex-col h-full animate-in fade-in zoom-in-95 duration-300">
+                {/* TOP: Dual Video Players */}
                 <div className="h-[55%] flex border-b border-white/10">
                     <div className="flex-1 relative border-r border-white/10 bg-slate-950">
-                        <SmartVideoPlayer camId={processingAlarm.cameraId} token={activeToken} offsetSeconds={15} />
+                        {/* We use the actual ESN from Supabase relational data */}
+                        <SmartVideoPlayer camId={processingAlarm.cameras?.een_esn} token={activeToken} offsetSeconds={15} />
                         <span className="absolute top-4 left-4 bg-amber-600 px-3 py-1 rounded-lg text-[9px] font-black shadow-xl uppercase tracking-widest border border-amber-400/50">Pre-Alarm Clip</span>
                     </div>
                     <div className="flex-1 relative bg-slate-950">
-                        <SmartVideoPlayer camId={processingAlarm.cameraId} token={activeToken} offsetSeconds={0} />
+                        <SmartVideoPlayer camId={processingAlarm.cameras?.een_esn} token={activeToken} offsetSeconds={0} />
                         <span className="absolute top-4 left-4 bg-red-600 px-3 py-1 rounded-lg text-[9px] font-black shadow-xl uppercase tracking-widest border border-red-400/50">Live Status</span>
                     </div>
                 </div>
@@ -217,7 +261,7 @@ export default function AlarmsPage() {
                             <button 
                                 key={tab.id}
                                 onClick={() => setCenterTab(tab.id as any)}
-                                className={`px-6 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 ${centerTab === tab.id ? 'border-indigo-500 text-indigo-400 bg-indigo-500/5' : 'border-transparent text-slate-500 hover:bg-white/5 hover:text-slate-300'}`}
+                                className={`px-6 py-4 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 ${centerTab === tab.id ? 'border-indigo-500 text-indigo-400 bg-indigo-500/5' : 'border-transparent text-slate-500 hover:bg-white/5 hover:text-slate-300'}`}
                             >
                                 {tab.label}
                             </button>
@@ -227,8 +271,8 @@ export default function AlarmsPage() {
                     <div className="flex-1 p-4 overflow-y-auto custom-scrollbar">
                         {centerTab === 'cameras' && (
                             <div className="grid grid-cols-4 gap-3">
-                                {SITE_CAMERAS.map(cam => (
-                                    <div key={cam.id} className="bg-black border border-white/10 rounded-xl p-3 flex flex-col items-center justify-center cursor-pointer hover:border-indigo-500 transition-all group">
+                                {siteCameras.map(cam => (
+                                    <div key={cam.id} className="bg-black border border-white/10 rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer hover:border-indigo-500 transition-all group shadow-md">
                                         <span className="text-xl mb-2 opacity-50 group-hover:opacity-100 transition-all">📹</span>
                                         <span className="text-[10px] font-bold text-center leading-tight text-slate-300 group-hover:text-white">{cam.name}</span>
                                     </div>
@@ -236,10 +280,15 @@ export default function AlarmsPage() {
                             </div>
                         )}
                         {centerTab === 'history' && (
-                            <div className="text-[10px] font-mono text-slate-500 text-center mt-10 uppercase tracking-widest">Supabase Event History Integration Pending</div>
+                            <div className="text-[10px] font-mono text-slate-500 text-center mt-10 uppercase tracking-widest">History Log Ready for Data</div>
                         )}
                         {centerTab === 'notes' && (
-                            <textarea className="w-full h-full bg-black border border-white/10 rounded-xl p-4 text-sm font-mono text-white resize-none focus:outline-none focus:border-indigo-500 transition-all" placeholder="Enter incident notes here..."></textarea>
+                            <textarea 
+                                value={operatorNotes}
+                                onChange={(e) => setOperatorNotes(e.target.value)}
+                                className="w-full h-full bg-black border border-white/10 rounded-xl p-4 text-sm font-mono text-white resize-none focus:outline-none focus:border-indigo-500 transition-all shadow-inner" 
+                                placeholder="Enter incident notes here to attach to audit log..."
+                            />
                         )}
                     </div>
                 </div>
@@ -250,8 +299,9 @@ export default function AlarmsPage() {
         {/* ⚡ RIGHT: ACTION CENTER */}
         <div className="w-[320px] shrink-0 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
           
-          <div className={`bg-[#0a0c10] border rounded-[2rem] p-6 shadow-xl transition-all ${processingAlarm ? 'border-indigo-500/30' : 'border-white/5 opacity-50 pointer-events-none'}`}>
-              <h3 className="text-[10px] font-black text-slate-500 uppercase mb-4 tracking-widest border-b border-white/5 pb-2">Hardware Control</h3>
+          {/* HARDWARE OVERRIDE */}
+          <div className={`bg-[#0a0c10] border rounded-[2.5rem] p-6 shadow-xl transition-all duration-300 ${processingAlarm ? 'border-indigo-500/30' : 'border-white/5 opacity-50 pointer-events-none'}`}>
+              <h3 className="text-[10px] font-black text-slate-500 uppercase mb-4 tracking-widest border-b border-white/5 pb-2">Hardware Override</h3>
               <div className="grid grid-cols-2 gap-3">
                   <button className="col-span-2 bg-indigo-600 hover:bg-indigo-500 text-white py-4 rounded-2xl text-[11px] font-black tracking-widest shadow-lg shadow-indigo-900/40 transition-all active:scale-95">
                       🔓 OPEN MAIN GATE
@@ -265,44 +315,42 @@ export default function AlarmsPage() {
               </div>
           </div>
 
-          <div className={`bg-[#0a0c10] border rounded-[2rem] p-6 shadow-xl transition-all ${processingAlarm ? 'border-white/5' : 'border-white/5 opacity-50 pointer-events-none'}`}>
-              <h3 className="text-[10px] font-black text-slate-500 uppercase mb-3 tracking-widest">Site Contacts</h3>
+          {/* CONTACTS */}
+          <div className={`bg-[#0a0c10] border rounded-[2.5rem] p-6 shadow-xl transition-all duration-300 ${processingAlarm ? 'border-white/5' : 'border-white/5 opacity-50 pointer-events-none'}`}>
+              <h3 className="text-[10px] font-black text-slate-500 uppercase mb-3 tracking-widest">Emergency Contacts</h3>
               <div className="space-y-2">
-                  <div className="p-3 bg-white/5 rounded-xl border border-white/5 flex justify-between items-center group hover:bg-white/10 transition-all cursor-pointer">
+                  <div className="p-3 bg-white/5 rounded-xl border border-white/5 flex justify-between items-center group hover:bg-white/10 hover:border-white/10 transition-all cursor-pointer">
                       <div>
                           <span className="text-[11px] font-bold block text-white">Local Police Dept</span>
                           <span className="text-[9px] text-slate-400 font-mono block">800-555-0199</span>
                       </div>
                       <span className="text-[10px] font-black text-indigo-400 opacity-0 group-hover:opacity-100 transition-all">CALL</span>
                   </div>
-                  <div className="p-3 bg-white/5 rounded-xl border border-white/5 flex justify-between items-center group hover:bg-white/10 transition-all cursor-pointer">
+                  <div className="p-3 bg-white/5 rounded-xl border border-white/5 flex justify-between items-center group hover:bg-white/10 hover:border-white/10 transition-all cursor-pointer">
                       <div>
                           <span className="text-[11px] font-bold block text-white">Courtesy Officer</span>
                           <span className="text-[9px] text-slate-400 font-mono block">Mitul Patel</span>
                       </div>
                       <span className="text-[10px] font-black text-indigo-400 opacity-0 group-hover:opacity-100 transition-all">CALL</span>
                   </div>
-                  <div className="p-3 bg-white/5 rounded-xl border border-white/5 flex justify-between items-center group hover:bg-white/10 transition-all cursor-pointer">
-                      <div>
-                          <span className="text-[11px] font-bold block text-white">Property Manager</span>
-                          <span className="text-[9px] text-slate-400 font-mono block">Sarah Jenkins</span>
-                      </div>
-                      <span className="text-[10px] font-black text-indigo-400 opacity-0 group-hover:opacity-100 transition-all">CALL</span>
-                  </div>
               </div>
           </div>
 
-          <div className={`bg-gradient-to-br from-[#0a0c10] to-[#030406] border rounded-[2rem] p-6 shadow-xl flex-1 flex flex-col transition-all ${processingAlarm ? 'border-red-500/20' : 'border-white/5 opacity-50 pointer-events-none'}`}>
-              <h3 className="text-[10px] font-black text-red-400 uppercase mb-4 tracking-widest">Incident Resolution</h3>
+          {/* PROTOCOL / DISMISS */}
+          <div className={`bg-gradient-to-br from-[#0a0c10] to-[#030406] border rounded-[2.5rem] p-6 shadow-2xl flex-1 flex flex-col transition-all duration-300 ${processingAlarm ? 'border-emerald-500/20' : 'border-white/5 opacity-50 pointer-events-none'}`}>
+              <h3 className="text-[10px] font-black text-indigo-400 uppercase mb-4 tracking-widest">Clearance Protocol</h3>
               <div className="space-y-4 opacity-60 mb-6 flex-1">
-                {["Visual Verification", "Verify Credentials", "Announce via Audio", "Log to Supabase"].map(t => (
+                {["Visual Verification", "Verify Credentials", "Announce via Audio"].map(t => (
                   <div key={t} className="flex items-center gap-3">
                     <div className="w-5 h-5 border-2 border-white/20 rounded-lg bg-black/40"></div>
                     <span className="text-[11px] font-bold text-slate-300">{t}</span>
                   </div>
                 ))}
               </div>
-              <button onClick={handleDismiss} className="w-full bg-red-600 hover:bg-red-500 py-4 rounded-2xl text-[10px] font-black transition-all shadow-lg shadow-red-900/40 tracking-widest text-white active:scale-95">
+              <button 
+                  onClick={handleResolveAndDismiss} 
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 py-4 rounded-2xl text-[10px] font-black transition-all shadow-lg shadow-emerald-900/40 tracking-widest text-white active:scale-95"
+              >
                   RESOLVE & DISMISS
               </button>
           </div>
