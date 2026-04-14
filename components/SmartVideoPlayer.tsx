@@ -1,10 +1,10 @@
-// components/SmartVideoPlayer.tsx
 "use client";
 
 import React, { useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 
 export default function SmartVideoPlayer({ siteId, cameraId }: { siteId: string, cameraId: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -14,7 +14,7 @@ export default function SmartVideoPlayer({ siteId, cameraId }: { siteId: string,
 
     const startStream = async () => {
       try {
-        // 1. Ask our backend for the URL and Auth Token
+        // 1. Get the raw stream URL and the Token from our backend
         const res = await fetch('/api/cameras/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -27,24 +27,22 @@ export default function SmartVideoPlayer({ siteId, cameraId }: { siteId: string,
         const video = videoRef.current;
         if (!video) return;
 
-// 2. Mount HLS Player and inject the Proxy URL
-        if (Hls.isSupported()) {
-          hls = new Hls({
-            xhrSetup: (xhr) => {
-              // We still need to pass the token to OUR proxy!
-              xhr.setRequestHeader('Authorization', `Bearer ${data.token}`);
-            }
-          });
+        // 🚨 THE FIX: Append the access token directly to the URL!
+        // This bypasses the CORS Preflight check entirely.
+        const streamUrl = new URL(data.hlsUrl);
+        streamUrl.searchParams.append('access_token', data.token);
+        const finalUrl = streamUrl.toString();
 
-          // 🚨 THE FIX: Instead of giving hls.js the EEN URL, we wrap it in our proxy URL!
-          const proxyUrl = `/api/cameras/proxy?url=${encodeURIComponent(data.hlsUrl)}`;
-          hls.loadSource(proxyUrl);
-          
+        // 2. Mount HLS Player (NO CUSTOM HEADERS NEEDED!)
+        if (Hls.isSupported()) {
+          hls = new Hls(); // No xhrSetup required!
+
+          hls.loadSource(finalUrl);
           hls.attachMedia(video);
           
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
             setIsLoading(false);
-            video.play().catch(() => console.log("Autoplay blocked. User must click play."));
+            video.play().catch(() => console.log("Autoplay blocked."));
           });
 
           hls.on(Hls.Events.ERROR, (event, data) => {
@@ -53,7 +51,7 @@ export default function SmartVideoPlayer({ siteId, cameraId }: { siteId: string,
         } 
         // Safari fallback
         else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = data.hlsUrl;
+          video.src = finalUrl;
           video.addEventListener('loadedmetadata', () => {
             setIsLoading(false);
             video.play();
@@ -72,8 +70,25 @@ export default function SmartVideoPlayer({ siteId, cameraId }: { siteId: string,
     };
   }, [siteId, cameraId]);
 
+  const handleDoubleClick = async () => {
+    if (!containerRef.current) return;
+    try {
+      if (!document.fullscreenElement) {
+        await containerRef.current.requestFullscreen();
+      } else if (document.exitFullscreen) {
+        await document.exitFullscreen();
+      }
+    } catch (err: any) {
+      console.error("Fullscreen error:", err.message);
+    }
+  };
+
   return (
-    <div className="relative w-full h-full bg-black flex items-center justify-center">
+    <div 
+      ref={containerRef}
+      onDoubleClick={handleDoubleClick}
+      className="relative w-full h-full bg-black flex items-center justify-center cursor-pointer group"
+    >
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center text-[10px] text-emerald-500 font-bold tracking-widest animate-pulse z-10 bg-black/50">
           CONNECTING VAULT...
@@ -85,6 +100,10 @@ export default function SmartVideoPlayer({ siteId, cameraId }: { siteId: string,
           ❌ {error.toUpperCase()}
         </div>
       )}
+
+      <div className="absolute top-2 left-2 bg-black/60 text-white/70 text-[9px] px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity z-20 pointer-events-none">
+        Double-click for Fullscreen
+      </div>
 
       <video 
         ref={videoRef} 
