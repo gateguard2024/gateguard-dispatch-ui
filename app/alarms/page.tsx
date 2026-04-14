@@ -308,7 +308,6 @@ export default function AlarmsPage() {
                     </div>
                 </div>
             </div>
-          )}
         </div>
 
         {/* ⚡ RIGHT: ACTION CENTER */}
