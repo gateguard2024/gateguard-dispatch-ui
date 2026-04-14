@@ -79,9 +79,9 @@ export default function AlarmsPage() {
                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span> AI Threat Analysis
             </h3>
             <div className="p-4 bg-blue-900/10 border border-blue-500/20 rounded-xl mb-4">
-                <p className="text-xs text-blue-200 leading-relaxed">
-                    System detected <span className="font-bold text-white">Unrecognized Individual</span> lingering near front lobby access panel for > 45 seconds. No credential presented.
-                </p>
+               <p className="text-xs text-blue-200 leading-relaxed">
+                 System detected <span className="font-bold text-white">Unrecognized Individual</span> lingering near front lobby access panel for &gt; 45 seconds. No credential presented.
+               </p>
             </div>
             
             {/* Emergency Contacts */}
