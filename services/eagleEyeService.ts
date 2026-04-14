@@ -1,34 +1,37 @@
-// Add a fallback address in case the Env Var is missing
+// services/eagleEyeService.ts
+
+// Fallback to ensure we never send "undefined" to Eagle Eye
 const REDIRECT_URI = process.env.NEXT_PUBLIC_EEN_REDIRECT_URI || "https://gateguard-dispatch-ui.vercel.app/callback";
 
 export const eagleEyeService = {
+  // 1. Redirect user to Eagle Eye Login
   login: async (siteName: string) => {
     try {
       const response = await fetch(`/api/sites/config?name=${encodeURIComponent(siteName)}`);
       if (!response.ok) throw new Error("Site config not found");
       const config = await response.json();
 
+      // Base64 encode the state (Marbella Place) to keep the URL safe
       const encodedState = btoa(siteName);
 
       const params = new URLSearchParams({
         client_id: config.clientId, 
         response_type: 'code',
-        redirect_uri: REDIRECT_URI, // Now guaranteed to have a value
+        redirect_uri: REDIRECT_URI,
         scope: 'vms.all',
         state: encodedState 
       });
 
       const finalUrl = `https://auth.eagleeyenetworks.com/oauth2/authorize?${params.toString()}`;
+      
       console.log("🚀 Redirecting with URI:", REDIRECT_URI);
       window.location.href = finalUrl;
     } catch (err) {
       console.error("Login redirect failed:", err);
     }
   },
-  // ... rest of the service
-};
 
-  // 2. Exchange Code
+  // 2. Exchange the temporary code for permanent tokens
   exchangeCode: async (code: string, state: string) => {
     const response = await fetch('/api/auth/een', {
       method: 'POST',
@@ -43,7 +46,7 @@ export const eagleEyeService = {
     return response.json();
   },
 
-  // 3. Hardware Sync
+  // 3. Trigger hardware discovery once authenticated
   syncHardware: async (siteId: string) => {
     const response = await fetch('/api/een/sync', {
       method: 'POST',
