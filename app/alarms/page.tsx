@@ -34,28 +34,88 @@ const MOCK_SOPS = [
 ];
 
 // ============================================================================
-// SMART VIDEO PLAYER (Prevents Eagle Eye API 404s from rapid re-mounting)
+// V3 SMART VIDEO PLAYER (Handles EEN Session Auth & HLS Injection)
 // ============================================================================
-const SmartVideoPlayer = ({ src, className, controls = false }: { src: string, className?: string, controls?: boolean }) => {
+const SmartVideoPlayer = ({ camId, token, type = 'main', offsetSeconds = 0, className, controls = false }: { camId: string, token: string, type?: 'main' | 'preview', offsetSeconds?: number, className?: string, controls?: boolean }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
-    const [safeSrc, setSafeSrc] = useState<string>('');
+    const [streamUrl, setStreamUrl] = useState<string | null>(null);
 
+    // 1. API HANDSHAKE: Get the authenticated stream_session URL
     useEffect(() => {
-        setSafeSrc(''); // Clear source on change
-        if (!src) return;
+        if (!camId || !token) return;
+        setStreamUrl(null);
 
-        // 300ms delay: Lets React finish DOM manipulation before hammering the EEN Proxy
-        const timer = setTimeout(() => {
-            setSafeSrc(src);
-        }, 300);
+        // Temp placeholder for Grid to prevent rate-limiting while testing layout
+        if (type === 'preview') {
+            setStreamUrl("https://storage.googleapis.com/muxdemofiles/mux-video-intro.mp4");
+            return;
+        }
 
+        const fetchAuthStream = async () => {
+            try {
+                let apiUrl = '';
+                if (offsetSeconds === 0) {
+                    // Live V3 Endpoint
+                    apiUrl = `https://api.eagleeyenetworks.com/api/v3.0/feeds?deviceId=${camId}&type=${type}&include=hlsUrl`;
+                } else {
+                    // Historical (DVR) V3 Endpoint
+                    const d = new Date(Date.now() - offsetSeconds * 1000);
+                    apiUrl = `https://api.eagleeyenetworks.com/api/v3.0/media?deviceId=${camId}&type=${type}&mediaType=video&startTimestamp__gte=${d.toISOString()}&include=hlsUrl`;
+                }
+
+                // Proxy the lightweight JSON request, not the heavy video
+                const res = await fetch(`/api/een/proxy?url=${encodeURIComponent(apiUrl)}&token=${encodeURIComponent(token)}`);
+                if (!res.ok) throw new Error("Failed to authenticate session");
+                
+                const data = await res.json();
+                const hlsUrl = data.results?.[0]?.hlsUrl;
+
+                if (hlsUrl) setStreamUrl(hlsUrl); // Bypasses Vercel! Direct to EEN!
+            } catch (err) {
+                console.error("Stream Auth Error:", err);
+            }
+        };
+
+        const timer = setTimeout(fetchAuthStream, 300); // Debounce React re-renders
         return () => clearTimeout(timer);
-    }, [src]);
+    }, [camId, token, type, offsetSeconds]);
 
-    if (!safeSrc) {
+    // 2. VIDEO RENDERER: Automatically inject HLS.js for Chrome/Windows support
+    useEffect(() => {
+        if (!streamUrl || !videoRef.current) return;
+        const video = videoRef.current;
+
+        // If the browser supports HLS natively (like Safari)
+        if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = streamUrl; 
+        } else {
+            // Otherwise, inject hls.js for Chrome/Edge/Firefox
+            const loadHls = async () => {
+                // @ts-ignore
+                if (!window.Hls) {
+                    await new Promise((resolve) => {
+                        const script = document.createElement('script');
+                        script.src = "https://cdn.jsdelivr.net/npm/hls.js@latest";
+                        script.onload = resolve;
+                        document.head.appendChild(script);
+                    });
+                }
+                // @ts-ignore
+                if (window.Hls.isSupported()) {
+                    // @ts-ignore
+                    const hls = new window.Hls();
+                    hls.loadSource(streamUrl);
+                    hls.attachMedia(video);
+                }
+            };
+            loadHls();
+        }
+    }, [streamUrl]);
+
+    if (!streamUrl) {
         return (
             <div className={`flex items-center justify-center bg-black/80 text-emerald-500 font-mono text-[10px] tracking-widest uppercase animate-pulse ${className || ''}`}>
-                Negotiating Stream...
+                Authenticating Session...
             </div>
         );
     }
@@ -63,7 +123,6 @@ const SmartVideoPlayer = ({ src, className, controls = false }: { src: string, c
     return (
         <video 
             ref={videoRef}
-            src={safeSrc} 
             autoPlay 
             muted 
             playsInline 
@@ -166,14 +225,6 @@ export default function AlarmsPage() {
     return () => { if (patrolIntervalRef.current) clearInterval(patrolIntervalRef.current); };
   }, [isPatrolMode, dynamicCameras, activeCameraId]);
 
-  // --- HELPER: DVR TIMESTAMP ---
-  const getEenTimestamp = (offsetSeconds: number) => {
-    if (offsetSeconds === 0) return null;
-    const d = new Date(Date.now() - offsetSeconds * 1000);
-    const pad = (n: number, w = 2) => String(n).padStart(w, '0');
-    return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}.000`;
-  };
-
   // --- API / DB ACTIONS (Future Supabase/Brivo) ---
   const handleUnlockDoor = (doorId: string, doorName: string) => {
     // SUPABASE / BRIVO INJECTION POINT
@@ -194,25 +245,6 @@ export default function AlarmsPage() {
     setDvrOffset(15); 
     setCanvasView('incident');
     setIsPatrolMode(false);
-  };
-
- // --- VIDEO URL GENERATOR (PRESERVES YOUR PROXY!) ---
-  const generateStreamUrl = (camId: string, streamType: 'preview' | 'main', offsetSeconds: number = 0) => {
-    if (!activeToken || !camId) return '';
-
-    // Temp mock data for Grid to prevent rate-limit 404s until session initiator is built
-    if (streamType === 'preview') {
-        return "https://storage.googleapis.com/muxdemofiles/mux-video-intro.mp4"; 
-    }
-
-    // REAL EAGLE EYE PROXY ROUTE
-    const cluster = "https://media.c031.eagleeyenetworks.com"; 
-    let hlsUrl = `${cluster}/media/streams/${streamType}/hls/getPlaylist.m3u8?esn=${camId}`;
-    
-    const startTime = getEenTimestamp(offsetSeconds);
-    if (startTime) hlsUrl += `&startTime=${startTime}`;
-    
-    return `/api/een/proxy?url=${encodeURIComponent(hlsUrl)}&token=${encodeURIComponent(activeToken)}`;
   };
 
   return (
@@ -300,8 +332,12 @@ export default function AlarmsPage() {
                                 onDoubleClick={() => { setActiveCameraId(cam.id); setActiveCameraName(cam.name); setCanvasView('live'); }}
                                 className="aspect-video bg-slate-900 border border-white/10 rounded-xl overflow-hidden relative cursor-pointer group hover:border-emerald-500/50 transition-colors"
                             >
-                                {/* Using normal video tag here because src is static MP4, no API rate-limit risk */}
-                                <video src={generateStreamUrl(cam.id, 'preview')} autoPlay muted playsInline loop className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity" />
+                                <SmartVideoPlayer 
+                                    camId={cam.id}
+                                    token={activeToken || ''}
+                                    type="preview"
+                                    className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity"
+                                />
                                 <div className="absolute bottom-2 left-2 bg-black/70 px-2 py-0.5 rounded text-[10px] font-bold text-white backdrop-blur-md">{cam.name}</div>
                             </div>
                         ))}
@@ -321,7 +357,10 @@ export default function AlarmsPage() {
                     <div className="flex-1 relative bg-black">
                         <SmartVideoPlayer 
                             key={`live-${activeCameraId}-${dvrOffset}`} 
-                            src={generateStreamUrl(activeCameraId, 'main', dvrOffset)} 
+                            camId={activeCameraId}
+                            token={activeToken || ''}
+                            type="main"
+                            offsetSeconds={dvrOffset}
                             className="w-full h-full object-contain"
                             controls={true}
                         />
@@ -350,7 +389,10 @@ export default function AlarmsPage() {
                     <div className="flex-1 border-r border-white/10 relative bg-black">
                         <SmartVideoPlayer 
                             key={`incident-dvr-${activeCameraId}-${dvrOffset}`} 
-                            src={generateStreamUrl(activeCameraId, 'main', dvrOffset || 15)} 
+                            camId={activeCameraId}
+                            token={activeToken || ''}
+                            type="main"
+                            offsetSeconds={dvrOffset || 15}
                             className="w-full h-full object-contain"
                             controls={true}
                         />
@@ -361,7 +403,10 @@ export default function AlarmsPage() {
                     <div className="flex-1 relative bg-black">
                         <SmartVideoPlayer 
                             key={`incident-live-${activeCameraId}`} 
-                            src={generateStreamUrl(activeCameraId, 'main', 0)} 
+                            camId={activeCameraId}
+                            token={activeToken || ''}
+                            type="main"
+                            offsetSeconds={0}
                             className="w-full h-full object-contain" 
                         />
                         <span className="absolute top-4 left-4 bg-red-500/20 text-red-400 border border-red-500/50 px-3 py-1 rounded text-[10px] font-black tracking-widest backdrop-blur-md shadow-[0_0_15px_rgba(220,38,38,0.2)]">
