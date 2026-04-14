@@ -258,7 +258,7 @@ export default function AlarmsPage() {
                 </div>
             )}
 
-{/* BOTTOM RIGHT: Dynamic EEN Camera Thumbnails (DIRECT LOAD) */}
+{/* BOTTOM RIGHT: Dynamic EEN Camera Thumbnails (Live HLS Streams) */}
             <div className="absolute bottom-6 right-6 flex gap-3 z-20 overflow-x-auto max-w-[60%] snap-x p-1 custom-scrollbar pointer-events-auto">
                 {dynamicCameras.map((cam) => {
                     const isValidId = cam.id && cam.id.length === 8 && !cam.id.startsWith('cam');
@@ -269,10 +269,12 @@ export default function AlarmsPage() {
                     const activeConfig = SITES_CONFIG.find(s => s.siteName === activeSite.name);
                     const clusterBase = activeConfig ? activeConfig.cluster : "https://media.c031.eagleeyenetworks.com";
                     
-                    // MAGIC: <img> tags ignore CORS! We can just hit Eagle Eye directly!
-                    const timestamp = new Date().getTime();
-                    const directImageUrl = (activeToken && isValidId) 
-                        ? `${clusterBase}/api/v2.0/cameras/${cam.id}/image?access_token=${activeToken}&_t=${timestamp}` 
+                    // We use the exact same proxy logic that works for the main video player!
+                    // We ask for the "preview" stream which is low bandwidth.
+                    const hlsUrl = `${clusterBase}/media/streams/preview/hls/getPlaylist.m3u8?esn=${cam.id}`;
+                    
+                    const streamUrl = (activeToken && isValidId) 
+                        ? `/api/een/proxy?url=${encodeURIComponent(hlsUrl)}&token=${encodeURIComponent(activeToken)}` 
                         : '';
 
                     return (
@@ -281,13 +283,18 @@ export default function AlarmsPage() {
                             onClick={() => handleCameraSelect(cam.id, cam.name)} 
                             className={`shrink-0 w-40 aspect-video bg-slate-900 border-2 rounded-xl cursor-pointer flex flex-col justify-end p-2 snap-center relative overflow-hidden transition-all hover:scale-105 origin-bottom ${activeCameraId === cam.id ? 'border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)] scale-105 z-30' : 'border-white/20 hover:border-white/50'}`}
                         >
-                            {directImageUrl ? (
-                                <img 
-                                    src={directImageUrl} 
-                                    alt={cam.name} 
+                            {streamUrl ? (
+                                // Use a native video tag. Safari plays this natively.
+                                // It will fallback to a poster/blank if it fails.
+                                <video 
+                                    src={streamUrl} 
+                                    autoPlay 
+                                    muted 
+                                    playsInline 
+                                    loop
                                     className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-300 ${activeCameraId === cam.id ? 'opacity-40' : 'opacity-80 hover:opacity-100'}`} 
                                     onError={(e) => {
-                                        (e.target as HTMLImageElement).style.display = 'none';
+                                        (e.target as HTMLVideoElement).style.display = 'none';
                                     }}
                                 />
                             ) : (
