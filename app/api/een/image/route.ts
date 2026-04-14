@@ -1,4 +1,3 @@
-// app/api/een/image/route.ts
 import { NextResponse } from 'next/server';
 
 export async function GET(request: Request) {
@@ -8,7 +7,7 @@ export async function GET(request: Request) {
   const token = searchParams.get('token');
 
   if (!cameraId || !siteName || !token) {
-    return new NextResponse('Missing required parameters', { status: 400 });
+    return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
   }
 
   try {
@@ -19,8 +18,8 @@ export async function GET(request: Request) {
     if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
     if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
 
-    // This is the V3 way to request a single JPEG snapshot from a camera
-    const targetUrl = `${baseUrl}/api/v3.0/cameras/${cameraId}/images`;
+    // EXACT V3 Endpoint (Singular 'image')
+    const targetUrl = `${baseUrl}/api/v3.0/cameras/${cameraId}/image`;
 
     const response = await fetch(targetUrl, {
       method: 'GET',
@@ -28,13 +27,11 @@ export async function GET(request: Request) {
         'Authorization': `Bearer ${token}`,
         'Accept': 'image/jpeg'
       },
-      cache: 'no-store'
+      cache: 'no-store' // Never cache at the edge
     });
 
     if (!response.ok) {
-        const errorText = await response.text();
-        console.error("EEN V3 Image Fetch Failed:", response.status, errorText);
-        return new NextResponse(`EEN V3 API Error: ${response.status}`, { status: response.status });
+        return NextResponse.json({ error: `EEN API Error: ${response.status}`, targetUrl }, { status: response.status });
     }
 
     const imageBuffer = await response.arrayBuffer();
@@ -42,13 +39,13 @@ export async function GET(request: Request) {
     return new NextResponse(imageBuffer, {
       headers: {
         'Content-Type': 'image/jpeg',
-        'Cache-Control': 'public, max-age=10', // Cache in browser for 10 seconds
+        'Cache-Control': 'public, max-age=10', // Cache in browser for 10s to prevent spamming EEN
         'Access-Control-Allow-Origin': '*'
       }
     });
 
   } catch (error) {
     console.error("Image proxy failed:", error);
-    return new NextResponse('Image proxy crashed', { status: 500 });
+    return NextResponse.json({ error: 'Proxy crashed' }, { status: 500 });
   }
 }
