@@ -1,29 +1,24 @@
 const REDIRECT_URI = process.env.NEXT_PUBLIC_EEN_REDIRECT_URI;
 
 export const eagleEyeService = {
-  // 1. Dynamic Login Redirect (Slimmed down to avoid 400 error)
-login: async (siteName: string) => {
-  try {
-    const response = await fetch(`/api/sites/config?name=${encodeURIComponent(siteName)}`);
-    const config = await response.json();
+  // 1. Dynamic Login Redirect
+  login: async (siteName: string) => {
+    try {
+      const response = await fetch(`/api/sites/config?name=${encodeURIComponent(siteName)}`);
+      if (!response.ok) throw new Error("Site config not found");
+      const config = await response.json();
 
-    // Base64 encode the state to make it a single, safe string
-    const safeState = btoa(siteName); 
+      // We Base64 encode the state to ensure no special characters break the URL
+      const encodedState = btoa(siteName);
 
-    const params = new URLSearchParams({
-      client_id: config.clientId, // This MUST be the App Name
-      response_type: 'code',
-      redirect_uri: REDIRECT_URI!,
-      scope: 'vms.all',
-      state: safeState 
-    });
+      const params = new URLSearchParams({
+        client_id: config.clientId, // MUST be the "Application Name"
+        response_type: 'code',
+        redirect_uri: REDIRECT_URI!,
+        scope: 'vms.all',
+        state: encodedState
+      });
 
-    window.location.href = `https://auth.eagleeyenetworks.com/oauth2/authorize?${params.toString()}`;
-  } catch (err) {
-    console.error("Login redirect failed:", err);
-  }
-}
-      // We removed x-api-key from here as EEN OAuth V3 GET requests don't expect it
       const finalUrl = `https://auth.eagleeyenetworks.com/oauth2/authorize?${params.toString()}`;
       
       console.log("🚀 Redirecting to EEN:", finalUrl);
@@ -33,7 +28,7 @@ login: async (siteName: string) => {
     }
   },
 
-  // 2. Exchange Code (Seeding the DB)
+  // 2. Exchange Code
   exchangeCode: async (code: string, state: string) => {
     const response = await fetch('/api/auth/een', {
       method: 'POST',
@@ -48,7 +43,7 @@ login: async (siteName: string) => {
     return response.json();
   },
 
-  // 3. Hardware Sync (Discovery)
+  // 3. Hardware Sync
   syncHardware: async (siteId: string) => {
     const response = await fetch('/api/een/sync', {
       method: 'POST',
