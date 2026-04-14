@@ -171,7 +171,7 @@ export default function CamerasPage() {
                   <div key={cam.id} className="aspect-video bg-black border border-white/10 rounded-2xl overflow-hidden relative group hover:border-indigo-500 transition-all shadow-lg">
                     
                     {/* 🚀 THE SECURE LIVE FEED PLAYER */}
-                    <LiveCamera siteId={selectedSite.id} cameraId={cam.een_camera_id} />
+                    <SmartVideoPlayer siteId={selectedSite.id} cameraId={cam.een_camera_id} />
 
                     {/* Camera Label */}
                     <div className="absolute bottom-3 left-3 bg-black/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10 flex items-center gap-2">
