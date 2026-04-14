@@ -3,435 +3,223 @@
 import React, { useState, useEffect, useRef } from "react";
 
 // ============================================================================
-// 📍 HARDWARE MAPPING (Required for filtering out other properties)
+// 🏢 SITE CONFIGURATION (Matches your Setup page filtering)
 // ============================================================================
-const SITE_BRIDGES: Record<string, string[]> = {
-  "Pegasus Properties - Marbella Place": ["10071c5d"], // Marbella Bridge ESN
-  "Elevate Eagles Landing": [], 
-  "Elevate Greene": []          
+const MARBELLA_SITE = {
+  name: "Pegasus Properties - Marbella Place",
+  bridgeEsn: "10071c5d",
+  keyword: "Marbella Place"
 };
 
-const MOCK_DOORS = [
-  { id: "door-1", name: "Front Gate Barrier", status: "Locked" },
-  { id: "door-2", name: "Amenity Hall Main", status: "Locked" },
-  { id: "door-3", name: "Pool Gate", status: "Unlocked" },
-];
-
-const MOCK_SOPS = [
-  "Visual verification of subject",
-  "Check Brivo access logs for credential",
-  "Trigger audio talk-down",
-  "Log incident or dispatch authorities"
-];
-
 // ============================================================================
-// SMART VIDEO PLAYER (The simple, stable version!)
+// SMART VIDEO PLAYER (Proxies through /api/een/proxy)
 // ============================================================================
-const SmartVideoPlayer = ({ src, className, controls = false }: { src: string, className?: string, controls?: boolean }) => {
-    const videoRef = useRef<HTMLVideoElement>(null);
-    const [safeSrc, setSafeSrc] = useState<string>('');
+const SmartVideoPlayer = ({ camId, token, streamType = 'main', offsetSeconds = 0, className, controls = false }: any) => {
+    const [streamUrl, setStreamUrl] = useState<string>('');
 
     useEffect(() => {
-        setSafeSrc(''); // Clear source on change
-        if (!src) return;
+        if (!camId || !token) return;
 
-        // 300ms delay: Lets React finish DOM manipulation before hammering your Vercel Proxy
-        const timer = setTimeout(() => {
-            setSafeSrc(src);
-        }, 300);
+        // 1. Construct EEN V3 Stream URL
+        const cluster = "https://media.c031.eagleeyenetworks.com";
+        let hlsUrl = `${cluster}/media/streams/${streamType}/hls/getPlaylist.m3u8?esn=${camId}`;
+        
+        // 2. Add DVR Time Travel if needed
+        if (offsetSeconds > 0) {
+            const d = new Date(Date.now() - offsetSeconds * 1000);
+            const pad = (n: number) => String(n).padStart(w, '0');
+            const ts = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}${String(d.getUTCHours()).padStart(2, '0')}${String(d.getUTCMinutes()).padStart(2, '0')}${String(d.getUTCSeconds()).padStart(2, '0')}.000`;
+            hlsUrl += `&startTime=${ts}`;
+        }
 
-        return () => clearTimeout(timer);
-    }, [src]);
+        // 3. Wrap in your working Vercel Proxy
+        setStreamUrl(`/api/een/proxy?url=${encodeURIComponent(hlsUrl)}&token=${encodeURIComponent(token)}`);
+    }, [camId, token, offsetSeconds, streamType]);
 
-    if (!safeSrc) {
-        return (
-            <div className={`flex items-center justify-center bg-black/80 text-emerald-500 font-mono text-[10px] tracking-widest uppercase animate-pulse ${className || ''}`}>
-                Negotiating Stream...
-            </div>
-        );
-    }
+    if (!streamUrl) return <div className="flex items-center justify-center bg-black/40 h-full animate-pulse text-[10px] font-mono">HANDSHAKE...</div>;
 
     return (
         <video 
-            ref={videoRef}
-            src={safeSrc} 
-            autoPlay 
-            muted 
-            playsInline 
+            key={streamUrl} // Force reload on time change
+            src={streamUrl} 
+            autoPlay muted playsInline 
             controls={controls}
-            className={className} 
-            onError={(e) => console.error("SmartPlayer Video Error:", e)}
+            className={`w-full h-full object-contain bg-black ${className}`} 
         />
     );
 };
 
-// ============================================================================
-// MAIN SOC COMPONENT
-// ============================================================================
 export default function AlarmsPage() {
-  // --- CORE STATE ---
-  const [activeSite, setActiveSite] = useState({ name: "Pegasus Properties - Marbella Place", id: "SITE-8259" });
   const [activeToken, setActiveToken] = useState<string | null>(null);
-  
-  const [dynamicCameras, setDynamicCameras] = useState<any[]>([]);
-  const [activeCameraId, setActiveCameraId] = useState<string | null>(null);
-  const [activeCameraName, setActiveCameraName] = useState<string>("Loading...");
+  const [cameras, setCameras] = useState<any[]>([]);
+  const [activeCam, setActiveCam] = useState<any>(null);
+  const [view, setView] = useState<'grid' | 'live' | 'incident'>('grid');
+  const [dvrOffset, setDvrOffset] = useState(0);
 
-  // --- SOC VIEW STATE ---
-  type CanvasMode = 'grid' | 'live' | 'incident' | 'map';
-  const [canvasView, setCanvasView] = useState<CanvasMode>('grid');
-  
-  const [dvrOffset, setDvrOffset] = useState<number>(0); // 0 = Live
-  const [isPatrolMode, setIsPatrolMode] = useState(false);
-  const patrolIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  // --- LOAD EEN TOKEN ---
+  // 1. Initialize Token from Storage
   useEffect(() => {
-    const token = localStorage.getItem(`een_token_${activeSite.name}`);
+    const token = localStorage.getItem(`een_token_${MARBELLA_SITE.name}`);
     if (token) setActiveToken(token);
-  }, [activeSite]);
+  }, []);
 
-  // --- FETCH & FILTER REAL CAMERAS ---
+  // 2. Fetch & Hybrid Filter (Ensures you get exactly the 11 Marbella cams)
   useEffect(() => {
-    const fetchRealCameras = async () => {
-      if (!activeToken) return;
-      
-      try {
-        const response = await fetch('/api/een/cameras', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: activeToken, siteName: activeSite.name })
+    if (!activeToken) return;
+
+    const fetchCams = async () => {
+      const res = await fetch('/api/een/cameras', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: activeToken, siteName: MARBELLA_SITE.name })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const all = data.results || [];
+        
+        // APPLY HYBRID FILTER
+        const filtered = all.filter((c: any) => {
+          const bridge = c.bridgeId || "";
+          const name = (c.name || "").toLowerCase();
+          return bridge === MARBELLA_SITE.bridgeEsn || name.includes(MARBELLA_SITE.keyword.toLowerCase());
         });
 
-        if (response.ok) {
-          const data = await response.json();
-          const allCameras = data.results || [];
-          
-          const siteKeyword = activeSite.name.includes(" - ") 
-            ? activeSite.name.split(" - ")[1].trim().toLowerCase() 
-            : activeSite.name.toLowerCase();
-
-          const allowedBridges = SITE_BRIDGES[activeSite.name] || [];
-
-          // Hybrid Filter
-          const siteCameras = allCameras.filter((cam: any) => {
-            const camName = (cam.name || "").toLowerCase();
-            const bridgeId = cam.bridgeId || "";
-            return allowedBridges.includes(bridgeId) || camName.includes(siteKeyword);
-          });
-
-          const realCameras = siteCameras.map((cam: any) => ({
-            id: cam.camera_id || cam.id || cam.esn || (Array.isArray(cam) ? cam[1] : "unknown"), 
-            name: cam.name || (Array.isArray(cam) ? cam[2] : "Unnamed Camera")
-          })).filter((c: any) => c.id !== "unknown");
-
-          if (realCameras.length > 0) {
-              setDynamicCameras(realCameras);
-              setActiveCameraId(realCameras[0].id);
-              setActiveCameraName(realCameras[0].name);
-          }
-        }
-      } catch (err) {
-        console.error("Failed to load real cameras:", err);
+        const formatted = filtered.map((c: any) => ({ id: c.camera_id || c.esn, name: c.name }));
+        setCameras(formatted);
+        if (formatted.length > 0) setActiveCam(formatted[0]);
       }
     };
-
-    fetchRealCameras();
-  }, [activeToken, activeSite.name]);
-
-  // --- VIRTUAL PATROL LOGIC ---
-  useEffect(() => {
-    if (isPatrolMode && dynamicCameras.length > 0) {
-      setCanvasView('live'); 
-      let currentIndex = dynamicCameras.findIndex(c => c.id === activeCameraId);
-      if (currentIndex === -1) currentIndex = 0;
-      
-      patrolIntervalRef.current = setInterval(() => {
-        currentIndex = (currentIndex + 1) % dynamicCameras.length;
-        setActiveCameraId(dynamicCameras[currentIndex].id);
-        setActiveCameraName(dynamicCameras[currentIndex].name);
-      }, 10000); // 10s rotation
-    } else {
-      if (patrolIntervalRef.current) clearInterval(patrolIntervalRef.current);
-    }
-    return () => { if (patrolIntervalRef.current) clearInterval(patrolIntervalRef.current); };
-  }, [isPatrolMode, dynamicCameras, activeCameraId]);
-
-  // --- HELPER: DVR TIMESTAMP ---
-  const getEenTimestamp = (offsetSeconds: number) => {
-    if (offsetSeconds === 0) return null;
-    const d = new Date(Date.now() - offsetSeconds * 1000);
-    const pad = (n: number, w = 2) => String(n).padStart(w, '0');
-    return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}.000`;
-  };
-
-  // --- DYNAMIC ALARM MOCK DATA ---
-  // Maps the fake alarms to your REAL cameras so clicking them actually works!
-  const getDynamicAlarms = () => {
-      const cams = dynamicCameras.length > 0 ? dynamicCameras : [{id: "10071c5d", name: "Unknown"}];
-      return [
-          { id: "al-01", time: "2 Mins Ago", camId: cams[0 % cams.length].id, camName: cams[0 % cams.length].name, type: "Motion Detected", priority: "high", handled: false },
-          { id: "al-02", time: "15 Mins Ago", camId: cams[1 % cams.length].id, camName: cams[1 % cams.length].name, type: "Door Forced Open", priority: "critical", handled: false },
-          { id: "al-03", time: "1 Hour Ago", camId: cams[2 % cams.length].id, camName: cams[2 % cams.length].name, type: "Loitering", priority: "medium", handled: true },
-      ];
-  };
-
-  // --- API / DB ACTIONS ---
-  const handleUnlockDoor = (doorId: string, doorName: string) => {
-    console.log(`BRIVO API: Unlocking ${doorName} (${doorId})`);
-    alert(`Brivo API Triggered: Unlocked ${doorName}`);
-  };
-
-  const handleFlagEvent = () => {
-    console.log(`SUPABASE: Flagged event on ${activeCameraId} at -${dvrOffset}s`);
-    alert(`Incident logged to database for ${activeCameraName}.`);
-  };
-
-  const handleAlarmClick = (alarm: any) => {
-    setActiveCameraId(alarm.camId);
-    setActiveCameraName(alarm.camName);
-    setDvrOffset(15); 
-    setCanvasView('incident');
-    setIsPatrolMode(false);
-  };
-
-  // --- YOUR ORIGINAL WORKING URL GENERATOR ---
-  const generateStreamUrl = (camId: string, streamType: 'preview' | 'main', offsetSeconds: number = 0) => {
-    if (!activeToken || !camId) return '';
-
-    // MP4 Fallback for the Video Wall Grid to prevent overloading your Vercel Proxy
-    if (streamType === 'preview') {
-        return "https://storage.googleapis.com/muxdemofiles/mux-video-intro.mp4"; 
-    }
-
-    // THIS IS YOUR PROVEN ARCHITECTURE!
-    const cluster = "https://media.c031.eagleeyenetworks.com"; 
-    let hlsUrl = `${cluster}/media/streams/${streamType}/hls/getPlaylist.m3u8?esn=${camId}`;
-    
-    const startTime = getEenTimestamp(offsetSeconds);
-    if (startTime) hlsUrl += `&startTime=${startTime}`;
-    
-    return `/api/een/proxy?url=${encodeURIComponent(hlsUrl)}&token=${encodeURIComponent(activeToken)}`;
-  };
+    fetchCams();
+  }, [activeToken]);
 
   return (
-    <div className="w-full h-full flex flex-col p-4 bg-[#05070a] overflow-hidden text-white font-sans">
+    <div className="w-full h-full flex flex-col p-4 bg-[#020408] text-white overflow-hidden">
       
-      {/* TOP COMMAND DECK */}
-      <div className="flex justify-between items-center mb-4 z-20 bg-white/5 border border-white/10 rounded-2xl p-3 backdrop-blur-md shadow-lg">
-        <div className="flex items-center gap-4">
-            <h1 className="text-2xl font-black tracking-tight text-white">{activeSite.name}</h1>
-            <span className={`border px-2 py-0.5 rounded text-[10px] font-black tracking-widest ${activeToken ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' : 'bg-red-500/20 text-red-400 border-red-500/50'}`}>
-                {activeToken ? "SYSTEM ONLINE" : "VMS DISCONNECTED"}
-            </span>
+      {/* HEADER BAR */}
+      <div className="flex justify-between items-center mb-4 bg-white/5 border border-white/10 rounded-2xl p-4 backdrop-blur-md">
+        <div>
+            <h1 className="text-xl font-black tracking-tighter">SOC COMMAND DECK</h1>
+            <p className="text-[10px] text-emerald-500 font-bold uppercase tracking-widest">{MARBELLA_SITE.name}</p>
         </div>
 
-        {/* VIEW TOGGLES */}
-        <div className="flex bg-black/50 border border-white/10 rounded-xl p-1 shadow-inner">
-            {[
-                { id: 'grid', label: 'VIDEO WALL' },
-                { id: 'live', label: 'SINGLE CAM' },
-                { id: 'incident', label: 'DUAL PANE' },
-                { id: 'map', label: 'SITE MAP' }
-            ].map(view => (
+        <div className="flex bg-black/40 border border-white/10 rounded-xl p-1">
+            {['grid', 'live', 'incident'].map(v => (
                 <button 
-                    key={view.id}
-                    onClick={() => setCanvasView(view.id as CanvasMode)} 
-                    className={`px-4 py-2 rounded-lg font-bold text-[10px] uppercase tracking-widest transition-all ${canvasView === view.id ? 'bg-indigo-600 shadow-[0_0_15px_rgba(79,70,229,0.4)] text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                    key={v}
+                    onClick={() => { setView(v as any); setDvrOffset(0); }}
+                    className={`px-6 py-2 rounded-lg text-[10px] font-black tracking-widest transition-all ${view === v ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}
                 >
-                    {view.label}
+                    {v.toUpperCase()}
                 </button>
             ))}
         </div>
-
-        {/* PATROL TOGGLE */}
-        <button 
-            onClick={() => setIsPatrolMode(!isPatrolMode)}
-            className={`flex items-center gap-2 px-6 py-2 rounded-xl font-black text-xs tracking-widest transition-all border ${isPatrolMode ? 'bg-amber-500/20 border-amber-500 text-amber-400 animate-pulse' : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'}`}
-        >
-            <div className={`w-2 h-2 rounded-full ${isPatrolMode ? 'bg-amber-400' : 'bg-slate-600'}`}></div>
-            {isPatrolMode ? 'PATROL ACTIVE' : 'START PATROL'}
-        </button>
       </div>
 
-      {/* 3-COLUMN LAYOUT */}
       <div className="flex flex-1 gap-4 overflow-hidden">
         
-        {/* ==================================================================== */}
-        {/* LEFT PANEL: ALARM QUEUE */}
-        {/* ==================================================================== */}
-        <div className="w-80 shrink-0 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 backdrop-blur-md flex-1 shadow-lg">
-                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 flex justify-between">
-                    Alarm Queue <span className="bg-red-500 text-white px-1.5 rounded">2</span>
-                </h3>
-                
-                <div className="flex flex-col gap-2">
-                    {getDynamicAlarms().map(alarm => (
-                        <div 
-                            key={alarm.id} 
-                            onClick={() => handleAlarmClick(alarm)}
-                            className={`p-3 rounded-xl border cursor-pointer transition-all ${alarm.handled ? 'bg-black/40 border-white/5 opacity-50 hover:bg-white/5' : 'bg-red-500/10 border-red-500/30 hover:bg-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.1)]'}`}
-                        >
-                            <div className="flex justify-between items-start mb-1">
-                                <span className={`text-[10px] font-bold uppercase tracking-wider ${alarm.handled ? 'text-slate-500' : 'text-red-400'}`}>{alarm.type}</span>
-                                <span className="text-[9px] text-slate-500">{alarm.time}</span>
-                            </div>
-                            <span className="text-sm font-bold text-white block">{alarm.camName}</span>
+        {/* LEFT: INCIDENT QUEUE */}
+        <div className="w-80 bg-white/5 border border-white/10 rounded-3xl p-4 flex flex-col">
+            <h3 className="text-[10px] font-black text-slate-500 uppercase mb-4 tracking-[0.2em] text-center">Live Events</h3>
+            <div className="space-y-2 overflow-y-auto custom-scrollbar flex-1">
+                {cameras.slice(0, 5).map((cam) => (
+                    <div 
+                        key={cam.id} 
+                        onClick={() => { setActiveCam(cam); setView('incident'); setDvrOffset(15); }}
+                        className="p-4 bg-red-500/5 border border-red-500/10 rounded-2xl cursor-pointer hover:bg-red-500/10 transition-all group"
+                    >
+                        <div className="flex justify-between mb-1">
+                            <span className="text-[9px] font-black text-red-500 uppercase">Alert</span>
+                            <span className="text-[9px] text-slate-600 font-mono">NOW</span>
                         </div>
-                    ))}
-                </div>
+                        <span className="text-sm font-bold group-hover:text-red-400">{cam.name}</span>
+                    </div>
+                ))}
             </div>
         </div>
 
-        {/* ==================================================================== */}
-        {/* CENTER CANVAS: VIDEO RENDERING ENGINE */}
-        {/* ==================================================================== */}
-        <div className="flex-1 bg-black border border-white/10 rounded-3xl relative overflow-hidden shadow-2xl flex flex-col">
+        {/* CENTER: MAIN CANVAS */}
+        <div className="flex-1 bg-black border border-white/10 rounded-[2.5rem] relative overflow-hidden shadow-2xl flex flex-col">
             
-            {/* GRID VIEW (VIDEO WALL) */}
-            {canvasView === 'grid' && (
-                <div className="absolute inset-0 p-4 overflow-y-auto custom-scrollbar">
-                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-                        {dynamicCameras.map(cam => (
-                            <div 
-                                key={cam.id} 
-                                onDoubleClick={() => { setActiveCameraId(cam.id); setActiveCameraName(cam.name); setCanvasView('live'); }}
-                                className="aspect-video bg-slate-900 border border-white/10 rounded-xl overflow-hidden relative cursor-pointer group hover:border-emerald-500/50 transition-colors"
-                            >
-                                <SmartVideoPlayer 
-                                    src={generateStreamUrl(cam.id, 'preview')} 
-                                    className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity" 
-                                />
-                                <div className="absolute bottom-2 left-2 bg-black/70 px-2 py-0.5 rounded text-[10px] font-bold text-white backdrop-blur-md">{cam.name}</div>
+            {/* GRID VIEW */}
+            {view === 'grid' && (
+                <div className="absolute inset-0 p-4 grid grid-cols-3 gap-3 overflow-y-auto custom-scrollbar">
+                    {cameras.map(cam => (
+                        <div 
+                            key={cam.id} 
+                            onDoubleClick={() => { setActiveCam(cam); setView('live'); }}
+                            className="aspect-video bg-slate-900 border border-white/10 rounded-2xl overflow-hidden relative cursor-pointer group hover:border-blue-500/50 transition-all"
+                        >
+                            <SmartVideoPlayer camId={cam.id} token={activeToken} streamType="preview" />
+                            <div className="absolute bottom-2 left-2 bg-black/60 backdrop-blur-md px-2 py-0.5 rounded-lg text-[9px] font-bold border border-white/5">
+                                {cam.name}
                             </div>
-                        ))}
-                        {dynamicCameras.length === 0 && (
-                            <div className="col-span-full h-full flex flex-col items-center justify-center text-slate-500 py-20">
-                                <span className="animate-pulse mb-2 text-2xl">📡</span>
-                                <span className="text-xs font-bold tracking-widest uppercase">Fetching Camera Topology...</span>
-                            </div>
-                        )}
-                    </div>
+                        </div>
+                    ))}
                 </div>
             )}
 
             {/* SINGLE CAM VIEW */}
-            {canvasView === 'live' && activeCameraId && (
+            {view === 'live' && activeCam && (
                 <div className="absolute inset-0 flex flex-col">
-                    <div className="flex-1 relative bg-black">
-                        <SmartVideoPlayer 
-                            key={`live-${activeCameraId}-${dvrOffset}`} 
-                            src={generateStreamUrl(activeCameraId, 'main', dvrOffset)} 
-                            className="w-full h-full object-contain"
-                            controls={true}
-                        />
-                        <div className="absolute top-4 left-4 flex gap-2">
-                            <span className={`px-3 py-1 rounded text-[10px] font-black tracking-widest backdrop-blur-md ${dvrOffset === 0 ? 'bg-red-500/20 text-red-400 border border-red-500/50' : 'bg-amber-500/20 text-amber-400 border border-amber-500/50 shadow-[0_0_15px_rgba(245,158,11,0.2)]'}`}>
-                                {dvrOffset === 0 ? '● LIVE' : `DVR (-${dvrOffset}s)`}
-                            </span>
-                            <span className="bg-black/60 border border-white/10 px-3 py-1 rounded text-white text-[10px] font-bold tracking-widest backdrop-blur-md">
-                                {activeCameraName.toUpperCase()}
+                    <div className="flex-1 relative">
+                        <SmartVideoPlayer camId={activeCam.id} token={activeToken} streamType="main" offsetSeconds={dvrOffset} controls={true} />
+                        <div className="absolute top-6 left-6 flex gap-2">
+                            <span className={`px-4 py-1.5 rounded-full text-[10px] font-black tracking-widest backdrop-blur-xl border ${dvrOffset === 0 ? 'bg-red-500/20 text-red-400 border-red-500/50' : 'bg-amber-500/20 text-amber-400 border-amber-500/50 animate-pulse'}`}>
+                                {dvrOffset === 0 ? '● LIVE FEED' : `DVR PLAYBACK (-${dvrOffset}s)`}
                             </span>
                         </div>
                     </div>
                     {/* DVR SCRUBBER */}
-                    <div className="h-16 bg-slate-950 border-t border-white/10 flex items-center px-6 gap-4">
-                        <button onClick={() => setDvrOffset(0)} className={`px-4 py-1.5 rounded text-[10px] font-black tracking-widest transition-colors ${dvrOffset === 0 ? 'bg-red-600 text-white shadow-[0_0_10px_rgba(220,38,38,0.4)]' : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'}`}>LIVE</button>
-                        <button onClick={() => setDvrOffset(15)} className={`px-4 py-1.5 rounded text-[10px] font-black tracking-widest transition-colors ${dvrOffset === 15 ? 'bg-amber-600 text-white shadow-[0_0_10px_rgba(217,119,6,0.4)]' : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'}`}>-15s</button>
-                        <button onClick={() => setDvrOffset(60)} className={`px-4 py-1.5 rounded text-[10px] font-black tracking-widest transition-colors ${dvrOffset === 60 ? 'bg-amber-600 text-white shadow-[0_0_10px_rgba(217,119,6,0.4)]' : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'}`}>-1m</button>
-                        <button onClick={() => setDvrOffset(300)} className={`px-4 py-1.5 rounded text-[10px] font-black tracking-widest transition-colors ${dvrOffset === 300 ? 'bg-amber-600 text-white shadow-[0_0_10px_rgba(217,119,6,0.4)]' : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'}`}>-5m</button>
+                    <div className="h-16 bg-white/5 border-t border-white/10 flex items-center px-8 gap-4 justify-center">
+                        <button onClick={() => setDvrOffset(0)} className={`px-4 py-1 rounded text-[10px] font-bold ${dvrOffset === 0 ? 'bg-red-600 text-white' : 'text-slate-400'}`}>LIVE</button>
+                        <button onClick={() => setDvrOffset(30)} className={`px-4 py-1 rounded text-[10px] font-bold ${dvrOffset === 30 ? 'bg-amber-600 text-white' : 'text-slate-400'}`}>-30s</button>
+                        <button onClick={() => setDvrOffset(60)} className={`px-4 py-1 rounded text-[10px] font-bold ${dvrOffset === 60 ? 'bg-amber-600 text-white' : 'text-slate-400'}`}>-1m</button>
+                        <button onClick={() => setDvrOffset(300)} className={`px-4 py-1 rounded text-[10px] font-bold ${dvrOffset === 300 ? 'bg-amber-600 text-white' : 'text-slate-400'}`}>-5m</button>
                     </div>
                 </div>
             )}
 
             {/* INCIDENT VIEW (DUAL PANE) */}
-            {canvasView === 'incident' && activeCameraId && (
+            {view === 'incident' && activeCam && (
                 <div className="absolute inset-0 flex">
-                    <div className="flex-1 border-r border-white/10 relative bg-black">
-                        <SmartVideoPlayer 
-                            key={`incident-dvr-${activeCameraId}-${dvrOffset}`} 
-                            src={generateStreamUrl(activeCameraId, 'main', dvrOffset || 15)} 
-                            className="w-full h-full object-contain"
-                            controls={true}
-                        />
-                        <span className="absolute top-4 left-4 bg-amber-500/20 text-amber-400 border border-amber-500/50 px-3 py-1 rounded text-[10px] font-black tracking-widest backdrop-blur-md shadow-[0_0_15px_rgba(245,158,11,0.2)]">
-                            INCIDENT PLAYBACK (-{dvrOffset || 15}s)
-                        </span>
+                    <div className="flex-1 border-r border-white/10 relative">
+                        <SmartVideoPlayer camId={activeCam.id} token={activeToken} streamType="main" offsetSeconds={dvrOffset || 15} />
+                        <span className="absolute bottom-6 left-6 bg-amber-600 px-3 py-1 rounded-lg text-[10px] font-black">INCIDENT CLIP</span>
                     </div>
-                    <div className="flex-1 relative bg-black">
-                        <SmartVideoPlayer 
-                            key={`incident-live-${activeCameraId}`} 
-                            src={generateStreamUrl(activeCameraId, 'main', 0)} 
-                            className="w-full h-full object-contain" 
-                        />
-                        <span className="absolute top-4 left-4 bg-red-500/20 text-red-400 border border-red-500/50 px-3 py-1 rounded text-[10px] font-black tracking-widest backdrop-blur-md shadow-[0_0_15px_rgba(220,38,38,0.2)]">
-                            LIVE STATUS
-                        </span>
+                    <div className="flex-1 relative">
+                        <SmartVideoPlayer camId={activeCam.id} token={activeToken} streamType="main" offsetSeconds={0} />
+                        <span className="absolute bottom-6 left-6 bg-red-600 px-3 py-1 rounded-lg text-[10px] font-black">LIVE STATUS</span>
                     </div>
-                </div>
-            )}
-
-            {/* MAP VIEW */}
-            {canvasView === 'map' && (
-                <div className="absolute inset-0 bg-slate-900 flex items-center justify-center relative">
-                    <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.1)_1px,transparent_1px)] bg-[size:20px_20px]"></div>
-                    <h2 className="text-white/20 font-black text-4xl uppercase tracking-[1em] absolute">FLOORPLAN PENDING</h2>
-                    {/* Mock Map Pins */}
-                    <div className="absolute top-[40%] left-[30%] w-4 h-4 bg-emerald-500 rounded-full shadow-[0_0_15px_rgba(16,185,129,1)] cursor-pointer hover:scale-150 transition-transform"></div>
-                    <div className="absolute top-[60%] right-[40%] w-4 h-4 bg-red-500 rounded-full shadow-[0_0_15px_rgba(239,68,68,1)] animate-pulse cursor-pointer hover:scale-150 transition-transform"></div>
                 </div>
             )}
 
         </div>
 
-        {/* ==================================================================== */}
-        {/* RIGHT PANEL: SOPs, BRIVO DOORS, AND REPORTING */}
-        {/* ==================================================================== */}
-        <div className="w-80 shrink-0 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
-            
-            {/* BRIVO ACCESS CONTROL */}
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 backdrop-blur-md shadow-lg">
-                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Access Control</h3>
-                <div className="flex flex-col gap-2">
-                    {MOCK_DOORS.map(door => (
-                        <div key={door.id} className="bg-black/50 border border-white/5 p-3 rounded-xl flex justify-between items-center group hover:border-white/10 transition-colors">
-                            <div>
-                                <span className="text-xs font-bold text-white block">{door.name}</span>
-                                <span className={`text-[9px] font-black uppercase tracking-widest ${door.status === 'Locked' ? 'text-slate-500' : 'text-emerald-400'}`}>{door.status}</span>
-                            </div>
-                            <button 
-                                onClick={() => handleUnlockDoor(door.id, door.name)}
-                                className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black px-3 py-1.5 rounded-lg transition-all shadow-[0_0_10px_rgba(37,99,235,0.3)] active:scale-95"
-                            >
-                                UNLOCK
-                            </button>
-                        </div>
-                    ))}
-                </div>
-            </div>
-
-            {/* STANDARD OPERATING PROCEDURES */}
-            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 backdrop-blur-md flex-1 shadow-lg flex flex-col">
-                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Active SOP</h3>
-                <div className="flex flex-col gap-2 mb-6 flex-1">
-                    {MOCK_SOPS.map((sop, i) => (
-                        <label key={i} className="flex items-start gap-3 cursor-pointer group">
-                            <input type="checkbox" className="mt-1 accent-emerald-500 w-4 h-4 cursor-pointer" />
-                            <span className="text-xs text-slate-300 group-hover:text-white transition-colors leading-snug">{sop}</span>
-                        </label>
-                    ))}
-                </div>
-
-                <button 
-                    onClick={handleFlagEvent}
-                    className="w-full bg-red-600 hover:bg-red-500 text-white font-black py-3 rounded-xl text-xs tracking-widest shadow-[0_0_15px_rgba(220,38,38,0.4)] transition-all flex items-center justify-center gap-2 active:scale-[0.98]"
-                >
-                    <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
-                    FLAG INCIDENT TO DB
+        {/* RIGHT: CONTROLS */}
+        <div className="w-80 shrink-0 space-y-4">
+            <div className="bg-white/5 border border-white/10 rounded-3xl p-6 shadow-xl">
+                <h3 className="text-[10px] font-black text-slate-500 uppercase mb-4 tracking-widest">Property Access</h3>
+                <button className="w-full bg-indigo-600 hover:bg-indigo-500 py-4 rounded-2xl text-xs font-black shadow-lg shadow-indigo-900/40 transition-all active:scale-95 mb-3">
+                    🔓 PULSE MAIN GATE
+                </button>
+                <button className="w-full bg-white/5 hover:bg-white/10 py-4 rounded-2xl text-xs font-black border border-white/10 transition-all active:scale-95">
+                    🏢 UNLOCK AMENITY
                 </button>
             </div>
-
+            
+            <div className="bg-gradient-to-br from-blue-600/20 to-transparent border border-blue-500/20 rounded-3xl p-6 flex-1 h-[200px]">
+                <h3 className="text-[10px] font-black text-blue-400 uppercase mb-4 tracking-widest">SOP Status</h3>
+                <div className="space-y-4 opacity-50">
+                    <div className="flex items-center gap-3">
+                        <div className="w-5 h-5 border border-white/20 rounded-lg bg-black/40"></div>
+                        <span className="text-xs font-bold">Subject Identified</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <div className="w-5 h-5 border border-white/20 rounded-lg bg-black/40"></div>
+                        <span className="text-xs font-bold">Credential Logged</span>
+                    </div>
+                </div>
+            </div>
         </div>
       </div>
     </div>
