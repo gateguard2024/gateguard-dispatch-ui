@@ -2,10 +2,10 @@
 import { supabase } from '@/lib/supabase';
 
 export async function getValidEENToken(siteId: string) {
-  // 1. Ask Supabase for all THREE pieces of data
+  // 1. Ask Supabase for ALL necessary pieces of data (Added secrets and refresh tokens)
   const { data: site, error } = await supabase
     .from('sites')
-    .select('een_access_token, een_cluster, een_api_key') // MUST include een_api_key
+    .select('een_access_token, een_cluster, een_api_key, een_client_id, een_client_secret, een_refresh_token, een_token_expires_at') 
     .eq('id', siteId)
     .single();
 
@@ -13,19 +13,23 @@ export async function getValidEENToken(siteId: string) {
     throw new Error(`Database error or site not found for ID: ${siteId}`);
   }
 
-  // (If you have token refresh logic here, leave it as is!)
+  // 2. Check if we have a valid token that hasn't expired
+  const isExpired = site.een_token_expires_at ? new Date(site.een_token_expires_at) <= new Date() : false;
 
-  // 2. Return all three variables so TypeScript is happy
-  return {
-    token: site.een_access_token,
-    cluster: site.een_cluster,
-    apiKey: site.een_api_key // <-- This line makes the build error disappear
-  };
-}
+  if (site.een_access_token && !isExpired) {
+    // Token is good! Return it immediately to skip the refresh process.
+    return {
+      token: site.een_access_token,
+      cluster: site.een_cluster,
+      apiKey: site.een_api_key // <-- Satisfies the API key requirement!
+    };
+  }
 
-  console.log(`Refreshing/Generating Token for Site ID: ${siteId}...`);
+  // ==========================================
+  // REFRESH LOGIC (If token is missing or expired)
+  // ==========================================
+  console.log(`⏳ Refreshing Token for Site ID: ${siteId}...`);
 
-  // 3. We need secrets to generate a new token
   if (!site.een_client_id || !site.een_client_secret) {
     throw new Error('Missing EEN Client ID or Secret for this site.');
   }
@@ -33,7 +37,6 @@ export async function getValidEENToken(siteId: string) {
   const authHeader = Buffer.from(`${site.een_client_id}:${site.een_client_secret}`).toString('base64');
   const params = new URLSearchParams();
 
-  // If we have a refresh token, use it. Otherwise, we require manual OAuth login.
   if (site.een_refresh_token) {
     params.append('grant_type', 'refresh_token');
     params.append('refresh_token', site.een_refresh_token);
@@ -57,7 +60,7 @@ export async function getValidEENToken(siteId: string) {
   const data = await response.json();
   const newExpiration = new Date(Date.now() + (data.expires_in * 1000)).toISOString();
 
-  // 4. Save the fresh tokens back to the DB
+  // Save the fresh tokens back to the DB
   await supabase
     .from('sites')
     .update({
@@ -67,5 +70,10 @@ export async function getValidEENToken(siteId: string) {
     })
     .eq('id', siteId);
 
-  return { token: data.access_token, cluster: site.een_cluster };
+  // Return the newly refreshed token AND the API key!
+  return { 
+    token: data.access_token, 
+    cluster: site.een_cluster,
+    apiKey: site.een_api_key // <-- Satisfies the API key requirement after refresh!
+  };
 }
