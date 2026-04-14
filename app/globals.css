@@ -1,96 +1,95 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-:root {
-  /* Core Palette */
-  --background: #030406;
-  --surface: #0a0c10;
-  --surface-elevated: #11141a;
-  --accent: #6366f1; /* GateGuard Indigo */
-  --accent-glow: rgba(99, 102, 241, 0.2);
-  --success: #10b981;
-  --danger: #ef4444;
+/* 🎨 COLUMBIA DESIGN SYSTEM THEME */
+@theme {
+  --color-background: #030406;
+  --color-surface: #0a0c10;
+  --color-surface-elevated: #11141a;
+  --color-gateguard-indigo: #6366f1;
+  --color-gateguard-emerald: #10b981;
   
-  /* Text */
-  --text-primary: #f8fafc;
-  --text-secondary: #94a3b8;
-  --text-muted: #475569;
+  --radius-panel: 2.5rem; /* 40px */
+  --radius-card: 1.5rem;  /* 24px */
 }
 
+/* 🏗️ BASE STYLES (Build-Safe) */
 @layer base {
   html, body {
-    @apply h-full bg-[#030406] text-slate-200 antialiased overflow-hidden;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    background-color: #030406; /* Direct hex to prevent build-time lookup errors */
+    color: #e2e8f0;            /* Equivalent to slate-200 */
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   h1, h2, h3 {
-    @apply tracking-tighter font-black;
+    letter-spacing: -0.05em;
+    font-weight: 900;
   }
 }
 
+/* 💎 COLUMBIA COMPONENTS */
 @layer components {
-  /* Premium App Containers */
   .columbia-panel {
-    @apply bg-[#0a0c10] border border-white/5 shadow-2xl;
+    background-color: var(--color-surface);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: var(--radius-panel);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
   }
 
   .columbia-button-primary {
-    @apply bg-indigo-600 hover:bg-indigo-500 text-white font-black tracking-widest 
-           transition-all duration-300 active:scale-95 shadow-lg shadow-indigo-900/20;
+    background-color: var(--color-gateguard-indigo);
+    color: white;
+    font-weight: 900;
+    letter-spacing: 0.1em;
+    padding: 1rem 2rem;
+    border-radius: 1rem;
+    transition: all 0.3s ease;
+    box-shadow: 0 10px 15px -3px rgba(79, 70, 229, 0.3);
   }
 
-  .columbia-button-secondary {
-    @apply bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 
-           font-black tracking-widest transition-all active:scale-95;
+  .columbia-button-primary:hover {
+    background-color: #4f46e5;
+    transform: translateY(-1px);
   }
 
-  /* Video Feed Styling */
-  .video-container-premium {
-    @apply bg-black border border-white/5 rounded-[2rem] overflow-hidden 
-           shadow-[0_0_50px_rgba(0,0,0,0.5)] relative;
+  .columbia-button-primary:active {
+    transform: scale(0.95);
   }
 
-  /* Checklist Styling */
-  .sop-checkbox {
-    @apply w-5 h-5 border-2 border-white/10 rounded-lg bg-black/40 
-           group-hover:border-indigo-500 transition-all shadow-inner;
+  /* Premium Scrollbar */
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
   }
 
-  /* Custom Scrollbar */
   .custom-scrollbar::-webkit-scrollbar {
     width: 4px;
-    height: 4px;
   }
+
   .custom-scrollbar::-webkit-scrollbar-track {
-    @apply bg-transparent;
+    background: transparent;
   }
+
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    @apply bg-white/10 rounded-full transition-colors hover:bg-indigo-500/50;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
   }
 }
 
-/* Animations for that "Live" SOC Feel */
-@keyframes soft-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.7; transform: scale(0.95); }
-}
-
-.animate-soft-pulse {
-  animation: soft-pulse 3s infinite ease-in-out;
-}
-
+/* ⚡ INFRASTRUCTURE ANIMATIONS */
 @keyframes status-glow {
-  0%, 100% { box-shadow: 0 0 5px #10b981; }
-  50% { box-shadow: 0 0 15px #10b981; }
+  0%, 100% { box-shadow: 0 0 5px var(--color-gateguard-emerald); }
+  50% { box-shadow: 0 0 15px var(--color-gateguard-emerald); }
 }
 
 .status-online {
-  @apply w-2 h-2 rounded-full bg-emerald-500;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background-color: var(--color-gateguard-emerald);
   animation: status-glow 2s infinite ease-in-out;
-}
-
-/* Glassmorphism Overlays */
-.glass-header {
-  @apply bg-[#0a0c10]/80 backdrop-blur-xl border-b border-white/5;
 }
