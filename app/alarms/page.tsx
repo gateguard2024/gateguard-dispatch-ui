@@ -226,45 +226,39 @@ export default function AlarmsPage() {
           </div>
         </div>
 
-      {/* 🖥️ CENTER: PROCESSING CANVAS */}
-  <div className="flex-1 bg-black border border-white/5 rounded-[2.5rem] relative overflow-hidden shadow-inner flex flex-col">
-      {!processingAlarm ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#05070a]">
-              <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-4 border border-white/5">
-                  <span className="text-2xl">🛡️</span>
+{/* 🖥️ CENTER: PROCESSING CANVAS */}
+      <div className="flex-1 bg-black border border-white/5 rounded-[2.5rem] relative overflow-hidden shadow-inner flex flex-col">
+          {!processingAlarm ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#05070a]">
+                  <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-4 border border-white/5">
+                      <span className="text-2xl">🛡️</span>
+                  </div>
+                  <span className="text-slate-500 text-[11px] font-black tracking-[0.5em] uppercase">Awaiting Operator Action</span>
               </div>
-              <span className="text-slate-500 text-[11px] font-black tracking-[0.5em] uppercase">Awaiting Operator Action</span>
-          </div>
-      ) : (
-        <div className="flex-1 flex flex-col h-full animate-in fade-in zoom-in-95 duration-300">
-            {/* TOP: Dual Video Players */}
-            <div className="h-[55%] flex border-b border-white/10">
-                <div className="flex-1 relative border-r border-white/10 bg-slate-950 p-2">
-                    {/* Pre-Alarm Substream (Fast Load) */}
-                    <SmartVideoPlayer 
-                      siteId={processingAlarm.sites?.id} 
-                      cameraEsn={processingAlarm.cameras?.een_esn} 
-                      streamType="preview" 
-                    />
-                    <span className="absolute top-4 left-4 bg-amber-600 px-3 py-1 rounded-lg text-[9px] font-black shadow-xl uppercase tracking-widest border border-amber-400/50 z-10 pointer-events-none">Pre-Alarm Clip</span>
+          ) : (
+            <div className="flex-1 flex flex-col h-full animate-in fade-in zoom-in-95 duration-300">
+                {/* TOP: Dual Video Players */}
+                <div className="h-[55%] flex border-b border-white/10">
+                    <div className="flex-1 relative border-r border-white/10 bg-slate-950 p-2">
+                        {/* Pre-Alarm Substream (Fast Load) */}
+                        <SmartVideoPlayer 
+                          siteId={processingAlarm.sites?.id} 
+                          cameraEsn={processingAlarm.cameras?.een_esn} 
+                          streamType="preview" 
+                        />
+                        <span className="absolute top-4 left-4 bg-amber-600 px-3 py-1 rounded-lg text-[9px] font-black shadow-xl uppercase tracking-widest border border-amber-400/50 z-10 pointer-events-none">Pre-Alarm Clip</span>
+                    </div>
+                    <div className="flex-1 relative bg-slate-950 p-2">
+                        {/* Live Main Stream (High Res) */}
+                        <SmartVideoPlayer 
+                          siteId={processingAlarm.sites?.id} 
+                          cameraEsn={processingAlarm.cameras?.een_esn} 
+                          streamType="main" 
+                        />
+                        <span className="absolute top-4 left-4 bg-red-600 px-3 py-1 rounded-lg text-[9px] font-black shadow-xl uppercase tracking-widest border border-red-400/50 z-10 pointer-events-none">Live Status</span>
+                    </div>
                 </div>
-                <div className="flex-1 relative bg-slate-950 p-2">
-                    {/* Live Main Stream (High Res) */}
-                    <SmartVideoPlayer 
-                      siteId={processingAlarm.sites?.id} 
-                      cameraEsn={processingAlarm.cameras?.een_esn} 
-                      streamType="main" 
-                    />
-                    <span className="absolute top-4 left-4 bg-red-600 px-3 py-1 rounded-lg text-[9px] font-black shadow-xl uppercase tracking-widest border border-red-400/50 z-10 pointer-events-none">Live Status</span>
-                </div>
-            </div>
-            
-            {/* ... KEEP YOUR BOTTOM HALF CODE HERE (The data tables, etc.) ... */}
-            
-        </div>
-      )}
-  </div>
-
+                
                 {/* BOTTOM: Context Tabs */}
                 <div className="flex-1 bg-[#0a0c10] flex flex-col">
                     <div className="flex border-b border-white/5 bg-black/40">
@@ -308,9 +302,10 @@ export default function AlarmsPage() {
                     </div>
                 </div>
             </div>
-        </div>
+          )}
+      </div>
 
-        {/* ⚡ RIGHT: ACTION CENTER */}
+      {/* ⚡ RIGHT: ACTION CENTER */}
         <div className="w-[320px] shrink-0 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
           
           {/* HARDWARE OVERRIDE */}
