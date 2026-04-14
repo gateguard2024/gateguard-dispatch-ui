@@ -1,355 +1,321 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import Hls from "hls.js";
 
-// --- MOCK DATA FOR UI STRUCTURE ---
-const MOCK_SITES = [
-  { id: "SITE-8259", name: "Pegasus Properties - Marbella Place", cameras: [{ id: "10054b8c", name: "Amenity Hall" }, { id: "cam2", name: "Front Gate" }, { id: "cam3", name: "Pool Area" }] },
-  { id: "SITE-8260", name: "Elevate Eagles Landing", cameras: [{ id: "cam4", name: "Leasing Office" }, { id: "cam5", name: "Dumpster" }] },
-];
-
+// ============================================================================
+// MOCK DATA (The "Sockets" for our future API hookups)
+// ============================================================================
 const MOCK_ALARMS = [
-  { id: 1, siteName: "Pegasus Properties - Marbella Place", cameraId: "10054b8c", camName: "Amenity Hall", type: "Motion Detected", time: "00:12s", severity: "high" },
-  { id: 2, siteName: "Elevate Eagles Landing", cameraId: "cam4", camName: "Leasing Office", type: "Person Loitering", time: "04:30s", severity: "medium" }
+  { id: "al-01", time: "2 Mins Ago", camId: "10054b8d", camName: "Front Gate", type: "Motion Detected", priority: "high", handled: false },
+  { id: "al-02", time: "15 Mins Ago", camId: "10054b8c", camName: "Amenity Hall", type: "Door Forced Open", priority: "critical", handled: false },
+  { id: "al-03", time: "1 Hour Ago", camId: "10054b8e", camName: "Pool Area", type: "Loitering", priority: "medium", handled: true },
 ];
 
+const MOCK_DOORS = [
+  { id: "door-1", name: "Front Gate Barrier", status: "Locked" },
+  { id: "door-2", name: "Amenity Hall Main", status: "Locked" },
+  { id: "door-3", name: "Pool Gate", status: "Unlocked" },
+];
+
+const MOCK_SOPS = [
+  "Visual verification of subject",
+  "Check Brivo access logs for credential",
+  "Trigger audio talk-down",
+  "Log incident or dispatch authorities"
+];
+
+// ============================================================================
+// MAIN SOC COMPONENT
+// ============================================================================
 export default function AlarmsPage() {
-  // --- CORE VIEW STATE ---
-  const [leftPanelMode, setLeftPanelMode] = useState<"alarms" | "patrol">("alarms");
-  const [canvasView, setCanvasView] = useState<"live" | "map">("live");
-  const [rightPanelTab, setRightPanelTab] = useState<"action" | "controls" | "notes">("action");
+  // --- CORE STATE ---
+  const [activeSite, setActiveSite] = useState({ name: "Pegasus Properties - Marbella Place", id: "SITE-8259" });
+  const [activeToken, setActiveToken] = useState<string | null>(null);
+  
+  // The 11 cameras you provisioned
+  const [dynamicCameras, setDynamicCameras] = useState<any[]>([
+    { id: "10054b8c", name: "Amenity Hall" },
+    { id: "10054b8d", name: "Front Gate" },
+    { id: "10054b8e", name: "Pool Area" },
+    { id: "10054b8f", name: "Leasing Office" },
+    { id: "10054b90", name: "Dumpster" },
+  ]);
+  
+  const [activeCameraId, setActiveCameraId] = useState<string | null>("10054b8c");
+  const [activeCameraName, setActiveCameraName] = useState<string>("Amenity Hall");
 
-  // --- ACTIVE SELECTION STATE ---
-  const [activeSite, setActiveSite] = useState(MOCK_SITES[0]);
-  const [activeAlarm, setActiveAlarm] = useState(MOCK_ALARMS[0]);
-  const [activeCameraId, setActiveCameraId] = useState(MOCK_ALARMS[0].cameraId);
-  const [activeCameraName, setActiveCameraName] = useState(MOCK_ALARMS[0].camName);
+  // --- SOC VIEW STATE ---
+  type CanvasMode = 'grid' | 'live' | 'incident' | 'map';
+  const [canvasView, setCanvasView] = useState<CanvasMode>('grid');
+  
+  // DVR & Automation State
+  const [dvrOffset, setDvrOffset] = useState<number>(0); // 0 = Live
+  const [isPatrolMode, setIsPatrolMode] = useState(false);
+  const patrolIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // --- LIVE VIDEO STATE ---
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [isVideoLoading, setIsVideoLoading] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [activeToken, setActiveToken] = useState<string>("");
-  const [dynamicCameras, setDynamicCameras] = useState(MOCK_SITES[0].cameras);
-
-  // 0. Load the token from localStorage ONLY on the client side
+  // --- LOAD EEN TOKEN ---
   useEffect(() => {
-    const token = localStorage.getItem(`een_token_${activeSite.name}`) || "";
-    setActiveToken(token);
-  }, [activeSite.name]);
+    const token = localStorage.getItem(`een_token_${activeSite.name}`);
+    if (token) setActiveToken(token);
+  }, [activeSite]);
 
-  // 0.5 Load REAL cameras from the Setup page data
+  // --- VIRTUAL PATROL LOGIC ---
   useEffect(() => {
-    const savedCameras = localStorage.getItem(`een_cameras_${activeSite.name}`);
-    if (savedCameras) {
-      try {
-        const parsed = JSON.parse(savedCameras);
-        if (parsed && parsed.length > 0) {
-          const realCameras = parsed.map((cam: any) => ({
-            // EEN API returns different structures depending on the endpoint used (array vs object)
-            id: cam.camera_id || cam.id || cam.esn || (Array.isArray(cam) ? cam[1] : "unknown"), 
-            name: cam.name || (Array.isArray(cam) ? cam[2] : "Unnamed Camera")
-          })).filter((c: any) => c.id && c.id !== "unknown");
-
-          if (realCameras.length > 0) {
-            setDynamicCameras(realCameras);
-            
-            // Auto-select the first real camera if our current active ID isn't in the real list
-            if (!realCameras.find((c: any) => c.id === activeCameraId)) {
-              setActiveCameraId(realCameras[0].id);
-              setActiveCameraName(realCameras[0].name);
-            }
-            return;
-          }
-        }
-      } catch (e) {
-        console.error("Failed to load real cameras from storage", e);
-      }
+    if (isPatrolMode) {
+      setCanvasView('live'); // Force single cam view for patrol
+      let currentIndex = dynamicCameras.findIndex(c => c.id === activeCameraId);
+      
+      patrolIntervalRef.current = setInterval(() => {
+        currentIndex = (currentIndex + 1) % dynamicCameras.length;
+        setActiveCameraId(dynamicCameras[currentIndex].id);
+        setActiveCameraName(dynamicCameras[currentIndex].name);
+      }, 10000); // Switch camera every 10 seconds
+    } else {
+      if (patrolIntervalRef.current) clearInterval(patrolIntervalRef.current);
     }
-    // Fallback to mock if nothing is saved
-    setDynamicCameras(activeSite.cameras);
-  }, [activeSite.name]); // Intentionally omitting activeCameraId to avoid re-triggering loops
+    return () => { if (patrolIntervalRef.current) clearInterval(patrolIntervalRef.current); };
+  }, [isPatrolMode, dynamicCameras, activeCameraId]);
 
-  // 1. Fetch Stream URL whenever the active camera changes
-  useEffect(() => {
-    const fetchStream = async () => {
-      if (!activeToken || !activeCameraId) {
-        setVideoUrl(null);
-        return;
-      }
-
-      setIsVideoLoading(true);
-      try {
-        const response = await fetch('/api/een/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: activeToken, siteName: activeSite.name, cameraId: activeCameraId })
-        });
-
-        const data = await response.json();
-        if (response.ok && data.url) {
-            setVideoUrl(data.url);
-        } else {
-            setVideoUrl(null);
-        }
-      } catch (err) {
-        console.error("Stream Proxy Error:", err);
-        setVideoUrl(null);
-      } finally {
-        setIsVideoLoading(false);
-      }
-    };
-
-    fetchStream();
-  }, [activeCameraId, activeSite.name, activeToken]);
-
-  // 2. Attach HLS.js when we get a valid URL
-  useEffect(() => {
-    if (videoUrl && videoRef.current && activeToken) {
-      const SITES_CONFIG = [
-        { siteName: "Pegasus Properties - Marbella Place", cluster: "https://media.c031.eagleeyenetworks.com" },
-      ];
-      const activeConfig = SITES_CONFIG.find(s => s.siteName === activeSite.name);
-      const clusterBase = activeConfig ? activeConfig.cluster : "https://media.c031.eagleeyenetworks.com";
-
-      let hls: Hls | null = null;
-
-      if (Hls.isSupported()) {
-        hls = new Hls({
-            xhrSetup: function(xhr, url) {
-                let finalUrl = url;
-
-                if (url.includes('getMpegTsFile') && !url.includes('eagleeyenetworks.com')) {
-                    const urlObj = new URL(url, 'http://dummy.com'); 
-                    let path = urlObj.pathname + urlObj.search;
-                    
-                    if (path.includes('getMpegTsFile')) {
-                        path = path.substring(path.indexOf('getMpegTsFile'));
-                    }
-                    
-                    finalUrl = `${clusterBase}/media/streams/main/hls/${path}`;
-                }
-
-                if (finalUrl.includes('eagleeyenetworks.com')) {
-                    const proxyUrl = `/api/een/proxy?url=${encodeURIComponent(finalUrl)}&token=${encodeURIComponent(activeToken)}`;
-                    xhr.open('GET', proxyUrl, true);
-                } else {
-                    xhr.open('GET', url, true);
-                }
-            }
-        });
-        
-        hls.loadSource(videoUrl); 
-        hls.attachMedia(videoRef.current);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          videoRef.current?.play().catch(e => console.error("Autoplay blocked:", e));
-        });
-      } else if (videoRef.current.canPlayType('application/vnd.apple.mpegurl')) {
-        const proxiedVideoUrl = `/api/een/proxy?url=${encodeURIComponent(videoUrl)}&token=${encodeURIComponent(activeToken)}`;
-        videoRef.current.src = proxiedVideoUrl;
-        videoRef.current.addEventListener('loadedmetadata', () => {
-          videoRef.current?.play().catch(e => console.error("Autoplay blocked:", e));
-        });
-      }
-
-      return () => {
-        if (hls) {
-          hls.destroy();
-        }
-      };
-    }
-  }, [videoUrl, activeSite.name, activeToken]);
-
-  const handleAlarmClick = (alarm: any) => {
-    setActiveAlarm(alarm);
-    const site = MOCK_SITES.find(s => s.name === alarm.siteName) || MOCK_SITES[0];
-    setActiveSite(site);
-    setActiveCameraId(alarm.cameraId);
-    setActiveCameraName(alarm.camName);
-    setCanvasView("live");
+  // --- HELPER: DVR TIMESTAMP ---
+  const getEenTimestamp = (offsetSeconds: number) => {
+    if (offsetSeconds === 0) return null;
+    const d = new Date(Date.now() - offsetSeconds * 1000);
+    const pad = (n: number, w = 2) => String(n).padStart(w, '0');
+    return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}.000`;
   };
 
-  const handleCameraSelect = (camId: string, camName: string) => {
-    setActiveCameraId(camId);
-    setActiveCameraName(camName);
+  // --- MOCK API ACTIONS ---
+  const handleUnlockDoor = (doorId: string, doorName: string) => {
+    // TODO: Wire up `POST /api/brivo/doors/${doorId}/access`
+    console.log(`BRIVO API: Unlocking ${doorName} (${doorId})`);
+    alert(`Brivo API Triggered: Unlocked ${doorName}`);
+  };
+
+  const handleFlagEvent = () => {
+    // TODO: Wire up Supabase Insert
+    console.log(`SUPABASE: Flagged event on ${activeCameraId} at -${dvrOffset}s`);
+    alert(`Incident logged to database for ${activeCameraName}.`);
+  };
+
+  const handleAlarmClick = (alarm: any) => {
+    setActiveCameraId(alarm.camId);
+    setActiveCameraName(alarm.camName);
+    setDvrOffset(15); // Auto-rewind 15 seconds to see the trigger
+    setCanvasView('incident');
+    setIsPatrolMode(false);
+  };
+
+  // --- VIDEO URL GENERATOR (PRESERVES YOUR PROXY!) ---
+  const generateStreamUrl = (camId: string, streamType: 'preview' | 'primary', offsetSeconds: number = 0) => {
+    if (!activeToken || !camId) return '';
+    const cluster = "https://media.c031.eagleeyenetworks.com"; // Simplified for now
+    let hlsUrl = `${cluster}/media/streams/${streamType}/hls/getPlaylist.m3u8?esn=${camId}`;
+    
+    const startTime = getEenTimestamp(offsetSeconds);
+    if (startTime) hlsUrl += `&startTime=${startTime}`;
+    
+    return `/api/een/proxy?url=${encodeURIComponent(hlsUrl)}&token=${encodeURIComponent(activeToken)}`;
   };
 
   return (
-    <div className="w-full h-full flex gap-6 p-6 relative bg-[#05070a]">
+    <div className="w-full h-full flex flex-col p-4 bg-[#05070a] overflow-hidden text-white font-sans">
       
-      {/* LEFT: TRIAGE & PATROL QUEUE */}
-      <div className="w-80 flex flex-col gap-4 z-10 shrink-0">
-        <div className="flex bg-white/5 p-1 rounded-xl border border-white/10 backdrop-blur-md">
-          <button onClick={() => setLeftPanelMode("alarms")} className={`flex-1 text-[10px] font-black tracking-widest py-2.5 rounded-lg transition-all ${leftPanelMode === "alarms" ? "bg-rose-500/20 text-rose-400 border border-rose-500/30 shadow-inner" : "text-slate-400 hover:text-white"}`}>
-            🚨 ALARMS (2)
-          </button>
-          <button onClick={() => setLeftPanelMode("patrol")} className={`flex-1 text-[10px] font-black tracking-widest py-2.5 rounded-lg transition-all ${leftPanelMode === "patrol" ? "bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 shadow-inner" : "text-slate-400 hover:text-white"}`}>
-            👁️ PATROLS
-          </button>
+      {/* TOP COMMAND DECK */}
+      <div className="flex justify-between items-center mb-4 z-20 bg-white/5 border border-white/10 rounded-2xl p-3 backdrop-blur-md">
+        <div className="flex items-center gap-4">
+            <h1 className="text-2xl font-black tracking-tight text-white">{activeSite.name}</h1>
+            <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/50 px-2 py-0.5 rounded text-[10px] font-black tracking-widest">
+                {activeToken ? "SYSTEM ONLINE" : "VMS DISCONNECTED"}
+            </span>
         </div>
-        
-        {leftPanelMode === "alarms" && (
-          <div className="flex flex-col gap-3 overflow-y-auto custom-scrollbar pr-2">
-            {MOCK_ALARMS.map((alarm) => (
-              <div key={alarm.id} onClick={() => handleAlarmClick(alarm)} className={`rounded-2xl p-4 cursor-pointer relative overflow-hidden transition-all ${activeAlarm.id === alarm.id ? 'bg-gradient-to-br from-slate-800 to-slate-900 border border-rose-500/50 shadow-[0_0_20px_rgba(244,63,94,0.15)]' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}>
-                {activeAlarm.id === alarm.id && <div className="absolute top-0 left-0 w-1.5 h-full bg-rose-500"></div>}
-                <div className="flex justify-between items-start mb-2">
-                  <span className={`text-[10px] font-black px-2 py-0.5 rounded uppercase tracking-widest ${activeAlarm.id === alarm.id ? 'bg-rose-500/20 text-rose-400' : 'text-slate-500 border border-slate-700'}`}>NEW EVENT</span>
-                  <span className="text-[10px] font-mono text-rose-400 font-bold animate-pulse">{alarm.time}</span>
-                </div>
-                <h3 className={`font-bold text-lg leading-tight mb-1 ${activeAlarm.id === alarm.id ? 'text-white' : 'text-slate-300'}`}>{alarm.siteName.split('-')[1] || alarm.siteName}</h3>
-                <p className="text-slate-400 text-xs">{alarm.camName} • {alarm.type}</p>
-              </div>
-            ))}
-          </div>
-        )}
 
-        {leftPanelMode === "patrol" && (
-          <div className="flex flex-col gap-3 overflow-y-auto custom-scrollbar pr-2">
-            <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold mb-2">Select Site to Tour</p>
-            {MOCK_SITES.map((site) => (
-              <div key={site.id} onClick={() => { setActiveSite(site); setCanvasView("live"); }} className={`rounded-2xl p-4 cursor-pointer border transition-all ${activeSite.id === site.id ? 'bg-indigo-900/20 border-indigo-500/50' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}>
-                <h3 className="font-bold text-sm text-white mb-1">{site.name}</h3>
-                <p className="text-slate-500 text-xs">{site.id === activeSite.id ? dynamicCameras.length : site.cameras.length} Cameras Available</p>
-              </div>
+        {/* VIEW TOGGLES */}
+        <div className="flex bg-black/50 border border-white/10 rounded-xl p-1 shadow-inner">
+            {[
+                { id: 'grid', label: 'VIDEO WALL' },
+                { id: 'live', label: 'SINGLE CAM' },
+                { id: 'incident', label: 'DUAL PANE' },
+                { id: 'map', label: 'SITE MAP' }
+            ].map(view => (
+                <button 
+                    key={view.id}
+                    onClick={() => setCanvasView(view.id as CanvasMode)} 
+                    className={`px-4 py-2 rounded-lg font-bold text-[10px] uppercase tracking-widest transition-all ${canvasView === view.id ? 'bg-indigo-600 shadow-[0_0_15px_rgba(79,70,229,0.4)] text-white' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                >
+                    {view.label}
+                </button>
             ))}
-          </div>
-        )}
+        </div>
+
+        {/* PATROL TOGGLE */}
+        <button 
+            onClick={() => setIsPatrolMode(!isPatrolMode)}
+            className={`flex items-center gap-2 px-6 py-2 rounded-xl font-black text-xs tracking-widest transition-all border ${isPatrolMode ? 'bg-amber-500/20 border-amber-500 text-amber-400 animate-pulse' : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'}`}
+        >
+            <div className={`w-2 h-2 rounded-full ${isPatrolMode ? 'bg-amber-400' : 'bg-slate-600'}`}></div>
+            {isPatrolMode ? 'PATROL ACTIVE' : 'START PATROL'}
+        </button>
       </div>
 
-      {/* CENTER: THE IMMERSIVE CANVAS */}
-      <div className="flex-1 relative rounded-3xl overflow-hidden border border-white/10 shadow-2xl bg-black flex flex-col group">
-        <div className="absolute top-0 w-full p-6 bg-gradient-to-b from-black/90 via-black/50 to-transparent flex justify-between items-start z-30 pointer-events-none">
-          <div className="pointer-events-auto flex flex-col gap-2">
-            <h1 className="text-3xl font-black text-white tracking-wide drop-shadow-lg flex items-center">
-              <span className={`w-3 h-3 rounded-full mr-4 shadow-[0_0_15px_currentColor] ${leftPanelMode === 'alarms' ? 'bg-rose-500 text-rose-500' : 'bg-indigo-500 text-indigo-500'}`}></span>
-              {activeSite.name.split('-')[1] || activeSite.name}
-            </h1>
-            <div className="flex items-center gap-2">
-               <span className="bg-black/50 backdrop-blur-md border border-white/10 px-3 py-1 rounded-lg text-xs font-bold text-white">🎥 {activeCameraName}</span>
-               {leftPanelMode === 'alarms' && <span className="bg-rose-500/20 text-rose-400 border border-rose-500/30 px-3 py-1 rounded-lg text-[10px] font-black tracking-widest uppercase animate-pulse">MOTION TRIGGER</span>}
+      {/* 3-COLUMN LAYOUT */}
+      <div className="flex flex-1 gap-4 overflow-hidden">
+        
+        {/* ==================================================================== */}
+        {/* LEFT PANEL: ALARM QUEUE & HISTORY */}
+        {/* ==================================================================== */}
+        <div className="w-80 shrink-0 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 backdrop-blur-md flex-1">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4 flex justify-between">
+                    Alarm Queue <span className="bg-red-500 text-white px-1.5 rounded">2</span>
+                </h3>
+                
+                <div className="flex flex-col gap-2">
+                    {MOCK_ALARMS.map(alarm => (
+                        <div 
+                            key={alarm.id} 
+                            onClick={() => handleAlarmClick(alarm)}
+                            className={`p-3 rounded-xl border cursor-pointer transition-all ${alarm.handled ? 'bg-black/40 border-white/5 opacity-50' : 'bg-red-500/10 border-red-500/30 hover:bg-red-500/20'}`}
+                        >
+                            <div className="flex justify-between items-start mb-1">
+                                <span className={`text-[10px] font-bold uppercase tracking-wider ${alarm.handled ? 'text-slate-500' : 'text-red-400'}`}>{alarm.type}</span>
+                                <span className="text-[9px] text-slate-500">{alarm.time}</span>
+                            </div>
+                            <span className="text-sm font-bold text-white block">{alarm.camName}</span>
+                        </div>
+                    ))}
+                </div>
             </div>
-          </div>
-          <div className="flex gap-2 bg-black/60 backdrop-blur-xl p-1.5 rounded-xl border border-white/10 pointer-events-auto shadow-2xl">
-            <button onClick={() => setCanvasView("live")} className={`px-5 py-2 text-xs font-black tracking-widest rounded-lg transition-all ${canvasView === "live" ? "bg-white/20 text-white shadow-inner" : "text-slate-400 hover:text-white"}`}>LIVE FEED</button>
-            <button onClick={() => setCanvasView("map")} className={`px-5 py-2 text-xs font-black tracking-widest rounded-lg transition-all ${canvasView === "map" ? "bg-emerald-500/20 text-emerald-400 shadow-inner border border-emerald-500/30" : "text-slate-400 hover:text-white"}`}>TACTICAL MAP</button>
-          </div>
         </div>
 
-        {canvasView === "live" ? (
-          <div className="flex-1 w-full h-full relative flex items-center justify-center bg-[#0a0f18] overflow-hidden">
-            {videoUrl ? (
-                <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover opacity-90" autoPlay muted playsInline />
-            ) : (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900 border-2 border-dashed border-white/10 m-4 rounded-3xl">
-                    {isVideoLoading ? (
-                        <span className="text-emerald-500 text-sm font-bold tracking-widest animate-pulse">CONNECTING TO EEN STREAM...</span>
-                    ) : (
-                        <span className="text-slate-500 text-sm font-bold tracking-widest">CAMERA OFFLINE / NO STREAM URL</span>
-                    )}
-                </div>
-            )}
+        {/* ==================================================================== */}
+        {/* CENTER CANVAS: VIDEO RENDERING ENGINE */}
+        {/* ==================================================================== */}
+        <div className="flex-1 bg-black border border-white/10 rounded-3xl relative overflow-hidden shadow-2xl flex flex-col">
             
-            {leftPanelMode === "alarms" && (
-                <div className="absolute bottom-6 left-6 w-80 aspect-video bg-black rounded-2xl overflow-hidden shadow-[0_0_30px_rgba(0,0,0,0.8)] border-2 border-rose-500/50 z-20 group/pip hover:scale-105 transition-transform cursor-pointer origin-bottom-left">
-                  <div className="absolute top-2 left-2 bg-rose-600 backdrop-blur px-2 py-0.5 rounded text-[9px] font-black text-white uppercase tracking-wider z-10 shadow-md">EVENT SNAPSHOT</div>
-                  <img src="https://images.unsplash.com/photo-1549317661-bd32c8ce0db2?q=80&w=2070&auto=format&fit=crop" alt="Event Snapshot" className="w-full h-full object-cover opacity-80" />
+            {/* GRID VIEW */}
+            {canvasView === 'grid' && (
+                <div className="absolute inset-0 p-4 overflow-y-auto custom-scrollbar">
+                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                        {dynamicCameras.map(cam => (
+                            <div 
+                                key={cam.id} 
+                                onDoubleClick={() => { setActiveCameraId(cam.id); setActiveCameraName(cam.name); setCanvasView('live'); }}
+                                className="aspect-video bg-slate-900 border border-white/10 rounded-xl overflow-hidden relative cursor-pointer group"
+                            >
+                                <video src={generateStreamUrl(cam.id, 'preview')} autoPlay muted playsInline loop className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity" />
+                                <div className="absolute bottom-2 left-2 bg-black/70 px-2 py-0.5 rounded text-[10px] font-bold text-white">{cam.name}</div>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             )}
 
-{/* BOTTOM RIGHT: Camera Status Grid (No API Image Fetching) */}
-            <div className="absolute bottom-6 right-6 flex gap-3 z-20 overflow-x-auto max-w-[60%] snap-x p-1 custom-scrollbar pointer-events-auto">
-                {dynamicCameras.map((cam) => {
-                    const isSelected = activeCameraId === cam.id;
-
-                    return (
-                        <div 
-                            key={cam.id} 
-                            onClick={() => handleCameraSelect(cam.id, cam.name)} 
-                            className={`shrink-0 w-40 aspect-video bg-slate-900 border-2 rounded-xl cursor-pointer flex flex-col items-center justify-center p-2 snap-center relative overflow-hidden transition-all hover:scale-105 origin-bottom ${isSelected ? 'border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)] scale-105 z-30' : 'border-white/10 hover:border-white/30'}`}
-                        >
-                            {/* Animated Radar/Status Background */}
-                            <div className="absolute inset-0 flex items-center justify-center opacity-20">
-                                <div className={`w-16 h-16 rounded-full border border-white/20 ${isSelected ? 'animate-ping border-emerald-500' : ''}`}></div>
-                                <div className="absolute w-24 h-24 rounded-full border border-white/10"></div>
-                            </div>
-                            
-                            {/* Status Icon */}
-                            <div className="flex flex-col items-center z-10 gap-2">
-                                <div className="relative flex h-3 w-3">
-                                  {isSelected ? (
-                                      <>
-                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                        <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,1)]"></span>
-                                      </>
-                                  ) : (
-                                      <span className="relative inline-flex rounded-full h-3 w-3 bg-slate-500"></span>
-                                  )}
-                                </div>
-                                <span className={`text-[10px] font-black uppercase tracking-widest ${isSelected ? 'text-emerald-400' : 'text-slate-500'}`}>
-                                    {isSelected ? 'STREAMING' : 'STANDBY'}
-                                </span>
-                            </div>
-
-                            {/* Camera Name */}
-                            <span className="absolute bottom-2 left-2 right-2 text-center text-[11px] font-bold text-white drop-shadow-md z-10 bg-black/80 px-2 py-1 rounded-md border border-white/10 backdrop-blur-sm truncate">
-                                {cam.name}
+            {/* SINGLE CAM VIEW */}
+            {canvasView === 'live' && activeCameraId && (
+                <div className="absolute inset-0 flex flex-col">
+                    <div className="flex-1 relative">
+                        <video key={`live-${activeCameraId}-${dvrOffset}`} src={generateStreamUrl(activeCameraId, 'primary', dvrOffset)} autoPlay muted playsInline className="w-full h-full object-contain" />
+                        <div className="absolute top-4 left-4 flex gap-2">
+                            <span className={`px-3 py-1 rounded text-[10px] font-black tracking-widest backdrop-blur-md ${dvrOffset === 0 ? 'bg-red-500/20 text-red-400 border border-red-500/50' : 'bg-amber-500/20 text-amber-400 border border-amber-500/50'}`}>
+                                {dvrOffset === 0 ? '● LIVE' : `DVR (-${dvrOffset}s)`}
+                            </span>
+                            <span className="bg-black/60 border border-white/10 px-3 py-1 rounded text-white text-[10px] font-bold tracking-widest backdrop-blur-md">
+                                {activeCameraName.toUpperCase()}
                             </span>
                         </div>
-                    );
-                })}
-            </div>
-          </div>
-        ) : (
-          <div className="flex-1 w-full h-full relative bg-[#17263c] overflow-hidden">
-             <img src="https://images.unsplash.com/photo-1524661135-423995f22d0b?q=80&w=2074&auto=format&fit=crop" alt="Tactical Map" className="absolute inset-0 w-full h-full object-cover opacity-60 mix-blend-screen grayscale" />
-             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20">
-                <div className={`absolute -inset-8 rounded-full animate-ping ${leftPanelMode === 'alarms' ? 'bg-rose-500/20' : 'bg-indigo-500/20'}`}></div>
-                <div className={`relative w-6 h-6 rounded-full border-[3px] border-white flex items-center justify-center shadow-[0_0_20px_currentColor] ${leftPanelMode === 'alarms' ? 'bg-rose-500 text-rose-500' : 'bg-indigo-500 text-indigo-500'}`}>
-                  <div className="w-2 h-2 bg-white rounded-full"></div>
-                </div>
-             </div>
-          </div>
-        )}
-      </div>
-
-      {/* RIGHT: DYNAMIC ACTION DRAWER */}
-      <div className="w-[360px] flex flex-col gap-4 z-10 shrink-0">
-        <div className="flex bg-white/5 backdrop-blur-xl border border-white/10 p-1.5 rounded-2xl shrink-0">
-          <button onClick={() => setRightPanelTab("action")} className={`flex-1 text-[10px] font-black uppercase py-2.5 rounded-xl transition-all tracking-wider ${rightPanelTab === "action" ? "bg-white/20 text-white shadow-sm" : "text-slate-400 hover:text-white"}`}>Action & SOP</button>
-          <button onClick={() => setRightPanelTab("controls")} className={`flex-1 text-[10px] font-black uppercase py-2.5 rounded-xl transition-all tracking-wider ${rightPanelTab === "controls" ? "bg-white/20 text-white shadow-sm" : "text-slate-400 hover:text-white"}`}>Controls</button>
-        </div>
-
-        <div className="flex-1 bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-5 flex flex-col shadow-2xl relative overflow-hidden min-h-0">
-          {rightPanelTab === "action" && (
-            <div className="flex flex-col h-full">
-                <h2 className="text-[10px] font-black text-slate-500 tracking-[0.2em] mb-4">SOP & RESOLUTION</h2>
-                <div className="space-y-3 mb-6 flex-1 overflow-y-auto pr-2 custom-scrollbar">
-                    <label className="flex items-start space-x-3 cursor-pointer group">
-                    <input type="checkbox" className="mt-1 w-4 h-4 rounded border-slate-600 bg-black/50 text-emerald-500" />
-                    <span className="text-sm text-slate-300 group-hover:text-white transition-colors">Confirm visual via live feed.</span>
-                    </label>
-                </div>
-                <div className="shrink-0 pt-4 border-t border-white/10">
-                    <h2 className="text-[10px] font-black text-slate-500 tracking-[0.2em] mb-3">QUICK RESOLVE</h2>
-                    <div className="grid grid-cols-2 gap-2 mb-4">
-                        <button className="bg-slate-800 text-[10px] text-white font-bold py-2.5 rounded-xl border border-slate-700 hover:bg-slate-700">NOTHING SEEN</button>
-                        <button className="bg-emerald-900/40 text-[10px] text-emerald-400 font-bold py-2.5 rounded-xl border border-emerald-500/30 hover:bg-emerald-900/60">AUTH GUEST</button>
                     </div>
-                    <button className="w-full bg-blue-600 text-white font-black py-3.5 rounded-xl text-xs tracking-widest shadow-lg hover:bg-blue-500">LOG TO BRIVO & CLOSE</button>
+                    {/* DVR SCRUBBER */}
+                    <div className="h-16 bg-slate-950 border-t border-white/10 flex items-center px-6 gap-4">
+                        <button onClick={() => setDvrOffset(0)} className={`px-4 py-1.5 rounded text-[10px] font-black tracking-widest ${dvrOffset === 0 ? 'bg-red-600 text-white' : 'bg-white/5 text-slate-400'}`}>LIVE</button>
+                        <button onClick={() => setDvrOffset(15)} className={`px-4 py-1.5 rounded text-[10px] font-black tracking-widest ${dvrOffset === 15 ? 'bg-amber-600 text-white' : 'bg-white/5 text-slate-400'}`}>-15s</button>
+                        <button onClick={() => setDvrOffset(60)} className={`px-4 py-1.5 rounded text-[10px] font-black tracking-widest ${dvrOffset === 60 ? 'bg-amber-600 text-white' : 'bg-white/5 text-slate-400'}`}>-1m</button>
+                        <button onClick={() => setDvrOffset(300)} className={`px-4 py-1.5 rounded text-[10px] font-black tracking-widest ${dvrOffset === 300 ? 'bg-amber-600 text-white' : 'bg-white/5 text-slate-400'}`}>-5m</button>
+                    </div>
+                </div>
+            )}
+
+            {/* INCIDENT VIEW (DUAL PANE) */}
+            {canvasView === 'incident' && activeCameraId && (
+                <div className="absolute inset-0 flex">
+                    <div className="flex-1 border-r border-white/10 relative">
+                        {/* DVR Playback Left */}
+                        <video key={`incident-${activeCameraId}-${dvrOffset}`} src={generateStreamUrl(activeCameraId, 'primary', dvrOffset || 15)} autoPlay muted playsInline className="w-full h-full object-contain" />
+                        <span className="absolute top-4 left-4 bg-amber-500/20 text-amber-400 border border-amber-500/50 px-3 py-1 rounded text-[10px] font-black tracking-widest backdrop-blur-md">
+                            INCIDENT PLAYBACK
+                        </span>
+                    </div>
+                    <div className="flex-1 relative">
+                        {/* Live Feed Right */}
+                        <video key={`live-${activeCameraId}`} src={generateStreamUrl(activeCameraId, 'primary', 0)} autoPlay muted playsInline className="w-full h-full object-contain" />
+                        <span className="absolute top-4 left-4 bg-red-500/20 text-red-400 border border-red-500/50 px-3 py-1 rounded text-[10px] font-black tracking-widest backdrop-blur-md">
+                            LIVE STATUS
+                        </span>
+                    </div>
+                </div>
+            )}
+
+            {/* MAP VIEW */}
+            {canvasView === 'map' && (
+                <div className="absolute inset-0 bg-slate-900 flex items-center justify-center relative">
+                    <div className="absolute inset-0 opacity-20 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.1)_1px,transparent_1px)] bg-[size:20px_20px]"></div>
+                    <h2 className="text-white/20 font-black text-4xl uppercase tracking-[1em] absolute">FLOORPLAN API PENDING</h2>
+                    {/* Mock Map Pins */}
+                    <div className="absolute top-[40%] left-[30%] w-4 h-4 bg-emerald-500 rounded-full shadow-[0_0_15px_rgba(16,185,129,1)] cursor-pointer hover:scale-150 transition-transform"></div>
+                    <div className="absolute top-[60%] right-[40%] w-4 h-4 bg-red-500 rounded-full shadow-[0_0_15px_rgba(239,68,68,1)] animate-pulse cursor-pointer"></div>
+                </div>
+            )}
+
+        </div>
+
+        {/* ==================================================================== */}
+        {/* RIGHT PANEL: SOPs, BRIVO DOORS, AND REPORTING */}
+        {/* ==================================================================== */}
+        <div className="w-80 shrink-0 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
+            
+            {/* BRIVO ACCESS CONTROL */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 backdrop-blur-md">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Access Control</h3>
+                <div className="flex flex-col gap-2">
+                    {MOCK_DOORS.map(door => (
+                        <div key={door.id} className="bg-black/50 border border-white/5 p-3 rounded-xl flex justify-between items-center">
+                            <div>
+                                <span className="text-xs font-bold text-white block">{door.name}</span>
+                                <span className={`text-[9px] font-black uppercase tracking-widest ${door.status === 'Locked' ? 'text-slate-500' : 'text-emerald-400'}`}>{door.status}</span>
+                            </div>
+                            <button 
+                                onClick={() => handleUnlockDoor(door.id, door.name)}
+                                className="bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-black px-3 py-1.5 rounded-lg transition-all shadow-[0_0_10px_rgba(37,99,235,0.3)]"
+                            >
+                                UNLOCK
+                            </button>
+                        </div>
+                    ))}
                 </div>
             </div>
-          )}
-          
-          {rightPanelTab === "controls" && (
-             <div className="flex flex-col h-full text-white text-sm">
-                 <p className="text-slate-400 text-xs mb-4">Site hardware controls will render here.</p>
-             </div>
-          )}
+
+            {/* STANDARD OPERATING PROCEDURES */}
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 backdrop-blur-md flex-1">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Active SOP</h3>
+                <div className="flex flex-col gap-2 mb-6">
+                    {MOCK_SOPS.map((sop, i) => (
+                        <label key={i} className="flex items-start gap-3 cursor-pointer group">
+                            <input type="checkbox" className="mt-1 accent-emerald-500" />
+                            <span className="text-xs text-slate-300 group-hover:text-white transition-colors leading-snug">{sop}</span>
+                        </label>
+                    ))}
+                </div>
+
+                <button 
+                    onClick={handleFlagEvent}
+                    className="w-full bg-red-600 hover:bg-red-500 text-white font-black py-3 rounded-xl text-xs tracking-widest shadow-[0_0_15px_rgba(220,38,38,0.4)] transition-all flex items-center justify-center gap-2"
+                >
+                    <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+                    FLAG INCIDENT TO DB
+                </button>
+            </div>
+
         </div>
       </div>
-
     </div>
   );
 }
