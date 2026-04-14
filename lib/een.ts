@@ -2,10 +2,10 @@
 import { supabase } from '@/lib/supabase';
 
 export async function getValidEENToken(siteId: string) {
-  // 1. Ask Supabase for ALL necessary pieces of data (Added secrets and refresh tokens)
+  // 1. Ask Supabase for ALL necessary pieces of data, including the new een_location_id
   const { data: site, error } = await supabase
     .from('sites')
-    .select('een_access_token, een_cluster, een_api_key, een_client_id, een_client_secret, een_refresh_token, een_token_expires_at') 
+    .select('een_access_token, een_cluster, een_api_key, een_client_id, een_client_secret, een_refresh_token, een_token_expires_at, een_location_id') 
     .eq('id', siteId)
     .single();
 
@@ -21,7 +21,8 @@ export async function getValidEENToken(siteId: string) {
     return {
       token: site.een_access_token,
       cluster: site.een_cluster,
-      apiKey: site.een_api_key // <-- Satisfies the API key requirement!
+      apiKey: site.een_api_key,
+      locationId: site.een_location_id // <-- Added for location filtering!
     };
   }
 
@@ -70,10 +71,11 @@ export async function getValidEENToken(siteId: string) {
     })
     .eq('id', siteId);
 
-  // Return the newly refreshed token AND the API key!
+  // Return the newly refreshed token AND the locationId!
   return { 
     token: data.access_token, 
     cluster: site.een_cluster,
-    apiKey: site.een_api_key // <-- Satisfies the API key requirement after refresh!
+    apiKey: site.een_api_key,
+    locationId: site.een_location_id // <-- Added here too!
   };
 }
