@@ -1,64 +1,87 @@
-"use client";
-
-import { usePathname } from "next/navigation";
-import Link from "next/link";
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
+import Link from "next/link";
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
+const inter = Inter({ subsets: ["latin"] });
 
-  // We will eventually connect this to a real alarm listener
-  const hasActiveAlarm = false; 
+export const metadata: Metadata = {
+  title: "GateGuard Dispatch | Infrastructure Hub",
+  description: "Enterprise SOC Operations Center",
+};
 
-  // Helper function to define button styles
-  const getLinkStyles = (path: string) => {
-    const isActive = pathname === path;
-    
-    // Active Style
-    if (isActive) {
-      return "px-6 py-1.5 text-sm font-bold rounded-xl text-white bg-gradient-to-r from-emerald-500/80 to-teal-500/80 shadow-lg shadow-emerald-500/20 transition-all";
-    }
-    
-    // Special case for Alarms flashing
-    if (path === "/alarms" && hasActiveAlarm) {
-      return "px-6 py-1.5 text-sm font-bold rounded-xl text-rose-400 bg-rose-500/10 border border-rose-500/30 animate-pulse transition-all";
-    }
+// --- NAVIGATION CONFIG ---
+const NAV_ITEMS = [
+  { label: "SOC DECK", path: "/alarms", icon: "M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" },
+  { label: "SITE MAPS", path: "/map", icon: "M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-1.447-.894L15 9m0 8V9m0 0L9 7" },
+  { label: "INFRASTRUCTURE", path: "/setup", icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" },
+];
 
-    // Default/Inactive Style
-    return "px-6 py-1.5 text-sm font-bold rounded-xl text-slate-400 hover:text-white hover:bg-white/10 transition-all";
-  };
-
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
-    <html lang="en">
-      <body className="bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-[#05070a] to-black text-slate-200 font-sans overflow-hidden h-screen flex flex-col">
+    <html lang="en" className="h-full bg-[#030406] text-slate-200 antialiased">
+      <body className={`${inter.className} h-full overflow-hidden`}>
         
-        <header className="w-full flex items-center justify-between px-6 py-4 z-50 bg-black/20 backdrop-blur-md border-b border-white/5">
-          <div className="flex items-center space-x-8">
-            <Link href="/" className="flex items-center space-x-3 cursor-pointer group">
-              <div className="w-10 h-10 rounded-xl overflow-hidden flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.2)] group-hover:shadow-[0_0_25px_rgba(16,185,129,0.5)] transition-all bg-white/5">
-                <img src="/Logo.jp2" alt="GateGuard Logo" className="w-full h-full object-cover" />
+        {/* --- GLOBAL APP WRAPPER --- */}
+        <div className="flex h-screen w-screen p-4 lg:p-6 gap-6 overflow-hidden">
+          
+          {/* 📱 PERSISTENT SIDEBAR: The "Hardware Control" Panel */}
+          <aside className="w-24 lg:w-28 flex flex-col items-center py-8 bg-[#0a0c10] border border-white/5 rounded-[2.5rem] shadow-2xl shrink-0">
+            {/* BRANDING */}
+            <div className="mb-12">
+              <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-900/40">
+                <div className="w-5 h-5 border-2 border-white rounded-sm" />
               </div>
-              <span className="text-xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-slate-400 tracking-widest">GateGuard</span>
-            </Link>
-            
-            <nav className="hidden lg:flex space-x-2 bg-white/5 border border-white/10 p-1.5 rounded-2xl">
-              <Link href="/dashboard" className={getLinkStyles("/dashboard")}>Dashboard</Link>
-              <Link href="/alarms" className={getLinkStyles("/alarms")}>Alarms</Link>
-              <Link href="/setup" className={getLinkStyles("/setup")}>Setup</Link>
-            </nav>
-          </div>
-
-          <div className="flex items-center space-x-6">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-slate-700 to-slate-800 border border-slate-600/50 flex items-center justify-center font-bold text-white shadow-lg cursor-pointer hover:border-emerald-500/50 transition-colors">
-              RF
             </div>
-          </div>
-        </header>
 
-        <main className="flex-1 relative w-full h-full">
-          {children}
-        </main>
+            {/* NAV LINKS */}
+            <nav className="flex-1 flex flex-col gap-8">
+              {NAV_ITEMS.map((item) => (
+                <Link 
+                  key={item.path} 
+                  href={item.path}
+                  className="group flex flex-col items-center gap-2 transition-all"
+                >
+                  <div className="p-4 rounded-2xl bg-white/5 border border-transparent group-hover:bg-indigo-600/10 group-hover:border-indigo-500/30 group-hover:text-indigo-400 transition-all text-slate-500">
+                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={item.icon} />
+                    </svg>
+                  </div>
+                  <span className="text-[9px] font-black tracking-widest text-slate-600 group-hover:text-indigo-400 transition-colors">
+                    {item.label}
+                  </span>
+                </Link>
+              ))}
+            </nav>
 
+            {/* BOTTOM STATUS */}
+            <div className="flex flex-col items-center gap-4">
+               <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_10px_#10b981]" />
+               <div className="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center">
+                  <div className="w-1 h-1 bg-slate-600 rounded-full" />
+               </div>
+            </div>
+          </aside>
+
+          {/* 🏗️ MAIN CONTENT AREA */}
+          <main className="flex-1 flex flex-col overflow-hidden relative">
+            {/* The Page content injects here */}
+            {children}
+
+            {/* GLOBAL OVERLAYS (Optional: Notifications, etc) */}
+            <div className="fixed bottom-10 right-10 pointer-events-none">
+                <div className="bg-[#0a0c10]/90 backdrop-blur-xl border border-white/5 px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-4 animate-in slide-in-from-bottom-4 duration-1000">
+                  <div className="w-2 h-2 rounded-full bg-indigo-500" />
+                  <span className="text-[10px] font-black tracking-widest text-slate-400">ENCRYPTED LINK ACTIVE</span>
+                </div>
+            </div>
+          </main>
+
+        </div>
       </body>
     </html>
   );
