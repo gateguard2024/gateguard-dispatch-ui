@@ -17,18 +17,18 @@ const MARBELLA_SITE = {
 const SmartVideoPlayer = ({ camId, token, streamType = 'main', offsetSeconds = 0, className, controls = false }: any) => {
     const [streamUrl, setStreamUrl] = useState<string>('');
 
-    useEffect(() => {
+useEffect(() => {
         if (!camId || !token) return;
 
         // 1. Construct EEN V3 Stream URL
         const cluster = "https://media.c031.eagleeyenetworks.com";
         let hlsUrl = `${cluster}/media/streams/${streamType}/hls/getPlaylist.m3u8?esn=${camId}`;
         
-        // 2. Add DVR Time Travel if needed
+        // 2. Add DVR Time Travel if needed (Corrected logic)
         if (offsetSeconds > 0) {
             const d = new Date(Date.now() - offsetSeconds * 1000);
-            const pad = (n: number) => String(n).padStart(w, '0');
-            const ts = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}${String(d.getUTCHours()).padStart(2, '0')}${String(d.getUTCMinutes()).padStart(2, '0')}${String(d.getUTCSeconds()).padStart(2, '0')}.000`;
+            const pad = (n: number) => String(n).padStart(2, '0');
+            const ts = `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}.000`;
             hlsUrl += `&startTime=${ts}`;
         }
 
