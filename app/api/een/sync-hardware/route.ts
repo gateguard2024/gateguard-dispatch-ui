@@ -9,9 +9,18 @@ export async function POST(request: Request) {
 
     if (!siteId) throw new Error("Missing siteId in request body");
 
-    const { token, cluster, apiKey } = await getValidEENToken(siteId);
+    // 1. Grab credentials AND the locationId for filtering
+    const { token, cluster, apiKey, locationId } = await getValidEENToken(siteId);
 
-    const response = await fetch(`https://${cluster}/api/v3.0/cameras`, {
+    // 2. Dynamically build the endpoint (Filter by location if we have it)
+    const endpoint = locationId 
+      ? `/api/v3.0/cameras?locationId__in=${locationId}` 
+      : `/api/v3.0/cameras`;
+
+    console.log(`📡 Fetching cameras from: ${endpoint}`);
+
+    // 3. Fetch from Eagle Eye
+    const response = await fetch(`https://${cluster}${endpoint}`, {
       method: 'GET',
       headers: { 
         'Authorization': `Bearer ${token}`,
@@ -26,30 +35,36 @@ export async function POST(request: Request) {
     }
 
     const rawData = await response.json();
-
-    // 🚨 THE FIX: Target the 'results' array exactly as the EEN docs specify
     const cameraArray = rawData.results || [];
 
-    console.log(`🎥 SUCCESS! Found ${cameraArray.length} cameras inside the 'results' array.`);
+    console.log(`🎥 SUCCESS! Found ${cameraArray.length} cameras for this location.`);
 
     if (cameraArray.length > 0) {
-      // Map & Store
+      // 4. Map & Extract specific fields for the Database
       const cameraMappings = cameraArray.map((cam: any) => ({
         site_id: siteId,
-        een_camera_id: cam.id, // The docs state 'id' is the required string
+        een_camera_id: cam.id, 
         name: cam.name || 'Unnamed Camera',
-        // The docs state status is an object. We stringify it so it saves safely in Supabase.
         status: cam.status ? JSON.stringify(cam.status) : 'unknown', 
+        
+        // Extracted Enterprise Fields
+        een_bridge_id: cam.bridgeId || null,
+        een_account_id: cam.accountId || null,
+        een_speaker_id: cam.speakerId || null,
+        een_multi_camera_id: cam.multiCameraId || null,
+        een_created_timestamp: cam.createTimestamp || null,
+        
+        // Raw backup
         metadata: cam 
       }));
 
-      // Save to Database
+      // 5. Save to Database
       const { error } = await supabase
         .from('cameras')
         .upsert(cameraMappings, { onConflict: 'een_camera_id' }); 
 
       if (error) throw new Error(`Supabase Insert Error: ${error.message}`);
-      console.log("💾 Successfully saved cameras to database!");
+      console.log("💾 Successfully saved exact location cameras to database!");
     }
 
     return NextResponse.json({ 
