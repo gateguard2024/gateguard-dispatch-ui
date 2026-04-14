@@ -1,32 +1,32 @@
-const REDIRECT_URI = process.env.NEXT_PUBLIC_EEN_REDIRECT_URI;
+// Add a fallback address in case the Env Var is missing
+const REDIRECT_URI = process.env.NEXT_PUBLIC_EEN_REDIRECT_URI || "https://gateguard-dispatch-ui.vercel.app/callback";
 
 export const eagleEyeService = {
-  // 1. Dynamic Login Redirect
   login: async (siteName: string) => {
     try {
       const response = await fetch(`/api/sites/config?name=${encodeURIComponent(siteName)}`);
       if (!response.ok) throw new Error("Site config not found");
       const config = await response.json();
 
-      // We Base64 encode the state to ensure no special characters break the URL
       const encodedState = btoa(siteName);
 
       const params = new URLSearchParams({
-        client_id: config.clientId, // MUST be the "Application Name"
+        client_id: config.clientId, 
         response_type: 'code',
-        redirect_uri: REDIRECT_URI!,
+        redirect_uri: REDIRECT_URI, // Now guaranteed to have a value
         scope: 'vms.all',
-        state: encodedState
+        state: encodedState 
       });
 
       const finalUrl = `https://auth.eagleeyenetworks.com/oauth2/authorize?${params.toString()}`;
-      
-      console.log("🚀 Redirecting to EEN:", finalUrl);
+      console.log("🚀 Redirecting with URI:", REDIRECT_URI);
       window.location.href = finalUrl;
     } catch (err) {
       console.error("Login redirect failed:", err);
     }
   },
+  // ... rest of the service
+};
 
   // 2. Exchange Code
   exchangeCode: async (code: string, state: string) => {
