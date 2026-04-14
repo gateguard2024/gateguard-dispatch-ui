@@ -2,20 +2,27 @@ const REDIRECT_URI = process.env.NEXT_PUBLIC_EEN_REDIRECT_URI;
 
 export const eagleEyeService = {
   // 1. Dynamic Login Redirect (Slimmed down to avoid 400 error)
-  login: async (siteName: string) => {
-    try {
-      const response = await fetch(`/api/sites/config?name=${encodeURIComponent(siteName)}`);
-      if (!response.ok) throw new Error("Site config not found");
-      const config = await response.json();
+login: async (siteName: string) => {
+  try {
+    const response = await fetch(`/api/sites/config?name=${encodeURIComponent(siteName)}`);
+    const config = await response.json();
 
-      const params = new URLSearchParams({
-        client_id: config.clientId,
-        response_type: 'code',
-        redirect_uri: REDIRECT_URI!, 
-        scope: 'vms.all',
-        state: siteName 
-      });
+    // Base64 encode the state to make it a single, safe string
+    const safeState = btoa(siteName); 
 
+    const params = new URLSearchParams({
+      client_id: config.clientId, // This MUST be the App Name
+      response_type: 'code',
+      redirect_uri: REDIRECT_URI!,
+      scope: 'vms.all',
+      state: safeState 
+    });
+
+    window.location.href = `https://auth.eagleeyenetworks.com/oauth2/authorize?${params.toString()}`;
+  } catch (err) {
+    console.error("Login redirect failed:", err);
+  }
+}
       // We removed x-api-key from here as EEN OAuth V3 GET requests don't expect it
       const finalUrl = `https://auth.eagleeyenetworks.com/oauth2/authorize?${params.toString()}`;
       
