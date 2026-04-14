@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
-import LiveCamera from "@/components/LiveCamera"; // Bring in our secure video component
+import SmartVideoPlayer from "@/components/SmartVideoPlayer"; // Bring in our secure video component
 
 export default function CamerasPage() {
   const [sites, setSites] = useState<any[]>([]);
