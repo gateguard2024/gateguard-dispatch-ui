@@ -196,8 +196,8 @@ export default function AlarmsPage() {
     setIsPatrolMode(false);
   };
 
-  // --- VIDEO URL GENERATOR (PRESERVES YOUR PROXY!) ---
-  const generateStreamUrl = (camId: string, streamType: 'preview' | 'primary', offsetSeconds: number = 0) => {
+ // --- VIDEO URL GENERATOR (PRESERVES YOUR PROXY!) ---
+  const generateStreamUrl = (camId: string, streamType: 'preview' | 'main', offsetSeconds: number = 0) => {
     if (!activeToken || !camId) return '';
 
     // Temp mock data for Grid to prevent rate-limit 404s until session initiator is built
