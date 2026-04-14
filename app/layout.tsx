@@ -6,82 +6,72 @@ import Link from "next/link";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "GateGuard Dispatch | Infrastructure Hub",
-  description: "Enterprise SOC Operations Center",
+  title: "GateGuard OS | Monitoring Station",
+  description: "Next-Gen Video Management & Access Control",
 };
 
-// --- NAVIGATION CONFIG ---
+// Mapped to your IMMIX-style tabs, but modernized
 const NAV_ITEMS = [
-  { label: "SOC DECK", path: "/alarms", icon: "M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" },
-  { label: "SITE MAPS", path: "/map", icon: "M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-1.447-.894L15 9m0 8V9m0 0L9 7" },
-  { label: "INFRASTRUCTURE", path: "/setup", icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" },
+  { label: "DASHBOARD", path: "/dashboard", icon: "M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" },
+  { label: "ALARMS", path: "/alarms", icon: "M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" },
+  { label: "CAMERAS", path: "/cameras", icon: "M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" },
+  { label: "REPORTS", path: "/reports", icon: "M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" },
+  { label: "SETUP", path: "/setup", icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" },
 ];
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="h-full bg-[#030406] text-slate-200 antialiased">
-      <body className={`${inter.className} h-full overflow-hidden`}>
+      <body className={`${inter.className} h-full overflow-hidden flex`}>
         
-        {/* --- GLOBAL APP WRAPPER --- */}
-        <div className="flex h-screen w-screen p-4 lg:p-6 gap-6 overflow-hidden">
+        {/* 📱 PERSISTENT SIDEBAR */}
+        <aside className="w-24 lg:w-[104px] flex flex-col items-center py-6 bg-[#0a0c10] border-r border-white/5 z-50 shadow-[10px_0_30px_rgba(0,0,0,0.5)] shrink-0">
           
-          {/* 📱 PERSISTENT SIDEBAR: The "Hardware Control" Panel */}
-          <aside className="w-24 lg:w-28 flex flex-col items-center py-8 bg-[#0a0c10] border border-white/5 rounded-[2.5rem] shadow-2xl shrink-0">
-            {/* BRANDING */}
-            <div className="mb-12">
-              <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-900/40">
-                <div className="w-5 h-5 border-2 border-white rounded-sm" />
-              </div>
+          {/* BRANDING */}
+          <div className="mb-10 w-full flex justify-center cursor-pointer">
+            <div className="w-12 h-12 bg-indigo-600 rounded-[14px] flex items-center justify-center shadow-[0_0_20px_rgba(99,102,241,0.3)]">
+              <span className="font-black text-white tracking-tighter">GG</span>
             </div>
+          </div>
 
-            {/* NAV LINKS */}
-            <nav className="flex-1 flex flex-col gap-8">
-              {NAV_ITEMS.map((item) => (
-                <Link 
-                  key={item.path} 
-                  href={item.path}
-                  className="group flex flex-col items-center gap-2 transition-all"
-                >
-                  <div className="p-4 rounded-2xl bg-white/5 border border-transparent group-hover:bg-indigo-600/10 group-hover:border-indigo-500/30 group-hover:text-indigo-400 transition-all text-slate-500">
-                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={item.icon} />
-                    </svg>
-                  </div>
-                  <span className="text-[9px] font-black tracking-widest text-slate-600 group-hover:text-indigo-400 transition-colors">
-                    {item.label}
-                  </span>
-                </Link>
-              ))}
-            </nav>
-
-            {/* BOTTOM STATUS */}
-            <div className="flex flex-col items-center gap-4">
-               <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_10px_#10b981]" />
-               <div className="w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center">
-                  <div className="w-1 h-1 bg-slate-600 rounded-full" />
-               </div>
-            </div>
-          </aside>
-
-          {/* 🏗️ MAIN CONTENT AREA */}
-          <main className="flex-1 flex flex-col overflow-hidden relative">
-            {/* The Page content injects here */}
-            {children}
-
-            {/* GLOBAL OVERLAYS (Optional: Notifications, etc) */}
-            <div className="fixed bottom-10 right-10 pointer-events-none">
-                <div className="bg-[#0a0c10]/90 backdrop-blur-xl border border-white/5 px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-4 animate-in slide-in-from-bottom-4 duration-1000">
-                  <div className="w-2 h-2 rounded-full bg-indigo-500" />
-                  <span className="text-[10px] font-black tracking-widest text-slate-400">ENCRYPTED LINK ACTIVE</span>
+          {/* MAIN NAV */}
+          <nav className="flex-1 flex flex-col gap-6 w-full px-3">
+            {NAV_ITEMS.map((item) => (
+              <Link 
+                key={item.path} 
+                href={item.path}
+                className="group flex flex-col items-center gap-2 transition-all w-full"
+              >
+                <div className="w-14 h-14 flex items-center justify-center rounded-2xl bg-transparent border border-transparent group-hover:bg-indigo-600/10 group-hover:border-indigo-500/30 group-hover:text-indigo-400 transition-all text-slate-500">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d={item.icon} />
+                  </svg>
                 </div>
-            </div>
-          </main>
+                <span className="text-[8px] font-black tracking-widest text-slate-600 group-hover:text-indigo-400 transition-colors uppercase">
+                  {item.label}
+                </span>
+              </Link>
+            ))}
+          </nav>
 
-        </div>
+          {/* USER PROFILE & STATUS */}
+          <div className="mt-auto flex flex-col items-center gap-4 w-full">
+            <div className="relative cursor-pointer group">
+              <div className="w-10 h-10 rounded-full bg-slate-800 border-2 border-white/10 overflow-hidden group-hover:border-indigo-500 transition-all">
+                 {/* Placeholder for Operator Avatar */}
+                 <img src="https://ui-avatars.com/api/?name=Operator&background=0D8ABC&color=fff" alt="User" />
+              </div>
+              <div className="absolute bottom-0 right-0 w-3 h-3 bg-emerald-500 border-2 border-[#0a0c10] rounded-full animate-pulse"></div>
+            </div>
+            <span className="text-[8px] font-black tracking-widest text-slate-500 uppercase">Operator</span>
+          </div>
+        </aside>
+
+        {/* 🏗️ MAIN WORKSPACE */}
+        <main className="flex-1 h-full overflow-hidden relative bg-[#030406]">
+          {children}
+        </main>
+
       </body>
     </html>
   );
