@@ -2,6 +2,7 @@
 const REDIRECT_URI = process.env.NEXT_PUBLIC_EEN_REDIRECT_URI || "https://gateguard-dispatch-ui.vercel.app/callback";
 
 export const eagleEyeService = {
+  // 1. Redirect user to Eagle Eye Login
   login: async (siteName: string) => {
     try {
       const response = await fetch(`/api/sites/config?name=${encodeURIComponent(siteName)}`);
@@ -26,6 +27,7 @@ export const eagleEyeService = {
     }
   },
 
+  // 2. Exchange the temporary code for permanent tokens
   exchangeCode: async (code: string, state: string) => {
     const response = await fetch('/api/auth/een', {
       method: 'POST',
@@ -40,14 +42,19 @@ export const eagleEyeService = {
     return response.json();
   },
 
+  // 3. Trigger hardware discovery once authenticated
   syncHardware: async (siteId: string) => {
-    const response = await fetch('/api/een/sync', {
+    // 👇 The 404 Fix: Routing to our consolidated hardware endpoint
+    const response = await fetch('/api/een/sync-hardware', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ siteId })
     });
 
-    if (!response.ok) throw new Error("Hardware sync failed");
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || error.message || "Hardware sync failed");
+    }
     return response.json();
   }
 };
