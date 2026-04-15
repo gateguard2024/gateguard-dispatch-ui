@@ -5,17 +5,16 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const targetUrl = url.searchParams.get('url');
-    const token = url.searchParams.get('token'); 
+    
+    // 🚨 THE FIX: Grab the token from the header, not the URL!
+    const token = request.headers.get('authorization')?.split('Bearer ')[1];
 
     if (!targetUrl || !token) {
       return new NextResponse("Missing URL or Token", { status: 400 });
     }
 
-    // 1. The Server fetches the resource (Bypasses EEN's CORS block!)
     const response = await fetch(targetUrl, {
-      headers: {
-        'Authorization': `Bearer ${token}`
-      }
+      headers: { 'Authorization': `Bearer ${token}` }
     });
 
     if (!response.ok) {
@@ -30,18 +29,13 @@ export async function GET(request: Request) {
     if (contentType.includes('mpegurl') || targetUrl.includes('.m3u8') || targetUrl.includes('getPlaylist')) {
       
       let text = await response.text();
-      
-      // Get the base EEN server URL (e.g., https://media.c031.eagleeyenetworks.com)
       const targetUrlObj = new URL(targetUrl);
       const baseUrl = targetUrlObj.origin; 
 
-      // Regex/Mapping to find the chunk paths and rewrite them
       const lines = text.split('\n');
       const rewrittenLines = lines.map(line => {
         const trimmedLine = line.trim();
-        // If the line is a chunk URL (doesn't start with #)
         if (trimmedLine && !trimmedLine.startsWith('#')) {
-          
           let absoluteChunkUrl = trimmedLine;
           if (!trimmedLine.startsWith('http')) {
              absoluteChunkUrl = trimmedLine.startsWith('/') 
@@ -49,8 +43,8 @@ export async function GET(request: Request) {
                : `${baseUrl}/${trimmedLine}`;
           }
 
-          // Force the frontend to route THIS 10-second chunk through our proxy too!
-          return `/api/cameras/proxy?url=${encodeURIComponent(absoluteChunkUrl)}&token=${token}`;
+          // 🚨 THE FIX: The rewritten chunks no longer have massive tokens in the URL
+          return `/api/cameras/proxy?url=${encodeURIComponent(absoluteChunkUrl)}`;
         }
         return trimmedLine;
       });
@@ -58,7 +52,8 @@ export async function GET(request: Request) {
       return new NextResponse(rewrittenLines.join('\n'), {
         headers: {
           'Content-Type': 'application/vnd.apple.mpegurl',
-          'Access-Control-Allow-Origin': '*', // Tells the browser "Yes, you can play this"
+          'Access-Control-Allow-Origin': '*', 
+          'Access-Control-Allow-Headers': 'Authorization', // Allow the frontend to send the header!
         },
       });
     }
@@ -71,6 +66,7 @@ export async function GET(request: Request) {
       headers: {
         'Content-Type': contentType || 'video/MP2T',
         'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Authorization',
       },
     });
 
