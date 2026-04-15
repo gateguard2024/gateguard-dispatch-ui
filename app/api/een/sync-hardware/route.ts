@@ -9,7 +9,7 @@ export async function POST(request: Request) {
 
     if (!siteId) throw new Error("Missing siteId in request body");
 
-    // 1. Fetch the Site config from Supabase to get the specific Location ID and Tag lock
+    // 1. Fetch the Site config from Supabase to get the Location ID and Tag
     const { data: site, error: siteError } = await supabase
       .from('sites')
       .select('een_tag, een_location_id')
@@ -18,19 +18,29 @@ export async function POST(request: Request) {
 
     if (siteError) throw new Error("Failed to fetch site configuration from database.");
 
-    // 2. Grab credentials from your token helper
+    // 2. Grab credentials
     const { token, cluster, apiKey } = await getValidEENToken(siteId);
 
-    // 3. Dynamically build the endpoint
-    // If they provided a Sub-Account ID, use it. Otherwise, pull from the root account.
-    let endpoint = `/api/v3.0/cameras`;
+    // 3. 🚨 THE FIX: Build the exact query based on the EEN V3 Docs
+    const params = new URLSearchParams();
+    
+    // Maximize the page size so we don't miss cameras due to pagination (Max 500 per EEN docs)
+    params.append('pageSize', '500');
+
     if (site?.een_location_id) {
-      endpoint = `/api/v3.0/cameras?locationId__in=${site.een_location_id}`;
+      params.append('locationId__in', site.een_location_id);
     }
 
-    console.log(`📡 Fetching raw camera list from: ${endpoint}`);
+    if (site?.een_tag) {
+      // Using the exact parameter from your docs!
+      params.append('tags__contains', site.een_tag); 
+    }
 
-    // 4. Fetch the raw array from Eagle Eye
+    const endpoint = `/api/v3.0/cameras?${params.toString()}`;
+
+    console.log(`📡 Fetching targeted cameras with URL: ${endpoint}`);
+
+    // 4. Fetch the perfectly filtered list from Eagle Eye
     const response = await fetch(`https://${cluster}${endpoint}`, {
       method: 'GET',
       headers: { 
@@ -46,57 +56,20 @@ export async function POST(request: Request) {
     }
 
     const rawData = await response.json();
-    const allCameras = rawData.results || [];
+    const cameras = rawData.results || [];
 
-    console.log(`📊 EEN returned ${allCameras.length} total cameras before filtering.`);
+    console.log(`🎥 SUCCESS! EEN returned ${cameras.length} cameras matching the exact tag and location.`);
 
-    // 5. 🚨 THE DIAGNOSTIC & FILTER ENGINE
-    // We filter natively on our backend to bypass EEN's flaky URL query strings
-    let filteredCameras = allCameras;
-    
-    if (site?.een_tag) {
-      const targetTag = site.een_tag.trim().toLowerCase();
-      
-      filteredCameras = allCameras.filter((cam: any) => {
-        if (!cam.tags || !Array.isArray(cam.tags)) return false;
-        // Check if any tag on the camera matches the target tag
-        return cam.tags.some((t: string) => t.trim().toLowerCase() === targetTag);
-      });
-
-      // INTELLIGENT FALLBACK: If 0 cameras matched the tag, generate a cheat sheet!
-      if (filteredCameras.length === 0 && allCameras.length > 0) {
-        const availableTags = new Set<string>();
-        const availableLocations = new Set<string>();
-
-        allCameras.forEach((c: any) => {
-          if (c.locationId) availableLocations.add(c.locationId);
-          if (c.tags && Array.isArray(c.tags)) {
-            c.tags.forEach((t: string) => availableTags.add(t));
-          }
-        });
-
-        const tagList = Array.from(availableTags).join(', ') || "No tags found on any cameras";
-        const locList = Array.from(availableLocations).join(', ');
-
-        throw new Error(
-          `Found 0 cameras matching the tag "${site.een_tag}".\n\n` +
-          `🔍 DIAGNOSTIC INFO:\n` +
-          `Available Tags: [${tagList}]\n` +
-          `Available Sub-Accounts: [${locList}]`
-        );
-      }
-    }
-
-    if (filteredCameras.length === 0) {
+    if (cameras.length === 0) {
        return NextResponse.json({ 
          success: true,
-         message: `Successfully synced 0 cameras. No cameras exist at this location.`,
+         message: `Successfully synced 0 cameras. No cameras match this exact Sub-Account and Tag combination.`,
          count: 0
        });
     }
 
-    // 6. Map & Extract specific fields for the Database
-    const cameraMappings = filteredCameras.map((cam: any) => ({
+    // 5. Map & Extract specific fields for the Database
+    const cameraMappings = cameras.map((cam: any) => ({
       site_id: siteId,
       een_camera_id: cam.id, 
       name: cam.name || 'Unnamed Camera',
@@ -113,16 +86,16 @@ export async function POST(request: Request) {
       metadata: cam 
     }));
 
-    // 7. Upsert the valid cameras
+    // 6. Upsert the valid cameras
     const { error: upsertError } = await supabase
       .from('cameras')
       .upsert(cameraMappings, { onConflict: 'een_camera_id' }); 
 
     if (upsertError) throw new Error(`Supabase Insert Error: ${upsertError.message}`);
     
-    // 🚨 8. THE CLEANUP ENGINE (True Sync)
-    // Delete any cameras associated with THIS specific site that are no longer in the EEN tag list
-    const validCameraIds = filteredCameras.map((c: any) => c.id);
+    // 7. THE CLEANUP ENGINE (True Sync)
+    // Delete any cameras associated with THIS specific site that no longer match the EEN tag list
+    const validCameraIds = cameras.map((c: any) => c.id);
     
     if (validCameraIds.length > 0) {
         const { error: cleanupError } = await supabase
@@ -140,8 +113,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ 
       success: true,
-      message: `Successfully synced ${filteredCameras.length} cameras and cleared stale data.`,
-      count: filteredCameras.length
+      message: `Successfully synced ${cameras.length} cameras and cleared stale data.`,
+      count: cameras.length
     });
     
   } catch (error: any) {
