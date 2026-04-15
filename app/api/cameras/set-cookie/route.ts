@@ -1,24 +1,26 @@
 // app/api/cameras/set-cookie/route.ts
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
 
 export async function POST(request: Request) {
   try {
     const { token } = await request.json();
-    if (!token) throw new Error("No token provided");
+    if (!token) return NextResponse.json({ error: "No token provided" }, { status: 400 });
 
-    const response = NextResponse.json({ success: true });
+    // 🚨 THE FIX: Next.js 15+ requires awaiting cookies()
+    const cookieStore = await cookies();
     
-    // Lock the EEN token into a secure HTTP cookie
-    response.cookies.set('een_stream_token', token, {
+    // Lock the EEN token securely into the browser
+    cookieStore.set('een_stream_token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      path: '/api/cameras/proxy', // ONLY send this cookie to the proxy route!
-      maxAge: 60 * 60 * 2, // 2 hours
+      path: '/',
+      maxAge: 60 * 60 * 2, // Expires in 2 hours
     });
 
-    return response;
+    return NextResponse.json({ success: true });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 400 });
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
