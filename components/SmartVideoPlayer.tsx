@@ -22,6 +22,7 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
       setIsLoading(true);
       setError(null);
 
+      // 1. Fetch stream keys
       const res = await fetch('/api/cameras/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -34,22 +35,21 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
       const video = videoRef.current;
       if (!video) return;
 
-      // 🚨 CRITICAL FIX: Lock the massive token into a cookie!
-      // This stops us from having to put it in the URL, which causes the 400 Bad Request
+      // 2. Lock the token into the HTTP cookie
       await fetch('/api/cameras/set-cookie', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: data.token })
       });
 
-      // Build the clean proxy URL (Notice there is NO token in this string!)
+      // 3. Build the clean proxy URL
       const proxyUrl = `/api/cameras/proxy?url=${encodeURIComponent(data.hlsUrl)}`;
 
+      // 4. Mount Player
       if (Hls.isSupported()) {
         hls = new Hls({
            xhrSetup: (xhr) => {
-              // Tell hls.js to silently send the cookie to our proxy
-              xhr.withCredentials = true; 
+              xhr.withCredentials = true; // 🚨 Ensures the cookie is sent to the Vercel Proxy
            }
         }); 
 
@@ -58,17 +58,18 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
         
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           setIsLoading(false);
-          setRetryCount(0);
+          setRetryCount(0); // Reset retries on success!
           video.play().catch(() => console.log("Autoplay blocked."));
         });
 
         hls.on(Hls.Events.ERROR, (event, errorData) => {
           if (errorData.fatal) {
+            // Catch EEN's undocumented 409 Conflict ghost session lock
             if (errorData.response?.code === 409 || errorData.response?.code === 500) {
                 if (retryCount < 3) {
                     hls?.destroy();
                     setRetryCount(prev => prev + 1);
-                    setTimeout(startStream, 2000); 
+                    setTimeout(startStream, 2500); // Wait 2.5 seconds for EEN to clear the lock
                 } else {
                     setError("Stream locked by another session.");
                     setIsLoading(false);
@@ -125,7 +126,7 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
       className="relative w-full h-full bg-black flex items-center justify-center cursor-pointer group overflow-hidden"
     >
       {isLoading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 z-10">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 z-10 backdrop-blur-sm">
           <div className="text-[10px] text-emerald-400 font-black tracking-[0.3em] animate-pulse">
             CONNECTING VAULT...
           </div>
@@ -144,6 +145,10 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
           </div>
         </div>
       )}
+
+      <div className="absolute top-3 left-3 bg-black/60 text-white/70 text-[9px] font-bold px-2.5 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity z-20 pointer-events-none border border-white/10">
+        DOUBLE-CLICK FOR FULLSCREEN
+      </div>
 
       <video 
         ref={videoRef} 
