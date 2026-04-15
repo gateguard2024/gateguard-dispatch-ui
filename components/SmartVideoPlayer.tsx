@@ -27,17 +27,18 @@ export default function SmartVideoPlayer({ siteId, cameraId }: { siteId: string,
         const video = videoRef.current;
         if (!video) return;
 
-        // 🚨 THE FIX: Append the access token directly to the URL!
-        // This bypasses the CORS Preflight check entirely.
+        // 🚨 ROUTE THROUGH PROXY:
+        // We append the access token to the EEN URL, then wrap it in our Proxy
         const streamUrl = new URL(data.hlsUrl);
         streamUrl.searchParams.append('access_token', data.token);
-        const finalUrl = streamUrl.toString();
+        
+        const proxyUrl = `/api/cameras/proxy?url=${encodeURIComponent(streamUrl.toString())}&token=${data.token}`;
 
-        // 2. Mount HLS Player (NO CUSTOM HEADERS NEEDED!)
+        // 2. Mount HLS Player pointing to VERCEL, not Eagle Eye!
         if (Hls.isSupported()) {
-          hls = new Hls(); // No xhrSetup required!
+          hls = new Hls(); 
 
-          hls.loadSource(finalUrl);
+          hls.loadSource(proxyUrl);
           hls.attachMedia(video);
           
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -51,7 +52,7 @@ export default function SmartVideoPlayer({ siteId, cameraId }: { siteId: string,
         } 
         // Safari fallback
         else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = finalUrl;
+          video.src = proxyUrl;
           video.addEventListener('loadedmetadata', () => {
             setIsLoading(false);
             video.play();
