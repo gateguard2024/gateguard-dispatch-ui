@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 export async function getValidEENToken(siteId: string) {
   // 1. Ask Supabase for ALL necessary pieces of data, including the new een_location_id
   const { data: site, error } = await supabase
-    .from('sites')
+    .from('accounts')
     .select('een_access_token, een_cluster, een_api_key, een_client_id, een_client_secret, een_refresh_token, een_token_expires_at, een_location_id') 
     .eq('id', siteId)
     .single();
@@ -63,7 +63,7 @@ export async function getValidEENToken(siteId: string) {
 
   // Save the fresh tokens back to the DB
   await supabase
-    .from('sites')
+    .from('accounts')
     .update({
       een_access_token: data.access_token,
       een_refresh_token: data.refresh_token,
