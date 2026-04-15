@@ -1,3 +1,4 @@
+// app/api/cameras/proxy/route.ts
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 
@@ -6,8 +7,8 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const targetUrl = url.searchParams.get('url');
     
-    // 🚨 Extract token securely from the cookie!
-    const cookieStore = cookies();
+    // 🚨 THE FIX: Next.js 15+ requires awaiting cookies()
+    const cookieStore = await cookies();
     const token = cookieStore.get('een_stream_token')?.value;
 
     if (!targetUrl || !token) {
@@ -19,7 +20,6 @@ export async function GET(request: Request) {
     });
 
     if (!response.ok) {
-      // Improved error logging to see exactly what EEN says
       const errText = await response.text();
       console.error(`EEN API Error (${response.status}):`, errText);
       return new NextResponse(`EEN Error: ${response.status}`, { status: response.status });
