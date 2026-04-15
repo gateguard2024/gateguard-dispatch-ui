@@ -11,8 +11,6 @@ export default function SetupPage() {
 
   // SOC Gatekeeper State
   const [configuringSiteId, setConfiguringSiteId] = useState<string | null>(null);
-  const [locations, setLocations] = useState<any[]>([]);
-  const [loadingLocations, setLoadingLocations] = useState(false);
   
   const [formData, setFormData] = useState({
     een_location_id: '',
@@ -36,8 +34,7 @@ export default function SetupPage() {
 
   useEffect(() => { fetchSites(); }, []);
 
-  // Phase 2: Location Discovery
-  const handleOpenConfig = async (site: any) => {
+  const handleOpenConfig = (site: any) => {
     setConfiguringSiteId(site.id);
     setFormData({
       een_location_id: site.een_location_id || '',
@@ -47,28 +44,8 @@ export default function SetupPage() {
       schedule_start: site.schedule_start || '18:00',
       schedule_end: site.schedule_end || '06:00'
     });
-
-    setLoadingLocations(true);
-    try {
-      const res = await fetch('/api/een/locations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteId: site.id })
-      });
-      const data = await res.json();
-      if (data.success) {
-        setLocations(data.locations);
-      } else {
-        throw new Error(data.error);
-      }
-    } catch (err: any) {
-      console.error("Fetch locations error:", err);
-      alert("Failed to fetch EEN locations. Check console.");
-    }
-    setLoadingLocations(false);
   };
 
-  // Phase 4 & 5: Lock config to DB and Sync Cameras
   const handleSaveAndHarvest = async (siteId: string) => {
     try {
       console.log("💾 Locking Gatekeeper config to Supabase...");
@@ -82,14 +59,13 @@ export default function SetupPage() {
 
       console.log(`⏳ Starting targeted sync for ${formData.een_tag || 'all cameras'}...`);
       
-      // Trigger the backend API route (Now dynamically filtered by Tag!)
       const result = await eagleEyeService.syncHardware(siteId);
       
       console.log("✅ Harvest Complete!", result);
       alert(`✅ Successfully saved config and synced ${result.count} cameras!`);
       
       setConfiguringSiteId(null);
-      fetchSites(); // Refresh UI
+      fetchSites(); 
 
     } catch (err: any) {
       console.error("❌ Setup Failed:", err.message);
@@ -173,18 +149,15 @@ export default function SetupPage() {
                         <h4 className="text-xs text-indigo-400 font-black tracking-widest uppercase">1. Hardware Targeting</h4>
                         
                         <div>
-                          <label className="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">Sub-Account (Location)</label>
-                          <select 
+                          <label className="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">Sub-Account ID (Location)</label>
+                          <input 
+                            type="text" 
+                            placeholder="e.g. 100bd80b"
                             value={formData.een_location_id}
                             onChange={(e) => setFormData({...formData, een_location_id: e.target.value})}
-                            disabled={loadingLocations}
-                            className="w-full bg-black border border-white/20 rounded-lg p-3 text-sm text-white focus:border-indigo-500 outline-none"
-                          >
-                            <option value="">{loadingLocations ? 'Loading EEN Locations...' : '-- Select Sub-Account --'}</option>
-                            {locations.map(loc => (
-                              <option key={loc.id} value={loc.id}>{loc.name} ({loc.cameraCount} Cams)</option>
-                            ))}
-                          </select>
+                            className="w-full bg-black border border-white/20 rounded-lg p-3 text-sm text-white focus:border-indigo-500 outline-none font-mono"
+                          />
+                          <p className="text-[10px] text-slate-500 mt-1">Found in EEN Dashboard URL or Account Settings.</p>
                         </div>
 
                         <div>
@@ -196,7 +169,7 @@ export default function SetupPage() {
                             onChange={(e) => setFormData({...formData, een_tag: e.target.value})}
                             className="w-full bg-black border border-white/20 rounded-lg p-3 text-sm text-white focus:border-indigo-500 outline-none"
                           />
-                          <p className="text-[10px] text-slate-500 mt-1">Must exactly match the tag used in EEN Dashboard to prevent data bleed.</p>
+                          <p className="text-[10px] text-slate-500 mt-1">Must exactly match the tag used in EEN Dashboard.</p>
                         </div>
                       </div>
 
