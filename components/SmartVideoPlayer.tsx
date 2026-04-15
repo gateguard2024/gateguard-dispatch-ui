@@ -13,10 +13,7 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
   const videoRef = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  
-  // Track retries to prevent infinite loops if the camera is actually broken
   const [retryCount, setRetryCount] = useState(0); 
-  const MAX_RETRIES = 3;
 
   const startStream = useCallback(async () => {
     let hls: Hls | null = null;
@@ -33,46 +30,36 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
       });
       
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to fetch stream keys");
+      if (!res.ok) throw new Error(data.error);
 
       const video = videoRef.current;
       if (!video) return;
 
-      // 2. Lock token into cookie
-      await fetch('/api/cameras/set-cookie', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: data.token })
-      });
+      // 2. Build the proxy URL (Passes token in query string so proxy can use it)
+      const streamUrl = new URL(data.hlsUrl);
+      streamUrl.searchParams.append('access_token', data.token); // EEN needs this to generate the playlist
+      const proxyUrl = `/api/cameras/proxy?url=${encodeURIComponent(streamUrl.toString())}&token=${data.token}`;
 
-      // 3. Build proxy URL
-      const proxyUrl = `/api/cameras/proxy?url=${encodeURIComponent(data.hlsUrl)}`;
-
-      // 4. Mount Player
+      // 3. Mount Player
       if (Hls.isSupported()) {
-        hls = new Hls({
-           xhrSetup: (xhr) => { xhr.withCredentials = true; }
-        }); 
+        hls = new Hls(); // No headers or cookies needed!
 
         hls.loadSource(proxyUrl);
         hls.attachMedia(video);
         
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           setIsLoading(false);
-          setRetryCount(0); // Reset retries on success!
+          setRetryCount(0);
           video.play().catch(() => console.log("Autoplay blocked."));
         });
 
         hls.on(Hls.Events.ERROR, (event, errorData) => {
           if (errorData.fatal) {
-            // 🚨 THE FIX: Catch the 409 Conflict and handle it gracefully
+            // EEN 409 Conflict Retry Logic
             if (errorData.response?.code === 409 || errorData.response?.code === 500) {
-                console.warn(`EEN Session Conflict. Retrying... (${retryCount + 1}/${MAX_RETRIES})`);
-                
-                if (retryCount < MAX_RETRIES) {
+                if (retryCount < 3) {
                     hls?.destroy();
                     setRetryCount(prev => prev + 1);
-                    // Wait 2 seconds for EEN to clear the stale lock, then retry
                     setTimeout(startStream, 2000); 
                 } else {
                     setError("Stream locked by another session.");
@@ -92,16 +79,6 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
           setRetryCount(0);
           video.play().catch(() => console.log("Autoplay blocked."));
         });
-        
-        video.addEventListener('error', () => {
-             if (retryCount < MAX_RETRIES) {
-                 setRetryCount(prev => prev + 1);
-                 setTimeout(startStream, 2000);
-             } else {
-                 setError("Stream locked.");
-                 setIsLoading(false);
-             }
-        });
       }
     } catch (err: any) {
       setError(err.message || "Failed to initialize stream");
@@ -113,7 +90,6 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
     };
   }, [siteId, cameraId, retryCount]);
 
-  // Boot the stream on initial mount
   useEffect(() => {
     const cleanup = startStream();
     return () => {
@@ -147,7 +123,7 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
           </div>
           {retryCount > 0 && (
              <div className="text-[8px] text-slate-400 mt-2 tracking-widest uppercase">
-                CLEARING STALE LOCK ({retryCount}/{MAX_RETRIES})
+                CLEARING STALE LOCK ({retryCount}/3)
              </div>
           )}
         </div>
@@ -160,10 +136,6 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
           </div>
         </div>
       )}
-
-      <div className="absolute top-2 left-2 bg-black/60 text-white/70 text-[9px] font-bold px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity z-20 pointer-events-none">
-        DOUBLE-CLICK FOR FULLSCREEN
-      </div>
 
       <video 
         ref={videoRef} 
