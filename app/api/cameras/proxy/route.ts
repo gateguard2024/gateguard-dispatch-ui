@@ -1,11 +1,14 @@
-// app/api/cameras/proxy/route.ts
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
 
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const targetUrl = url.searchParams.get('url');
-    const token = url.searchParams.get('token'); 
+    
+    // Pull the massive token securely out of the cookie
+    const cookieStore = await cookies();
+    const token = cookieStore.get('een_stream_token')?.value;
 
     if (!targetUrl || !token) {
       return new NextResponse("Missing URL or Token", { status: 400 });
@@ -16,53 +19,48 @@ export async function GET(request: Request) {
     });
 
     if (!response.ok) {
-      return new NextResponse(`EEN Error: ${response.status}`, { status: response.status });
+      return new NextResponse(`EEN Proxy Error: ${response.status}`, { status: response.status });
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+
+    // ==========================================
+    // 🧠 PLAYLIST REWRITING
+    // ==========================================
+    if (contentType.includes('mpegurl') || targetUrl.includes('.m3u8') || targetUrl.includes('getPlaylist')) {
+      const text = await response.text();
+      const lines = text.split('\n');
+
+      const rewrittenLines = lines.map(line => {
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith('#')) {
+          // 🚨 BULLETPROOF PATHING: Let JS cleanly resolve the relative path based on the current targetUrl
+          const absoluteChunkUrl = new URL(trimmed, targetUrl).toString();
+          
+          // Route the chunk back through our Vercel Proxy
+          return `/api/cameras/proxy?url=${encodeURIComponent(absoluteChunkUrl)}`;
+        }
+        return trimmed;
+      });
+
+      return new NextResponse(rewrittenLines.join('\n'), {
+        headers: { 'Content-Type': 'application/vnd.apple.mpegurl' },
+      });
     }
 
     // ==========================================
-    // 🧠 THE MAGIC: Absolute Playlist Rewriting
+    // 📼 BINARY CHUNKS
     // ==========================================
-    let text = await response.text();
-    
-    // We need to know exactly what folder the playlist is in
-    const targetUrlObj = new URL(targetUrl);
-    const origin = targetUrlObj.origin; 
-    
-    // e.g., turns /media/streams/main/hls/getPlaylist into /media/streams/main/hls
-    const basePath = targetUrlObj.pathname.substring(0, targetUrlObj.pathname.lastIndexOf('/')); 
-
-    const lines = text.split('\n');
-    const rewrittenLines = lines.map(line => {
-      const trimmedLine = line.trim();
-      
-      // If the line is a chunk URL (doesn't start with #)
-      if (trimmedLine && !trimmedLine.startsWith('#')) {
-        
-        let absoluteChunkUrl = trimmedLine;
-        
-        // 🚨 CRITICAL FIX: Properly resolve relative paths
-        if (!trimmedLine.startsWith('http')) {
-           // If EEN used a relative path like "../../getMpeg", resolve it
-           const resolvedUrl = new URL(trimmedLine, `${origin}${basePath}/`);
-           absoluteChunkUrl = resolvedUrl.toString();
-        }
-
-        // 🚨 CRITICAL FIX: Do NOT route through proxy. Let hls.js hit EEN directly.
-        // EEN requires the token on the chunk URL to bypass CORS.
-        return `${absoluteChunkUrl}&access_token=${token}`;
-      }
-      return trimmedLine;
-    });
-
-    return new NextResponse(rewrittenLines.join('\n'), {
-      headers: {
-        'Content-Type': 'application/vnd.apple.mpegurl',
-        'Access-Control-Allow-Origin': '*', // Crucial for hls.js to read it
+    const data = await response.arrayBuffer();
+    return new NextResponse(data, {
+      headers: { 
+        'Content-Type': contentType || 'video/MP2T',
+        'Cache-Control': 'no-store' // Do not cache live video frames
       },
     });
 
   } catch (error: any) {
-    console.error("Proxy Error:", error.message);
-    return new NextResponse("Proxy Error", { status: 500 });
+    console.error("Proxy Error:", error);
+    return new NextResponse("Proxy Server Error", { status: 500 });
   }
 }
