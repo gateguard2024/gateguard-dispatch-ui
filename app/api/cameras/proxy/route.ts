@@ -1,18 +1,14 @@
 // app/api/cameras/proxy/route.ts
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     const targetUrl = url.searchParams.get('url');
-    
-    // 🚨 THE FIX: Next.js 15+ requires awaiting cookies()
-    const cookieStore = await cookies();
-    const token = cookieStore.get('een_stream_token')?.value;
+    const token = url.searchParams.get('token'); 
 
     if (!targetUrl || !token) {
-      return new NextResponse("Missing URL or Token Cookie", { status: 401 });
+      return new NextResponse("Missing URL or Token", { status: 400 });
     }
 
     const response = await fetch(targetUrl, {
@@ -20,58 +16,53 @@ export async function GET(request: Request) {
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      console.error(`EEN API Error (${response.status}):`, errText);
       return new NextResponse(`EEN Error: ${response.status}`, { status: response.status });
     }
 
-    const contentType = response.headers.get('content-type') || '';
-
     // ==========================================
-    // 🧠 PLAYLIST REWRITING
+    // 🧠 THE MAGIC: Absolute Playlist Rewriting
     // ==========================================
-    if (contentType.includes('mpegurl') || targetUrl.includes('.m3u8') || targetUrl.includes('getPlaylist')) {
-      let text = await response.text();
-      const targetUrlObj = new URL(targetUrl);
-      const baseUrl = targetUrlObj.origin; 
+    let text = await response.text();
+    
+    // We need to know exactly what folder the playlist is in
+    const targetUrlObj = new URL(targetUrl);
+    const origin = targetUrlObj.origin; 
+    
+    // e.g., turns /media/streams/main/hls/getPlaylist into /media/streams/main/hls
+    const basePath = targetUrlObj.pathname.substring(0, targetUrlObj.pathname.lastIndexOf('/')); 
 
-      const lines = text.split('\n');
-      const rewrittenLines = lines.map(line => {
-        const trimmedLine = line.trim();
-        if (trimmedLine && !trimmedLine.startsWith('#')) {
-          let absoluteChunkUrl = trimmedLine;
-          if (!trimmedLine.startsWith('http')) {
-             absoluteChunkUrl = trimmedLine.startsWith('/') 
-               ? `${baseUrl}${trimmedLine}` 
-               : `${baseUrl}/${trimmedLine}`;
-          }
-          // Only pass the URL. The browser will auto-attach the cookie!
-          return `/api/cameras/proxy?url=${encodeURIComponent(absoluteChunkUrl)}`;
+    const lines = text.split('\n');
+    const rewrittenLines = lines.map(line => {
+      const trimmedLine = line.trim();
+      
+      // If the line is a chunk URL (doesn't start with #)
+      if (trimmedLine && !trimmedLine.startsWith('#')) {
+        
+        let absoluteChunkUrl = trimmedLine;
+        
+        // 🚨 CRITICAL FIX: Properly resolve relative paths
+        if (!trimmedLine.startsWith('http')) {
+           // If EEN used a relative path like "../../getMpeg", resolve it
+           const resolvedUrl = new URL(trimmedLine, `${origin}${basePath}/`);
+           absoluteChunkUrl = resolvedUrl.toString();
         }
-        return trimmedLine;
-      });
 
-      return new NextResponse(rewrittenLines.join('\n'), {
-        headers: {
-          'Content-Type': 'application/vnd.apple.mpegurl',
-          'Access-Control-Allow-Origin': '*',
-        },
-      });
-    }
+        // 🚨 CRITICAL FIX: Do NOT route through proxy. Let hls.js hit EEN directly.
+        // EEN requires the token on the chunk URL to bypass CORS.
+        return `${absoluteChunkUrl}&access_token=${token}`;
+      }
+      return trimmedLine;
+    });
 
-    // ==========================================
-    // 📼 BINARY CHUNKS
-    // ==========================================
-    const data = await response.arrayBuffer();
-    return new NextResponse(data, {
+    return new NextResponse(rewrittenLines.join('\n'), {
       headers: {
-        'Content-Type': contentType || 'video/MP2T',
-        'Access-Control-Allow-Origin': '*',
+        'Content-Type': 'application/vnd.apple.mpegurl',
+        'Access-Control-Allow-Origin': '*', // Crucial for hls.js to read it
       },
     });
 
   } catch (error: any) {
-    console.error("Proxy Crash:", error.message);
+    console.error("Proxy Error:", error.message);
     return new NextResponse("Proxy Error", { status: 500 });
   }
 }
