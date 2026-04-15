@@ -9,116 +9,109 @@ export async function POST(request: Request) {
 
     if (!siteId) throw new Error("Missing siteId in request body");
 
-    // 1. Fetch the Site config from Supabase to get the Location ID and Tag
     const { data: site, error: siteError } = await supabase
       .from('sites')
       .select('een_tag, een_location_id')
       .eq('id', siteId)
       .single();
 
-    if (siteError) throw new Error("Failed to fetch site configuration from database.");
+    if (siteError) throw new Error("Failed to fetch site config from DB.");
 
-    // 2. Grab credentials
     const { token, cluster, apiKey } = await getValidEENToken(siteId);
 
-    // 3. 🚨 THE FIX: Build the exact query based on the EEN V3 Docs
+    // ==========================================
+    // ENGINE 1: NATIVE API FILTERING
+    // ==========================================
     const params = new URLSearchParams();
+    params.append('pageSize', '500'); // Get max allowed cameras per request
     
-    // Maximize the page size so we don't miss cameras due to pagination (Max 500 per EEN docs)
-    params.append('pageSize', '500');
-
-    if (site?.een_location_id) {
-      params.append('locationId__in', site.een_location_id);
-    }
-
     if (site?.een_tag) {
-      // Using the exact parameter from your docs!
-      params.append('tags__contains', site.een_tag); 
+      params.append('tags__contains', site.een_tag);
     }
 
-    const endpoint = `/api/v3.0/cameras?${params.toString()}`;
+    let endpoint = `/api/v3.0/cameras?${params.toString()}`;
+    console.log(`📡 ENGINE 1: Fetching natively by tag -> ${endpoint}`);
 
-    console.log(`📡 Fetching targeted cameras with URL: ${endpoint}`);
-
-    // 4. Fetch the perfectly filtered list from Eagle Eye
-    const response = await fetch(`https://${cluster}${endpoint}`, {
+    let response = await fetch(`https://${cluster}${endpoint}`, {
       method: 'GET',
-      headers: { 
-        'Authorization': `Bearer ${token}`,
-        'x-api-key': apiKey, 
-        'Content-Type': 'application/json'
-      }
+      headers: { 'Authorization': `Bearer ${token}`, 'x-api-key': apiKey, 'Content-Type': 'application/json' }
     });
-    
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Eagle Eye API Error (${response.status}): ${errText}`);
+
+    if (!response.ok) throw new Error(`EEN API Error: ${response.status}`);
+    let rawData = await response.json();
+    let cameras = rawData.results || [];
+
+    // ==========================================
+    // ENGINE 2: JAVASCRIPT FALLBACK (The Safety Net)
+    // ==========================================
+    if (cameras.length === 0 && site?.een_tag) {
+      console.log(`⚠️ ENGINE 1 returned 0 cameras. Falling back to ENGINE 2 (JavaScript Map/Filter)...`);
+      
+      // Pull EVERYTHING without filters
+      response = await fetch(`https://${cluster}/api/v3.0/cameras?pageSize=500`, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${token}`, 'x-api-key': apiKey, 'Content-Type': 'application/json' }
+      });
+      
+      rawData = await response.json();
+      const allCameras = rawData.results || [];
+
+      console.log(`📊 EEN returned ${allCameras.length} total cameras. JS Engine scanning for tag: '${site.een_tag}'...`);
+
+      // Filter natively in JS (Case insensitive, ignores weird spacing)
+      const targetTag = site.een_tag.trim().toLowerCase();
+      cameras = allCameras.filter((cam: any) => {
+        if (!cam.tags || !Array.isArray(cam.tags)) return false;
+        return cam.tags.some((t: string) => t.trim().toLowerCase() === targetTag);
+      });
+
+      // DIAGNOSTIC CHEAT SHEET
+      if (cameras.length === 0 && allCameras.length > 0) {
+        const availableTags = new Set<string>();
+        allCameras.forEach((c: any) => {
+          if (c.tags && Array.isArray(c.tags)) c.tags.forEach((t: string) => availableTags.add(t));
+        });
+        const tagList = Array.from(availableTags).join(', ');
+        throw new Error(`Found 0 cameras matching "${site.een_tag}". \n\nTags actually available on your cameras: [${tagList}]`);
+      }
     }
-
-    const rawData = await response.json();
-    const cameras = rawData.results || [];
-
-    console.log(`🎥 SUCCESS! EEN returned ${cameras.length} cameras matching the exact tag and location.`);
 
     if (cameras.length === 0) {
-       return NextResponse.json({ 
-         success: true,
-         message: `Successfully synced 0 cameras. No cameras match this exact Sub-Account and Tag combination.`,
-         count: 0
-       });
+       return NextResponse.json({ success: true, message: `0 cameras found anywhere.`, count: 0 });
     }
 
-    // 5. Map & Extract specific fields for the Database
+    console.log(`🎥 SUCCESS! Harvested ${cameras.length} cameras.`);
+
+    // ==========================================
+    // DATABASE UPSERT & CLEANUP
+    // ==========================================
     const cameraMappings = cameras.map((cam: any) => ({
       site_id: siteId,
       een_camera_id: cam.id, 
       name: cam.name || 'Unnamed Camera',
       status: cam.status ? JSON.stringify(cam.status) : 'unknown', 
-      
-      // Extracted Enterprise Fields
       een_bridge_id: cam.bridgeId || null,
       een_account_id: cam.accountId || null,
       een_speaker_id: cam.speakerId || null,
-      een_multi_camera_id: cam.multiCameraId || null,
-      een_created_timestamp: cam.createTimestamp || null,
-      
-      // Raw backup
       metadata: cam 
     }));
 
-    // 6. Upsert the valid cameras
     const { error: upsertError } = await supabase
       .from('cameras')
       .upsert(cameraMappings, { onConflict: 'een_camera_id' }); 
 
     if (upsertError) throw new Error(`Supabase Insert Error: ${upsertError.message}`);
     
-    // 7. THE CLEANUP ENGINE (True Sync)
-    // Delete any cameras associated with THIS specific site that no longer match the EEN tag list
+    // Prune cameras that lost their tag
     const validCameraIds = cameras.map((c: any) => c.id);
-    
-    if (validCameraIds.length > 0) {
-        const { error: cleanupError } = await supabase
-          .from('cameras')
-          .delete()
-          .eq('site_id', siteId)
-          .not('een_camera_id', 'in', `(${validCameraIds.join(',')})`);
-          
-        if (cleanupError) {
-          console.error("Cleanup error (Failed to delete orphans):", cleanupError.message);
-        }
-    }
+    await supabase.from('cameras').delete().eq('site_id', siteId).not('een_camera_id', 'in', `(${validCameraIds.join(',')})`);
 
-    console.log("💾 Successfully saved and cleaned up database!");
+    console.log("💾 Saved to DB.");
 
-    return NextResponse.json({ 
-      success: true,
-      message: `Successfully synced ${cameras.length} cameras and cleared stale data.`,
-      count: cameras.length
-    });
+    return NextResponse.json({ success: true, message: `Successfully synced ${cameras.length} cameras.`, count: cameras.length });
     
   } catch (error: any) {
-    console.error("❌ Sync Hardware Error:", error.message);
+    console.error("❌ Sync Error:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
