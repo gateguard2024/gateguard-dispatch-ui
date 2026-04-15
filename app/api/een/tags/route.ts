@@ -4,18 +4,18 @@ import { getValidEENToken } from '@/lib/een';
 
 export async function POST(request: Request) {
   try {
-    const { siteId, locationId } = await request.json();
+    const { siteId } = await request.json();
 
     if (!siteId) return NextResponse.json({ error: "Missing siteId" }, { status: 400 });
-    if (!locationId) return NextResponse.json({ error: "Missing Sub-Account ID" }, { status: 400 });
 
     // 1. Grab credentials
     const { token, cluster, apiKey } = await getValidEENToken(siteId);
 
-    console.log(`📡 Scanning Location ${locationId} for Tags...`);
+    console.log(`📡 Fetching official Tag list from EEN...`);
 
-    // 2. Fetch all cameras for this specific Sub-Account
-    const response = await fetch(`https://${cluster}/api/v3.0/cameras?locationId__in=${locationId}`, {
+    // 2. Fetch directly from the official /tags endpoint
+    // We use pageSize=500 to grab as many as possible in one shot for the UI dropdown
+    const response = await fetch(`https://${cluster}/api/v3.0/tags?pageSize=500`, {
       method: 'GET',
       headers: { 
         'Authorization': `Bearer ${token}`,
@@ -29,34 +29,22 @@ export async function POST(request: Request) {
       throw new Error(`EEN API Error: ${response.status} - ${errText}`);
     }
 
-    const rawData = await response.json();
-    const cameras = rawData.results || [];
+    const data = await response.json();
+    const tagsArray = data.results || [];
 
-    if (cameras.length === 0) {
-        return NextResponse.json({ success: true, tags: [], message: "0 cameras found in this Location ID." });
-    }
+    // 3. Extract just the string names from the returned objects
+    const mappedTags = tagsArray
+      .map((t: any) => t.name)
+      .filter(Boolean); // Remove any null/undefined just in case
 
-    // 3. Extract and deduplicate all tags
-    const uniqueTags = new Set<string>();
-    
-    cameras.forEach((cam: any) => {
-      if (cam.tags && Array.isArray(cam.tags)) {
-        cam.tags.forEach((tag: string) => {
-           // Clean up the string so we don't get duplicates based on weird spacing
-           uniqueTags.add(tag.trim()); 
-        });
-      }
-    });
+    // Sort alphabetically for the dropdown
+    const sortedTags = mappedTags.sort((a: string, b: string) => a.localeCompare(b));
 
-    // Convert Set to a sorted array
-    const sortedTags = Array.from(uniqueTags).sort((a, b) => a.localeCompare(b));
-
-    console.log(`✅ Scan Complete. Found ${sortedTags.length} unique tags across ${cameras.length} cameras.`);
+    console.log(`✅ Scan Complete. Found ${sortedTags.length} official tags.`);
 
     return NextResponse.json({ 
       success: true, 
-      tags: sortedTags,
-      totalCamerasInLocation: cameras.length
+      tags: sortedTags
     });
     
   } catch (error: any) {
