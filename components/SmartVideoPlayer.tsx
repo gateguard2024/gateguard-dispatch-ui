@@ -22,7 +22,6 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
       setIsLoading(true);
       setError(null);
 
-      // 1. Fetch stream keys
       const res = await fetch('/api/cameras/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -35,14 +34,24 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
       const video = videoRef.current;
       if (!video) return;
 
-      // 2. Build the proxy URL (Passes token in query string so proxy can use it)
-      const streamUrl = new URL(data.hlsUrl);
-      streamUrl.searchParams.append('access_token', data.token); // EEN needs this to generate the playlist
-      const proxyUrl = `/api/cameras/proxy?url=${encodeURIComponent(streamUrl.toString())}&token=${data.token}`;
+      // 🚨 CRITICAL FIX: Lock the massive token into a cookie!
+      // This stops us from having to put it in the URL, which causes the 400 Bad Request
+      await fetch('/api/cameras/set-cookie', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: data.token })
+      });
 
-      // 3. Mount Player
+      // Build the clean proxy URL (Notice there is NO token in this string!)
+      const proxyUrl = `/api/cameras/proxy?url=${encodeURIComponent(data.hlsUrl)}`;
+
       if (Hls.isSupported()) {
-        hls = new Hls(); // No headers or cookies needed!
+        hls = new Hls({
+           xhrSetup: (xhr) => {
+              // Tell hls.js to silently send the cookie to our proxy
+              xhr.withCredentials = true; 
+           }
+        }); 
 
         hls.loadSource(proxyUrl);
         hls.attachMedia(video);
@@ -55,7 +64,6 @@ export default function SmartVideoPlayer({ siteId, cameraId }: SmartVideoPlayerP
 
         hls.on(Hls.Events.ERROR, (event, errorData) => {
           if (errorData.fatal) {
-            // EEN 409 Conflict Retry Logic
             if (errorData.response?.code === 409 || errorData.response?.code === 500) {
                 if (retryCount < 3) {
                     hls?.destroy();
