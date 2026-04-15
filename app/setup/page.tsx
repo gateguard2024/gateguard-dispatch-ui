@@ -21,6 +21,15 @@ export default function SetupPage() {
     schedule_end: '06:00'
   });
 
+  // Tag Scanner State
+  const [availableTags, setAvailableTags] = useState<string[]>([]);
+  const [isScanningTags, setIsScanningTags] = useState(false);
+  const [hasScanned, setHasScanned] = useState(false);
+
+  // Camera Pruning State
+  const [siteCameras, setSiteCameras] = useState<any[]>([]);
+  const [isLoadingCameras, setIsLoadingCameras] = useState(false);
+
   const fetchSites = async () => {
     setLoading(true);
     const { data, error } = await supabase
@@ -34,8 +43,24 @@ export default function SetupPage() {
 
   useEffect(() => { fetchSites(); }, []);
 
+  const fetchSiteCameras = async (siteId: string) => {
+    setIsLoadingCameras(true);
+    const { data, error } = await supabase
+      .from('cameras')
+      .select('*')
+      .eq('site_id', siteId)
+      .order('name', { ascending: true });
+
+    if (!error && data) setSiteCameras(data);
+    setIsLoadingCameras(false);
+  };
+
   const handleOpenConfig = (site: any) => {
     setConfiguringSiteId(site.id);
+    setHasScanned(false);
+    setAvailableTags([]);
+    setSiteCameras([]);
+    
     setFormData({
       een_location_id: site.een_location_id || '',
       een_tag: site.een_tag || '',
@@ -44,6 +69,34 @@ export default function SetupPage() {
       schedule_start: site.schedule_start || '18:00',
       schedule_end: site.schedule_end || '06:00'
     });
+
+    // Load existing cameras if any
+    fetchSiteCameras(site.id);
+  };
+
+  const handleScanTags = async (siteId: string) => {
+    if (!formData.een_location_id) {
+      alert("Please enter a Sub-Account ID to scan.");
+      return;
+    }
+    
+    setIsScanningTags(true);
+    try {
+      const res = await fetch('/api/een/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ siteId, locationId: formData.een_location_id })
+      });
+      const data = await res.json();
+      
+      if (!data.success) throw new Error(data.error);
+
+      setAvailableTags(data.tags);
+      setHasScanned(true);
+    } catch (err: any) {
+      alert(`Scan failed: ${err.message}`);
+    }
+    setIsScanningTags(false);
   };
 
   const handleSaveAndHarvest = async (siteId: string) => {
@@ -57,19 +110,34 @@ export default function SetupPage() {
 
       if (error) throw new Error(error.message);
 
-      console.log(`⏳ Starting targeted sync for ${formData.een_tag || 'all cameras'}...`);
+      console.log(`⏳ Starting targeted sync for ${formData.een_tag || 'All Cameras'}...`);
       
       const result = await eagleEyeService.syncHardware(siteId);
       
-      console.log("✅ Harvest Complete!", result);
-      alert(`✅ Successfully saved config and synced ${result.count} cameras!`);
+      alert(`✅ Successfully synced ${result.count} cameras!`);
       
-      setConfiguringSiteId(null);
+      // Refresh the camera pruning list
+      fetchSiteCameras(siteId);
       fetchSites(); 
 
     } catch (err: any) {
       console.error("❌ Setup Failed:", err.message);
-      alert(`Setup failed: ${err.message}.`);
+      alert(`Setup failed: ${err.message}`);
+    }
+  };
+
+  const toggleCameraMonitor = async (cameraId: string, currentStatus: boolean) => {
+    // Optimistic UI update
+    setSiteCameras(prev => prev.map(c => c.id === cameraId ? { ...c, is_monitored: !currentStatus } : c));
+
+    const { error } = await supabase
+      .from('cameras')
+      .update({ is_monitored: !currentStatus })
+      .eq('id', cameraId);
+
+    if (error) {
+      alert(`Failed to update camera: ${error.message}`);
+      fetchSiteCameras(configuringSiteId!); // Revert on fail
     }
   };
 
@@ -78,7 +146,7 @@ export default function SetupPage() {
       <div className="flex justify-between items-end mb-8">
         <div>
           <h1 className="text-4xl font-black text-white tracking-tight">Infrastructure Hub</h1>
-          <p className="text-slate-400 mt-2 font-medium">Manage sites and automation logic.</p>
+          <p className="text-slate-400 mt-2 font-medium">Manage sites, automation logic, and hardware pruning.</p>
         </div>
       </div>
 
@@ -146,31 +214,43 @@ export default function SetupPage() {
                       
                       {/* Left Col: Hardware Targeting */}
                       <div className="flex flex-col gap-4">
-                        <h4 className="text-xs text-indigo-400 font-black tracking-widest uppercase">1. Hardware Targeting</h4>
+                        <h4 className="text-xs text-indigo-400 font-black tracking-widest uppercase">1. Location Radar</h4>
                         
                         <div>
-                          <label className="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">Sub-Account ID (Location)</label>
-                          <input 
-                            type="text" 
-                            placeholder="e.g. 100bd80b"
-                            value={formData.een_location_id}
-                            onChange={(e) => setFormData({...formData, een_location_id: e.target.value})}
-                            className="w-full bg-black border border-white/20 rounded-lg p-3 text-sm text-white focus:border-indigo-500 outline-none font-mono"
-                          />
-                          <p className="text-[10px] text-slate-500 mt-1">Found in EEN Dashboard URL or Account Settings.</p>
+                          <label className="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">Sub-Account ID</label>
+                          <div className="flex gap-2">
+                            <input 
+                              type="text" 
+                              placeholder="e.g. 100bd80b"
+                              value={formData.een_location_id}
+                              onChange={(e) => setFormData({...formData, een_location_id: e.target.value})}
+                              className="flex-1 bg-black border border-white/20 rounded-lg p-3 text-sm text-white focus:border-indigo-500 outline-none font-mono"
+                            />
+                            <button 
+                              onClick={() => handleScanTags(site.id)}
+                              disabled={isScanningTags}
+                              className="bg-white/10 hover:bg-white/20 text-white px-4 rounded-lg text-xs font-bold transition-all disabled:opacity-50"
+                            >
+                              {isScanningTags ? 'SCANNING...' : 'SCAN'}
+                            </button>
+                          </div>
                         </div>
 
-                        <div>
-                          <label className="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">Property Tag (Filter)</label>
-                          <input 
-                            type="text" 
-                            placeholder="e.g. Marbella"
-                            value={formData.een_tag}
-                            onChange={(e) => setFormData({...formData, een_tag: e.target.value})}
-                            className="w-full bg-black border border-white/20 rounded-lg p-3 text-sm text-white focus:border-indigo-500 outline-none"
-                          />
-                          <p className="text-[10px] text-slate-500 mt-1">Must exactly match the tag used in EEN Dashboard.</p>
-                        </div>
+                        {hasScanned && (
+                          <div className="animate-in fade-in zoom-in duration-300">
+                            <label className="block text-[10px] text-slate-400 uppercase tracking-widest mb-1">Property Tag Selection</label>
+                            <select 
+                              value={formData.een_tag}
+                              onChange={(e) => setFormData({...formData, een_tag: e.target.value})}
+                              className="w-full bg-black border border-indigo-500/50 rounded-lg p-3 text-sm text-white focus:border-indigo-500 outline-none"
+                            >
+                              <option value="">-- All Cameras (No Tag Filter) --</option>
+                              {availableTags.map((tag, idx) => (
+                                <option key={idx} value={tag}>{tag}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
                       </div>
 
                       {/* Right Col: SOC Gatekeeper */}
@@ -231,15 +311,39 @@ export default function SetupPage() {
                           onClick={() => setConfiguringSiteId(null)}
                           className="px-6 py-3 rounded-xl border border-white/20 text-white text-xs font-bold hover:bg-white/5 transition-all"
                         >
-                          CANCEL
+                          CLOSE
                         </button>
                         <button 
                           onClick={() => handleSaveAndHarvest(site.id)}
                           className="px-6 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black tracking-widest transition-all"
                         >
-                          SAVE CONFIG & HARVEST CAMERAS
+                          SAVE & HARVEST CAMERAS
                         </button>
                       </div>
+
+                      {/* Step E: Hardware Pruning */}
+                      {siteCameras.length > 0 && (
+                        <div className="col-span-2 mt-4 border-t border-white/10 pt-6 animate-in fade-in duration-500">
+                          <h4 className="text-xs text-slate-300 font-black tracking-widest uppercase mb-4">3. Camera Pruning ({siteCameras.length} Nodes)</h4>
+                          <div className="grid grid-cols-2 gap-3 max-h-64 overflow-y-auto pr-2 custom-scrollbar">
+                            {siteCameras.map(cam => (
+                              <div key={cam.id} className="flex items-center justify-between bg-black/40 border border-white/5 p-3 rounded-lg">
+                                <span className="text-xs text-white truncate pr-2 font-medium">{cam.name}</span>
+                                <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                                  <input 
+                                    type="checkbox" 
+                                    className="sr-only peer" 
+                                    checked={cam.is_monitored}
+                                    onChange={() => toggleCameraMonitor(cam.id, cam.is_monitored)}
+                                  />
+                                  <div className="w-9 h-5 bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
+                                </label>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                     </div>
                   )}
 
