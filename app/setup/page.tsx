@@ -24,6 +24,7 @@ export default function SetupPage() {
   const [newClientId, setNewClientId] = useState("");
   const [newClientSecret, setNewClientSecret] = useState("");
   const [isProvisioning, setIsProvisioning] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
@@ -67,7 +68,6 @@ export default function SetupPage() {
 
       if (error) throw new Error(error.message);
 
-      // Successfully saved to DB! Now send them to Eagle Eye to authenticate.
       alert(`✅ Master Account "${newAccountName}" created! Redirecting to Eagle Eye to authenticate...`);
       eagleEyeService.login(newAccountName.trim());
 
@@ -328,12 +328,42 @@ export default function SetupPage() {
           {/* ========================================================= */}
           {activeConfigMenu === "new-site" && (
             <div className="max-w-2xl bg-black/50 border border-white/10 p-8 rounded-3xl animate-in fade-in zoom-in-95 duration-300">
-              <h2 className="text-2xl font-black text-white mb-2">Provision Master Account</h2>
-              <p className="text-slate-400 text-sm mb-8">Enter the API credentials from the Eagle Eye Developer Portal. This will spawn a parent node that can auto-discover property zones.</p>
-
-              <form onSubmit={handleProvisionAccount} className="flex flex-col gap-5">
+              
+              <div className="flex justify-between items-start mb-6">
                 <div>
-                  <label className="block text-xs font-bold text-slate-300 uppercase tracking-widest mb-2">Master Account Name</label>
+                  <h2 className="text-2xl font-black text-white mb-2">Provision Master Account</h2>
+                  <p className="text-slate-400 text-sm">Enter the API credentials from the Eagle Eye Developer Portal. This will spawn a parent node that can auto-discover property zones.</p>
+                </div>
+                <button 
+                  onClick={() => setShowHelp(!showHelp)}
+                  className="bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/40 border border-indigo-500/50 px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2"
+                >
+                  {showHelp ? 'HIDE HELP' : 'NEED HELP?'}
+                </button>
+              </div>
+
+              {/* Cheat Code Help Box */}
+              {showHelp && (
+                <div className="mb-8 bg-indigo-900/20 border border-indigo-500/30 p-5 rounded-xl animate-in fade-in slide-in-from-top-2">
+                  <h3 className="text-sm font-bold text-indigo-400 mb-3 flex items-center gap-2">
+                    <span>ℹ️</span> Where do I find these credentials?
+                  </h3>
+                  <ol className="text-sm text-slate-300 list-decimal pl-5 space-y-2">
+                    <li>Log into your <strong>Eagle Eye Networks Reseller/Admin Dashboard</strong>.</li>
+                    <li>Navigate to your Account Settings and find the <strong>Applications</strong> or <strong>API Management</strong> section.</li>
+                    <li>Click <strong>Create New Application</strong>.</li>
+                    <li>Once created, Eagle Eye will provide a <strong>Client ID</strong> and a <strong>Client Secret</strong>.</li>
+                    <li>Copy and paste them below. <em className="text-indigo-300">Note: Keep the Secret safe, it usually only shows once!</em></li>
+                  </ol>
+                </div>
+              )}
+
+              <form onSubmit={handleProvisionAccount} className="flex flex-col gap-6">
+                <div>
+                  <label className="flex items-center gap-2 text-xs font-bold text-slate-300 uppercase tracking-widest mb-2">
+                    Master Account Name
+                    <span className="text-slate-500 cursor-help" title="Just an internal name for your dashboard (e.g., 'Pegasus Residential').">ⓘ</span>
+                  </label>
                   <input 
                     type="text" 
                     placeholder="e.g. Pegasus Residential"
@@ -344,7 +374,10 @@ export default function SetupPage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-300 uppercase tracking-widest mb-2">Eagle Eye Client ID</label>
+                  <label className="flex items-center gap-2 text-xs font-bold text-slate-300 uppercase tracking-widest mb-2">
+                    Eagle Eye Client ID
+                    <span className="text-slate-500 cursor-help" title="Found in the Eagle Eye Developer Portal under your Application details.">ⓘ</span>
+                  </label>
                   <input 
                     type="text" 
                     placeholder="Paste Client ID..."
@@ -355,7 +388,10 @@ export default function SetupPage() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-slate-300 uppercase tracking-widest mb-2">Eagle Eye Client Secret</label>
+                  <label className="flex items-center gap-2 text-xs font-bold text-slate-300 uppercase tracking-widest mb-2">
+                    Eagle Eye Client Secret
+                    <span className="text-slate-500 cursor-help" title="The secure password for your Application. Keep this hidden.">ⓘ</span>
+                  </label>
                   <input 
                     type="password" 
                     placeholder="Paste Client Secret..."
@@ -365,7 +401,7 @@ export default function SetupPage() {
                   />
                 </div>
 
-                <div className="pt-4 mt-4 border-t border-white/10 flex justify-end">
+                <div className="pt-4 mt-2 border-t border-white/10 flex justify-end">
                   <button 
                     type="submit"
                     disabled={isProvisioning}
