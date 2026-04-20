@@ -332,28 +332,31 @@ export default function SetupPage() {
               <div className="flex justify-between items-start mb-6">
                 <div>
                   <h2 className="text-2xl font-black text-white mb-2">Provision Master Account</h2>
-                  <p className="text-slate-400 text-sm">Enter the API credentials from the Eagle Eye Developer Portal. This will spawn a parent node that can auto-discover property zones.</p>
+                  <p className="text-slate-400 text-sm">Enter the API credentials from the Eagle Eye VMS to spawn a parent node.</p>
                 </div>
                 <button 
                   onClick={() => setShowHelp(!showHelp)}
                   className="bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/40 border border-indigo-500/50 px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-2"
                 >
-                  {showHelp ? 'HIDE HELP' : 'NEED HELP?'}
+                  {showHelp ? 'HIDE SOP' : 'VIEW EEN SOP'}
                 </button>
               </div>
 
-              {/* Cheat Code Help Box */}
+              {/* Accurate SOP Help Box */}
               {showHelp && (
                 <div className="mb-8 bg-indigo-900/20 border border-indigo-500/30 p-5 rounded-xl animate-in fade-in slide-in-from-top-2">
                   <h3 className="text-sm font-bold text-indigo-400 mb-3 flex items-center gap-2">
-                    <span>ℹ️</span> Where do I find these credentials?
+                    <span>ℹ️</span> How to generate Account API Credentials
                   </h3>
                   <ol className="text-sm text-slate-300 list-decimal pl-5 space-y-2">
-                    <li>Log into your <strong>Eagle Eye Networks Reseller/Admin Dashboard</strong>.</li>
-                    <li>Navigate to your Account Settings and find the <strong>Applications</strong> or <strong>API Management</strong> section.</li>
-                    <li>Click <strong>Create New Application</strong>.</li>
-                    <li>Once created, Eagle Eye will provide a <strong>Client ID</strong> and a <strong>Client Secret</strong>.</li>
-                    <li>Copy and paste them below. <em className="text-indigo-300">Note: Keep the Secret safe, it usually only shows once!</em></li>
+                    <li>Start at your <strong>Reseller account</strong>.</li>
+                    <li>Select <strong>"view"</strong> (icon of an eye) on the site wanting the API.</li>
+                    <li>Select <strong>Account Settings</strong>.</li>
+                    <li>Under the <strong>"Control"</strong> tab, select <strong>Create API Key</strong>.</li>
+                    <li>Select <strong>Generate new API key</strong>.</li>
+                    <li>Fill in the application name: <code className="bg-black/50 px-1.5 py-0.5 rounded text-emerald-400">GG Monitoring - [site name]</code></li>
+                    <li>Select <strong>Get New API Key</strong>.</li>
+                    <li>This will generate the site's <strong>API Key</strong> & <strong>API Secret</strong>. Paste them below.</li>
                   </ol>
                 </div>
               )}
@@ -375,12 +378,12 @@ export default function SetupPage() {
 
                 <div>
                   <label className="flex items-center gap-2 text-xs font-bold text-slate-300 uppercase tracking-widest mb-2">
-                    Eagle Eye Client ID
-                    <span className="text-slate-500 cursor-help" title="Found in the Eagle Eye Developer Portal under your Application details.">ⓘ</span>
+                    Eagle Eye API Key
+                    <span className="text-slate-500 cursor-help" title="Found in the EEN VMS Account Settings under Control > API Keys.">ⓘ</span>
                   </label>
                   <input 
                     type="text" 
-                    placeholder="Paste Client ID..."
+                    placeholder="Paste Account API Key..."
                     value={newClientId}
                     onChange={(e) => setNewClientId(e.target.value)}
                     className="w-full bg-black border border-white/20 rounded-xl p-4 text-white font-mono text-sm focus:border-emerald-500 outline-none transition-all"
@@ -389,12 +392,12 @@ export default function SetupPage() {
 
                 <div>
                   <label className="flex items-center gap-2 text-xs font-bold text-slate-300 uppercase tracking-widest mb-2">
-                    Eagle Eye Client Secret
-                    <span className="text-slate-500 cursor-help" title="The secure password for your Application. Keep this hidden.">ⓘ</span>
+                    Eagle Eye API Secret
+                    <span className="text-slate-500 cursor-help" title="The secure password generated with the API Key.">ⓘ</span>
                   </label>
                   <input 
                     type="password" 
-                    placeholder="Paste Client Secret..."
+                    placeholder="Paste Account API Secret..."
                     value={newClientSecret}
                     onChange={(e) => setNewClientSecret(e.target.value)}
                     className="w-full bg-black border border-white/20 rounded-xl p-4 text-white font-mono text-sm focus:border-emerald-500 outline-none transition-all"
