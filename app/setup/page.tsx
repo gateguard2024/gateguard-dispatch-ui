@@ -19,6 +19,12 @@ export default function SetupPage() {
   // Zone Settings State
   const [configuringZoneId, setConfiguringZoneId] = useState<string | null>(null);
 
+  // Provisioning Wizard State
+  const [newAccountName, setNewAccountName] = useState("");
+  const [newClientId, setNewClientId] = useState("");
+  const [newClientSecret, setNewClientSecret] = useState("");
+  const [isProvisioning, setIsProvisioning] = useState(false);
+
   const fetchData = async () => {
     setLoading(true);
     const { data: accts } = await supabase.from('accounts').select('*').order('created_at', { ascending: false });
@@ -39,6 +45,39 @@ export default function SetupPage() {
   };
 
   // ==========================================
+  // PROVISIONING WIZARD
+  // ==========================================
+  const handleProvisionAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAccountName || !newClientId || !newClientSecret) {
+      return alert("Please fill out all fields.");
+    }
+
+    setIsProvisioning(true);
+    try {
+      const { data, error } = await supabase
+        .from('accounts')
+        .insert([{
+          name: newAccountName.trim(),
+          een_client_id: newClientId.trim(),
+          een_client_secret: newClientSecret.trim()
+        }])
+        .select()
+        .single();
+
+      if (error) throw new Error(error.message);
+
+      // Successfully saved to DB! Now send them to Eagle Eye to authenticate.
+      alert(`✅ Master Account "${newAccountName}" created! Redirecting to Eagle Eye to authenticate...`);
+      eagleEyeService.login(newAccountName.trim());
+
+    } catch (err: any) {
+      alert(`Provisioning failed: ${err.message}`);
+      setIsProvisioning(false);
+    }
+  };
+
+  // ==========================================
   // THE AUTO-DISCOVERY ENGINE
   // ==========================================
   const handleScanAndGenerateZones = async (accountId: string) => {
@@ -46,16 +85,14 @@ export default function SetupPage() {
     
     setIsScanning(true);
     try {
-      // 1. Fetch tags from the official EEN API
       const res = await fetch('/api/een/tags', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ siteId: accountId }) // We pass siteId so the old route doesn't break
+        body: JSON.stringify({ siteId: accountId }) 
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
 
-      // 2. Generate the Composite IDs and prep the rows
       const tags: string[] = data.tags;
       const baseId = `2026-${scanLocationId}`;
       
@@ -70,7 +107,6 @@ export default function SetupPage() {
         };
       });
 
-      // Add a fallback zone for cameras with NO tags
       newZones.push({
         id: `${baseId}-root`,
         account_id: accountId,
@@ -79,7 +115,6 @@ export default function SetupPage() {
         is_monitored: false
       });
 
-      // 3. Bulk insert to Supabase
       const { error } = await supabase.from('zones').upsert(newZones, { onConflict: 'id' });
       if (error) throw new Error(error.message);
 
@@ -116,7 +151,6 @@ export default function SetupPage() {
   };
 
   const toggleCameraMonitor = async (cameraId: string, currentStatus: boolean, zoneId: string) => {
-    // Optimistic UI update
     setZoneCameras(prev => ({
       ...prev,
       [zoneId]: prev[zoneId].map(c => c.id === cameraId ? { ...c, is_monitored: !currentStatus } : c)
@@ -126,7 +160,7 @@ export default function SetupPage() {
 
   const updateZoneSettings = async (zoneId: string, updates: any) => {
     await supabase.from('zones').update(updates).eq('id', zoneId);
-    fetchData(); // Refresh UI
+    fetchData(); 
   };
 
   return (
@@ -150,17 +184,27 @@ export default function SetupPage() {
             <span className="text-xl mr-3">🏢</span>
             <span className="font-bold text-white">Master Accounts</span>
           </button>
+          <button 
+            onClick={() => setActiveConfigMenu("new-site")}
+            className={`p-4 rounded-2xl border text-left transition-all ${
+              activeConfigMenu === "new-site" ? "bg-white/10 border-emerald-500/50" : "bg-white/5 border-white/5"
+            }`}
+          >
+            <span className="text-xl mr-3">✨</span>
+            <span className="font-bold text-white">Provision Site</span>
+          </button>
         </div>
 
         {/* RIGHT CANVAS */}
         <div className="flex-1 bg-black/40 border border-white/10 rounded-3xl p-6 relative overflow-y-auto">
+          
+          {/* ========================================================= */}
+          {/* VIEW: ACCOUNTS & ZONES */}
+          {/* ========================================================= */}
           {activeConfigMenu === "accounts" && (
             <div className="flex flex-col gap-8">
-              
-              {/* MASTER ACCOUNTS LIST */}
               {accounts.map((account) => (
                 <div key={account.id} className="flex flex-col gap-4">
-                  
                   {/* Account Header */}
                   <div className="bg-indigo-900/20 border border-indigo-500/30 p-5 rounded-2xl flex flex-col gap-4">
                     <div className="flex justify-between items-start">
@@ -171,7 +215,7 @@ export default function SetupPage() {
 
                       {!account.een_refresh_token ? (
                         <button 
-                          onClick={() => eagleEyeService.login(account.name)} // Might need to pass account.id depending on your login logic
+                          onClick={() => eagleEyeService.login(account.name)} 
                           className="bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-black px-4 py-2 rounded-xl transition-all"
                         >
                           CONNECT EEN API
@@ -278,6 +322,62 @@ export default function SetupPage() {
               ))}
             </div>
           )}
+
+          {/* ========================================================= */}
+          {/* VIEW: PROVISION SITE WIZARD */}
+          {/* ========================================================= */}
+          {activeConfigMenu === "new-site" && (
+            <div className="max-w-2xl bg-black/50 border border-white/10 p-8 rounded-3xl animate-in fade-in zoom-in-95 duration-300">
+              <h2 className="text-2xl font-black text-white mb-2">Provision Master Account</h2>
+              <p className="text-slate-400 text-sm mb-8">Enter the API credentials from the Eagle Eye Developer Portal. This will spawn a parent node that can auto-discover property zones.</p>
+
+              <form onSubmit={handleProvisionAccount} className="flex flex-col gap-5">
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 uppercase tracking-widest mb-2">Master Account Name</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. Pegasus Residential"
+                    value={newAccountName}
+                    onChange={(e) => setNewAccountName(e.target.value)}
+                    className="w-full bg-black border border-white/20 rounded-xl p-4 text-white focus:border-emerald-500 outline-none transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 uppercase tracking-widest mb-2">Eagle Eye Client ID</label>
+                  <input 
+                    type="text" 
+                    placeholder="Paste Client ID..."
+                    value={newClientId}
+                    onChange={(e) => setNewClientId(e.target.value)}
+                    className="w-full bg-black border border-white/20 rounded-xl p-4 text-white font-mono text-sm focus:border-emerald-500 outline-none transition-all"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 uppercase tracking-widest mb-2">Eagle Eye Client Secret</label>
+                  <input 
+                    type="password" 
+                    placeholder="Paste Client Secret..."
+                    value={newClientSecret}
+                    onChange={(e) => setNewClientSecret(e.target.value)}
+                    className="w-full bg-black border border-white/20 rounded-xl p-4 text-white font-mono text-sm focus:border-emerald-500 outline-none transition-all"
+                  />
+                </div>
+
+                <div className="pt-4 mt-4 border-t border-white/10 flex justify-end">
+                  <button 
+                    type="submit"
+                    disabled={isProvisioning}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-black tracking-widest px-8 py-4 rounded-xl transition-all disabled:opacity-50"
+                  >
+                    {isProvisioning ? 'PROVISIONING...' : 'SAVE & AUTHENTICATE'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
         </div>
       </div>
     </div>
