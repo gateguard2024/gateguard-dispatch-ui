@@ -1,10 +1,31 @@
+// app/setup/page.tsx
+//
+// GateGuard Infrastructure Hub — Setup & Configuration Page
+//
+// Layout:
+//   Left panel (w-64)  → Connected Accounts tree (expandable → zones)
+//   Right panel (flex) → Empty state | Setup Wizard (5 steps) | Zone Detail (tabbed)
+//
+// Zone Detail tabs:
+//   Overview    — monitoring toggle, meta grid, camera list + EEN re-sync
+//   Schedule    — per-day shifts (up to 3 per day) + holiday overrides
+//   Contacts    — personnel directory (emergency, reporting, EMS, guard, janitorial…)
+//   Procedures  — custom SOPs per event type (placeholder for next release)
+//   Site Info   — property/customer info, guard service, camera directory, notes
+//
+// Key fixes vs previous version:
+//   ✓ Zone upsert uses onConflict: "account_id,een_tag" — no more string-composite IDs
+//   ✓ Step 3 includes "All Cameras — Single Site (No Tag)" as first selectable option
+//   ✓ Contacts use existing `contacts` table (zone_id, name, role, phone, email, priority)
+//   ✓ Site info / schedule stored as JSONB on zones (requires Migration 001d)
+
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { eagleEyeService } from "@/services/eagleEyeService";
 
-// ─── Inline SVG Icon Primitive ───────────────────────────────────────────────
+// ─── SVG Icon Primitive ───────────────────────────────────────────────────────
 const Ic = ({ d, className = "w-4 h-4" }: { d: string; className?: string }) => (
   <svg
     className={className}
@@ -35,10 +56,14 @@ const I = {
   tag:      "M9.568 3H5.25A2.25 2.25 0 003 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 005.223-5.223c.542-.827.369-1.908-.33-2.607L9.568 3zM6 6h.008v.008H6V6z",
   excl:     "M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z",
   arrowR:   "M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3",
-  link:     "M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244",
+  trash:    "M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0",
+  edit:     "M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125",
+  user:     "M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z",
+  list:     "M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z",
+  info:     "M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z",
 };
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 interface Account {
   id: string;
   name: string;
@@ -56,6 +81,9 @@ interface Zone {
   timezone?: string;
   schedule_start?: string;
   schedule_end?: string;
+  site_info?: Record<string, any>;
+  weekly_schedule?: Record<string, any>;
+  holiday_schedule?: Record<string, any>;
 }
 
 interface Camera {
@@ -65,16 +93,93 @@ interface Camera {
   is_monitored: boolean;
 }
 
-// ─── Wizard default state ────────────────────────────────────────────────────
+interface Contact {
+  id?: string;
+  zone_id: string;
+  name: string;
+  role: string;
+  phone: string;
+  email: string;
+  priority: number;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
+type Day = typeof DAYS[number];
+
+const DAY_LABELS: Record<Day, string> = {
+  monday: "MON", tuesday: "TUE", wednesday: "WED", thursday: "THU",
+  friday: "FRI", saturday: "SAT", sunday: "SUN",
+};
+
+const HOLIDAYS = [
+  { key: "new_years",     label: "New Year's Day" },
+  { key: "mlk",          label: "MLK Day" },
+  { key: "presidents",   label: "President's Day" },
+  { key: "memorial",     label: "Memorial Day" },
+  { key: "juneteenth",   label: "Juneteenth" },
+  { key: "independence", label: "Independence Day" },
+  { key: "labor",        label: "Labor Day" },
+  { key: "columbus",     label: "Columbus Day" },
+  { key: "veterans",     label: "Veteran's Day" },
+  { key: "thanksgiving", label: "Thanksgiving" },
+  { key: "christmas",    label: "Christmas Day" },
+];
+
+const CONTACT_ROLES = [
+  "Emergency Contact",
+  "Reporting Contact",
+  "Authorized After-Hours Employee",
+  "Police Department",
+  "Fire Department",
+  "EMS",
+  "Janitorial Company",
+];
+
+const TIMEZONES = [
+  "America/New_York", "America/Chicago", "America/Denver",
+  "America/Los_Angeles", "America/Phoenix", "Pacific/Honolulu", "America/Anchorage",
+];
+
+// ─── Default state factories ──────────────────────────────────────────────────
+const defaultShift = () => ({ start: "18:00", end: "23:00", concierge: false });
+
+const defaultDaySchedule = () => ({
+  operating: false as boolean,
+  shift1: defaultShift() as ReturnType<typeof defaultShift>,
+  shift2: null as null | ReturnType<typeof defaultShift>,
+  shift3: null as null | ReturnType<typeof defaultShift>,
+});
+
+const defaultWeeklySchedule = (): Record<string, ReturnType<typeof defaultDaySchedule>> =>
+  Object.fromEntries(DAYS.map((d) => [d, defaultDaySchedule()]));
+
+const defaultHolidaySchedule = (): Record<string, { schedule: string; is_247: boolean }> =>
+  Object.fromEntries(HOLIDAYS.map((h) => [h.key, { schedule: "", is_247: false }]));
+
+const defaultSiteInfo = () => ({
+  property: "",
+  customer_name: "",
+  service_address: "",
+  phone: "",
+  email: "",
+  guard_on_site: false,
+  guard_company: "",
+  guard_phone: "",
+  camera_directory: "",
+  expected_activity: "",
+  special_notes: "",
+});
+
+// "__UNSET__" = user hasn't chosen yet; "" = single-site (no tag); "TagName" = specific tag
 const defaultWizard = {
   step: 1 as 1 | 2 | 3 | 4 | 5,
   accountId: null as string | null,
   accountName: "",
   clientId: "",
   clientSecret: "",
-  locationId: "",
   discoveredTags: [] as string[],
-  selectedTag: "",
+  selectedTag: "__UNSET__" as string,
   timezone: "America/New_York",
   scheduleStart: "18:00",
   scheduleEnd: "06:00",
@@ -85,31 +190,31 @@ const defaultWizard = {
   error: "",
 };
 
-// ─── Shared UI primitives ────────────────────────────────────────────────────
+// ─── Shared UI Primitives ─────────────────────────────────────────────────────
 const inputCls =
-  "w-full bg-white/[0.04] border border-white/[0.08] hover:border-white/[0.14] " +
-  "focus:border-indigo-500/60 focus:bg-white/[0.06] rounded-md px-3 py-2.5 " +
-  "text-sm text-white placeholder-slate-600 outline-none transition-all font-mono";
+  "w-full bg-black/20 border border-white/[0.08] hover:border-white/[0.14] " +
+  "focus:border-indigo-500/60 focus:bg-black/30 rounded px-3 py-2 " +
+  "text-sm text-white placeholder-slate-600 outline-none transition-all";
+
+const inputMonoCls = inputCls + " font-mono";
+
+const inputSmCls =
+  "bg-black/20 border border-white/[0.07] rounded px-2 py-1 text-[11px] text-slate-300 " +
+  "outline-none focus:border-indigo-500/50 transition-all";
 
 function Field({
-  label,
-  help,
-  children,
+  label, help, children,
 }: {
-  label: string;
-  help?: string;
-  children: React.ReactNode;
+  label: string; help?: string; children: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
-        <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+        <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest">
           {label}
         </label>
         {help && (
-          <span className="text-slate-600 cursor-help text-xs" title={help}>
-            ?
-          </span>
+          <span className="text-slate-700 cursor-help text-xs" title={help}>?</span>
         )}
       </div>
       {children}
@@ -117,19 +222,13 @@ function Field({
   );
 }
 
-function Toggle({
-  checked,
-  onChange,
-}: {
-  checked: boolean;
-  onChange: () => void;
-}) {
+function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void }) {
   return (
     <button
       type="button"
       onClick={onChange}
       className={`relative w-9 h-5 rounded-full transition-all shrink-0 ${
-        checked ? "bg-indigo-600" : "bg-white/10"
+        checked ? "bg-indigo-600" : "bg-white/[0.08]"
       }`}
     >
       <div
@@ -141,33 +240,32 @@ function Toggle({
   );
 }
 
-// ─── Step Progress Bar ───────────────────────────────────────────────────────
 const WIZARD_STEPS = ["Credentials", "Authenticate", "Discovery", "Configure", "Complete"];
 
 function StepBar({ current }: { current: number }) {
   return (
     <div className="flex items-center mb-8">
       {WIZARD_STEPS.map((label, i) => {
-        const stepNum = i + 1;
-        const done = stepNum < current;
-        const active = stepNum === current;
+        const n = i + 1;
+        const done = n < current;
+        const active = n === current;
         return (
           <React.Fragment key={label}>
             <div className="flex flex-col items-center">
               <div
-                className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold border transition-all ${
+                className={`w-6 h-6 flex items-center justify-center text-[11px] font-bold border transition-all ${
                   done
                     ? "bg-indigo-600 border-indigo-600 text-white"
                     : active
                     ? "border-indigo-500 text-indigo-400 bg-indigo-500/10"
-                    : "border-white/10 text-slate-600"
+                    : "border-white/[0.08] text-slate-700"
                 }`}
               >
-                {done ? <Ic d={I.check} className="w-3.5 h-3.5" /> : stepNum}
+                {done ? <Ic d={I.check} className="w-3 h-3" /> : n}
               </div>
               <span
-                className={`text-[10px] mt-1.5 font-medium whitespace-nowrap ${
-                  active ? "text-indigo-400" : done ? "text-slate-400" : "text-slate-600"
+                className={`text-[9px] mt-1 font-semibold uppercase tracking-wider whitespace-nowrap ${
+                  active ? "text-indigo-400" : done ? "text-slate-400" : "text-slate-700"
                 }`}
               >
                 {label}
@@ -175,8 +273,8 @@ function StepBar({ current }: { current: number }) {
             </div>
             {i < WIZARD_STEPS.length - 1 && (
               <div
-                className={`flex-1 h-px mt-[-14px] mx-1 ${
-                  done ? "bg-indigo-600" : "bg-white/[0.08]"
+                className={`flex-1 h-px mt-[-10px] mx-1 ${
+                  done ? "bg-indigo-600" : "bg-white/[0.06]"
                 }`}
               />
             )}
@@ -187,37 +285,87 @@ function StepBar({ current }: { current: number }) {
   );
 }
 
-// ─── Error Banner ────────────────────────────────────────────────────────────
 function ErrorBanner({ message }: { message: string }) {
   if (!message) return null;
   return (
-    <div className="mb-4 flex items-start gap-2.5 bg-red-500/10 border border-red-500/20 rounded-md p-3">
+    <div className="mb-4 flex items-start gap-2.5 bg-red-500/[0.08] border border-red-500/20 rounded p-3">
       <Ic d={I.excl} className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
       <p className="text-xs text-red-400">{message}</p>
     </div>
   );
 }
 
-// ─── Main Page ───────────────────────────────────────────────────────────────
+function SectionDivider({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 mb-3">
+      <p className="text-[9px] font-bold uppercase tracking-widest text-slate-600 whitespace-nowrap">
+        {children}
+      </p>
+      <div className="flex-1 h-px bg-white/[0.04]" />
+    </div>
+  );
+}
+
+function SaveBar({
+  onSave, saving, label = "Save Changes",
+}: {
+  onSave: () => void; saving: boolean; label?: string;
+}) {
+  return (
+    <div className="flex justify-end pt-4 border-t border-white/[0.05] mt-2">
+      <button
+        onClick={onSave}
+        disabled={saving}
+        className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium px-5 py-2 rounded transition-all"
+      >
+        {saving ? (
+          <>
+            <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            Saving…
+          </>
+        ) : (
+          label
+        )}
+      </button>
+    </div>
+  );
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
 export default function SetupPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [zones, setZones] = useState<Zone[]>([]);
-  const [zoneCameras, setZoneCameras] = useState<{ [k: string]: Camera[] }>({});
+  const [zoneCameras, setZoneCameras] = useState<Record<string, Camera[]>>({});
+  const [zoneContacts, setZoneContacts] = useState<Record<string, Contact[]>>({});
   const [loading, setLoading] = useState(true);
 
-  // Left-panel state
+  // Panel state
   const [expandedAccountId, setExpandedAccountId] = useState<string | null>(null);
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
-
-  // Right-panel view
   const [rightView, setRightView] = useState<"empty" | "wizard" | "zone-detail">("empty");
+  const [detailTab, setDetailTab] = useState<
+    "overview" | "schedule" | "contacts" | "procedures" | "site-info"
+  >("overview");
 
   // Wizard state
   const [wiz, setWiz] = useState({ ...defaultWizard });
   const wizSet = (patch: Partial<typeof defaultWizard>) =>
     setWiz((prev) => ({ ...prev, ...patch }));
 
-  // ── Data loading ────────────────────────────────────────────────────────
+  // Zone detail editable state (loaded from zone on selection)
+  const [siteInfo, setSiteInfo] = useState<Record<string, any>>(defaultSiteInfo());
+  const [weeklySchedule, setWeeklySchedule] = useState<Record<string, any>>(
+    defaultWeeklySchedule()
+  );
+  const [holidaySchedule, setHolidaySchedule] = useState<Record<string, any>>(
+    defaultHolidaySchedule()
+  );
+  const [saving, setSaving] = useState(false);
+
+  // Contact editing
+  const [editContact, setEditContact] = useState<Contact | null>(null);
+
+  // ── Data loading ─────────────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     setLoading(true);
     const [{ data: accts }, { data: zns }] = await Promise.all([
@@ -236,7 +384,11 @@ export default function SetupPage() {
     if (saved) {
       try {
         const state = JSON.parse(saved);
-        setWiz({ ...defaultWizard, ...state, step: 3, isLoading: false, error: "" });
+        setWiz({
+          ...defaultWizard, ...state,
+          step: 3, isLoading: false, error: "",
+          selectedTag: "__UNSET__",
+        });
         setRightView("wizard");
         sessionStorage.removeItem("gg_wizard");
       } catch (_) {
@@ -245,26 +397,38 @@ export default function SetupPage() {
     }
   }, [fetchData]);
 
-  // ── Zone camera loader ───────────────────────────────────────────────────
-  const loadZoneCameras = useCallback(
-    async (zoneId: string) => {
-      const { data } = await supabase
-        .from("cameras")
-        .select("*")
-        .eq("zone_id", zoneId)
-        .order("name");
-      if (data) setZoneCameras((p) => ({ ...p, [zoneId]: data }));
-    },
-    []
-  );
+  const loadZoneCameras = useCallback(async (zoneId: string) => {
+    const { data } = await supabase
+      .from("cameras")
+      .select("*")
+      .eq("zone_id", zoneId)
+      .order("name");
+    if (data) setZoneCameras((p) => ({ ...p, [zoneId]: data }));
+  }, []);
+
+  const loadZoneContacts = useCallback(async (zoneId: string) => {
+    const { data } = await supabase
+      .from("contacts")
+      .select("*")
+      .eq("zone_id", zoneId)
+      .order("priority");
+    if (data) setZoneContacts((p) => ({ ...p, [zoneId]: data }));
+  }, []);
 
   const handleSelectZone = (zone: Zone) => {
     setSelectedZoneId(zone.id);
     setRightView("zone-detail");
+    setDetailTab("overview");
+    setEditContact(null);
+    // Populate editable fields from zone data
+    setSiteInfo({ ...defaultSiteInfo(), ...(zone.site_info ?? {}) });
+    setWeeklySchedule({ ...defaultWeeklySchedule(), ...(zone.weekly_schedule ?? {}) });
+    setHolidaySchedule({ ...defaultHolidaySchedule(), ...(zone.holiday_schedule ?? {}) });
     loadZoneCameras(zone.id);
+    loadZoneContacts(zone.id);
   };
 
-  // ── Toggle helpers ───────────────────────────────────────────────────────
+  // ── Toggles ──────────────────────────────────────────────────────────────
   const toggleCamera = async (cam: Camera) => {
     const next = !cam.is_monitored;
     setZoneCameras((p) => ({
@@ -282,11 +446,60 @@ export default function SetupPage() {
     await supabase.from("zones").update({ is_monitored: next }).eq("id", zone.id);
   };
 
+  // ── Save handlers ─────────────────────────────────────────────────────────
+  const saveSiteInfo = async (zoneId: string) => {
+    setSaving(true);
+    await supabase.from("zones").update({ site_info: siteInfo }).eq("id", zoneId);
+    setSaving(false);
+  };
+
+  const saveSchedule = async (zoneId: string) => {
+    setSaving(true);
+    await supabase
+      .from("zones")
+      .update({ weekly_schedule: weeklySchedule, holiday_schedule: holidaySchedule })
+      .eq("id", zoneId);
+    setSaving(false);
+  };
+
+  // ── Contact CRUD ──────────────────────────────────────────────────────────
+  const saveContact = async (contact: Contact) => {
+    if (contact.id) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { id, zone_id, ...updates } = contact;
+      await supabase.from("contacts").update(updates).eq("id", id);
+    } else {
+      await supabase.from("contacts").insert([contact]);
+    }
+    loadZoneContacts(contact.zone_id);
+    setEditContact(null);
+  };
+
+  const deleteContact = async (contactId: string, zoneId: string) => {
+    await supabase.from("contacts").delete().eq("id", contactId);
+    loadZoneContacts(zoneId);
+  };
+
+  // ── Harvest cameras ───────────────────────────────────────────────────────
+  const harvestCameras = async (zoneId: string) => {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/een/sync-hardware", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ zoneId }),
+      });
+      const result = await res.json();
+      if (result.success) await loadZoneCameras(zoneId);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // ══════════════════════════════════════════════════════════════════════════
   // WIZARD ACTIONS
   // ══════════════════════════════════════════════════════════════════════════
 
-  // Step 1 → 2: Save credentials and redirect to EEN OAuth
   const wizStep1Submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!wiz.accountName || !wiz.clientId || !wiz.clientSecret) {
@@ -309,13 +522,9 @@ export default function SetupPage() {
 
       if (error) throw new Error(error.message);
 
-      // Persist wizard state across the OAuth redirect
       sessionStorage.setItem(
         "gg_wizard",
-        JSON.stringify({
-          accountId: data.id,
-          accountName: wiz.accountName.trim(),
-        })
+        JSON.stringify({ accountId: data.id, accountName: wiz.accountName.trim() })
       );
 
       eagleEyeService.login(wiz.accountName.trim());
@@ -324,61 +533,55 @@ export default function SetupPage() {
     }
   };
 
-  // Step 3: Scan EEN for available property tags
   const wizScanTags = async () => {
-    if (!wiz.locationId) {
-      wizSet({ error: "Sub-Account ID is required to scan for zones." });
-      return;
-    }
-    wizSet({ isLoading: true, error: "", discoveredTags: [], selectedTag: "" });
+    wizSet({ isLoading: true, error: "", discoveredTags: [], selectedTag: "__UNSET__" });
     try {
       const res = await fetch("/api/een/tags", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ siteId: wiz.accountId }),
+        body: JSON.stringify({ accountId: wiz.accountId }),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
-      wizSet({ isLoading: false, discoveredTags: data.tags });
+      wizSet({ isLoading: false, discoveredTags: data.tags ?? [] });
     } catch (err: any) {
       wizSet({ isLoading: false, error: err.message });
     }
   };
 
-  // Step 3 → 4: Confirm tag selection
   const wizStep3Next = () => {
-    if (!wiz.selectedTag) {
-      wizSet({ error: "Please select a property zone to continue." });
+    if (wiz.selectedTag === "__UNSET__") {
+      wizSet({ error: 'Select "All Cameras — Single Site" or a specific property tag.' });
       return;
     }
     wizSet({ step: 4, error: "" });
   };
 
-  // Step 4 → 5: Save zone config and harvest cameras
+  // ── Step 4 → 5: Upsert zone (UUID-safe) and sync cameras ─────────────────
   const wizStep4Submit = async (e: React.FormEvent) => {
     e.preventDefault();
     wizSet({ isLoading: true, error: "" });
     try {
-      const zoneId = `${wiz.accountId}-${wiz.selectedTag
-        .toLowerCase()
-        .replace(/[^a-z0-9]/g, "-")}`;
+      // selectedTag === '' means single-site (no tag filter)
+      const tagValue = wiz.selectedTag === "__UNSET__" ? "" : wiz.selectedTag;
+      const zoneName = tagValue || wiz.accountName || "Default Zone";
 
+      // Use onConflict natural key — Supabase assigns a proper UUID
       const { data: zoneData, error: zoneErr } = await supabase
         .from("zones")
         .upsert(
           [
             {
-              id: zoneId,
-              account_id: wiz.accountId,
-              name: wiz.selectedTag,
-              een_tag: wiz.selectedTag,
-              is_monitored: wiz.isMonitored,
-              timezone: wiz.timezone,
+              account_id:     wiz.accountId,
+              name:           zoneName,
+              een_tag:        tagValue,
+              is_monitored:   wiz.isMonitored,
+              timezone:       wiz.timezone,
               schedule_start: wiz.scheduleStart,
-              schedule_end: wiz.scheduleEnd,
+              schedule_end:   wiz.scheduleEnd,
             },
           ],
-          { onConflict: "id" }
+          { onConflict: "account_id,een_tag" }
         )
         .select()
         .single();
@@ -391,7 +594,7 @@ export default function SetupPage() {
         body: JSON.stringify({ zoneId: zoneData.id }),
       });
       const result = await res.json();
-      if (!result.success) throw new Error(result.error);
+      if (!result.success) throw new Error(result.error ?? "Camera sync failed.");
 
       const { data: cams } = await supabase
         .from("cameras")
@@ -403,7 +606,7 @@ export default function SetupPage() {
         step: 5,
         isLoading: false,
         harvestedZoneId: zoneData.id,
-        harvestedCameras: cams || [],
+        harvestedCameras: cams ?? [],
       });
       fetchData();
     } catch (err: any) {
@@ -422,32 +625,47 @@ export default function SetupPage() {
   };
 
   const wizFinish = () => {
+    // Navigate to the newly created zone's detail view
+    const harvestedId = wiz.harvestedZoneId;
     setWiz({ ...defaultWizard });
-    setRightView("empty");
-    fetchData();
+    fetchData().then(() => {
+      if (harvestedId) {
+        const zone = zones.find((z) => z.id === harvestedId);
+        if (zone) handleSelectZone(zone);
+        else setRightView("empty");
+      } else {
+        setRightView("empty");
+      }
+    });
   };
 
   // ══════════════════════════════════════════════════════════════════════════
-  // RENDER: WIZARD
+  // WIZARD RENDER
   // ══════════════════════════════════════════════════════════════════════════
   const renderWizard = () => (
-    <div className="max-w-2xl flex flex-col h-full">
+    <div className="max-w-xl w-full flex flex-col h-full">
+      {/* Wizard header */}
       <div className="mb-6">
-        <h2 className="text-lg font-semibold text-white">New Account Setup</h2>
-        <p className="text-xs text-slate-500 mt-1">
-          Complete each step to connect a new Eagle Eye VMS account to GateGuard.
+        <p className="text-[9px] text-slate-600 uppercase tracking-widest font-bold mb-1">
+          New Account
+        </p>
+        <h2 className="text-base font-semibold text-white tracking-tight">
+          EEN Account Setup Wizard
+        </h2>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Connect an Eagle Eye Networks account and provision its property zones.
         </p>
       </div>
 
       <StepBar current={wiz.step} />
       <ErrorBanner message={wiz.error} />
 
-      {/* ── Step 1: Credentials ─────────────────────────────────────────── */}
+      {/* ── Step 1: Credentials ──────────────────────────────────────────── */}
       {wiz.step === 1 && (
         <form onSubmit={wizStep1Submit} className="flex flex-col gap-5 flex-1">
           <Field
             label="Account Name"
-            help="An internal label for this EEN parent account (e.g., Pegasus Residential)"
+            help="Internal label for this EEN parent account (e.g., Pegasus Residential)"
           >
             <input
               className={inputCls}
@@ -463,8 +681,8 @@ export default function SetupPage() {
             help="Found under Account Settings → Control → API Keys in the EEN portal"
           >
             <input
-              className={inputCls}
-              placeholder="Paste Client ID..."
+              className={inputMonoCls}
+              placeholder="Paste Client ID…"
               value={wiz.clientId}
               onChange={(e) => wizSet({ clientId: e.target.value })}
             />
@@ -475,150 +693,155 @@ export default function SetupPage() {
             help="Generated alongside the Client ID — store it securely"
           >
             <input
-              className={inputCls}
+              className={inputMonoCls}
               type="password"
-              placeholder="Paste Client Secret..."
+              placeholder="Paste Client Secret…"
               value={wiz.clientSecret}
               onChange={(e) => wizSet({ clientSecret: e.target.value })}
             />
           </Field>
 
-          {/* SOP Accordion */}
-          <details className="group bg-indigo-950/30 border border-indigo-500/20 rounded-md">
-            <summary className="flex items-center gap-2 px-4 py-3 cursor-pointer text-xs text-indigo-400 font-medium select-none list-none">
-              <Ic d={I.key} className="w-3.5 h-3.5" />
-              How to locate your EEN API credentials
+          <details className="bg-indigo-950/20 border border-indigo-500/[0.15] rounded">
+            <summary className="flex items-center gap-2 px-4 py-2.5 cursor-pointer text-[11px] text-indigo-400 font-semibold uppercase tracking-widest select-none list-none">
+              <Ic d={I.key} className="w-3 h-3" />
+              How to locate EEN API credentials
             </summary>
-            <ol className="px-5 pb-4 pt-1 text-xs text-slate-400 space-y-2 list-decimal list-inside leading-relaxed border-t border-indigo-500/10 mt-1">
-              <li>
-                Log in to your <strong className="text-slate-300">Reseller account</strong> in EEN.
-              </li>
-              <li>
-                Click the <strong className="text-slate-300">eye icon</strong> to view the target
-                sub-account.
-              </li>
-              <li>
-                Navigate to{" "}
-                <strong className="text-slate-300">Account Settings → Control</strong>.
-              </li>
-              <li>
-                Click <strong className="text-slate-300">Create API Key</strong>, then{" "}
-                <strong className="text-slate-300">Generate new API key</strong>.
-              </li>
-              <li>
-                Name the key{" "}
-                <code className="bg-black/50 px-1.5 py-0.5 rounded text-emerald-400">
-                  GG Monitoring - [site name]
-                </code>
-                .
-              </li>
-              <li>
-                Copy the generated <strong className="text-slate-300">API Key</strong> and{" "}
-                <strong className="text-slate-300">API Secret</strong> above.
-              </li>
+            <ol className="px-5 pb-4 pt-2 text-xs text-slate-400 space-y-1.5 list-decimal list-inside leading-relaxed border-t border-indigo-500/10">
+              <li>Log in to your <strong className="text-slate-300">Reseller account</strong> in EEN.</li>
+              <li>Click the <strong className="text-slate-300">eye icon</strong> to view the target sub-account.</li>
+              <li>Navigate to <strong className="text-slate-300">Account Settings → Control</strong>.</li>
+              <li>Click <strong className="text-slate-300">Create API Key → Generate new API key</strong>.</li>
+              <li>Name it <code className="bg-black/40 px-1 text-emerald-400">GG Monitoring - [site name]</code>.</li>
+              <li>Copy the <strong className="text-slate-300">API Key</strong> and <strong className="text-slate-300">API Secret</strong> above.</li>
             </ol>
           </details>
 
-          <div className="mt-auto pt-4 border-t border-white/[0.06] flex justify-end">
+          <div className="mt-auto pt-4 border-t border-white/[0.05] flex justify-end">
             <button
               type="submit"
               disabled={wiz.isLoading}
-              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-md transition-all"
+              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium px-5 py-2 rounded transition-all"
             >
               {wiz.isLoading ? (
-                "Saving..."
+                "Saving…"
               ) : (
-                <>
-                  Save & Authenticate <Ic d={I.arrowR} className="w-4 h-4" />
-                </>
+                <>Save & Authenticate <Ic d={I.arrowR} className="w-4 h-4" /></>
               )}
             </button>
           </div>
         </form>
       )}
 
-      {/* ── Step 2: Authenticate (transitional — redirect in progress) ──── */}
+      {/* ── Step 2: Redirect spinner ─────────────────────────────────────── */}
       {wiz.step === 2 && (
         <div className="flex flex-col items-center justify-center flex-1 gap-4 text-center">
           <div className="w-10 h-10 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
           <div>
             <p className="text-sm text-slate-300 font-medium">
-              Redirecting to Eagle Eye Networks
+              Redirecting to Eagle Eye Networks…
             </p>
             <p className="text-xs text-slate-600 mt-1">
-              Complete authentication in the EEN portal — you'll be returned here automatically.
+              Complete the OAuth flow — you'll be returned here automatically.
             </p>
           </div>
         </div>
       )}
 
-      {/* ── Step 3: Discovery ───────────────────────────────────────────── */}
+      {/* ── Step 3: Discovery ────────────────────────────────────────────── */}
       {wiz.step === 3 && (
         <div className="flex flex-col gap-5 flex-1">
-          <div className="flex items-center gap-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-md p-3">
+          <div className="flex items-center gap-2.5 bg-emerald-500/[0.08] border border-emerald-500/20 rounded p-3">
             <Ic d={I.check} className="w-4 h-4 text-emerald-400 shrink-0" />
             <p className="text-xs text-emerald-400 font-medium">
-              Eagle Eye authentication successful. Account is now connected.
+              Eagle Eye authentication successful — account is now connected.
             </p>
           </div>
 
-          <Field
-            label="Sub-Account ID"
-            help="The 8-character ID visible in the EEN web URL for this account (e.g., 100bd80b)"
-          >
-            <div className="flex gap-2">
-              <input
-                className={inputCls + " flex-1"}
-                placeholder="e.g., 100bd80b"
-                value={wiz.locationId}
-                onChange={(e) => wizSet({ locationId: e.target.value })}
-              />
-              <button
-                type="button"
-                onClick={wizScanTags}
-                disabled={wiz.isLoading}
-                className="flex items-center gap-1.5 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.10] text-slate-300 text-sm font-medium px-4 py-2.5 rounded-md transition-all disabled:opacity-50 whitespace-nowrap"
+          {/* Tag scan */}
+          <div className="bg-white/[0.02] border border-white/[0.05] rounded p-4">
+            <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold mb-2">
+              Multi-Site Tag Scan
+            </p>
+            <p className="text-xs text-slate-500 mb-3 leading-relaxed">
+              For multi-site EEN accounts, scan to retrieve configured property tags.
+              Single-site accounts can skip the scan — select "All Cameras" below.
+            </p>
+            <button
+              type="button"
+              onClick={wizScanTags}
+              disabled={wiz.isLoading}
+              className="flex items-center gap-1.5 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.10] text-slate-300 text-xs font-medium px-4 py-2 rounded transition-all disabled:opacity-50"
+            >
+              <Ic d={I.search} className="w-3.5 h-3.5" />
+              {wiz.isLoading ? "Scanning EEN…" : "Scan for Property Tags"}
+            </button>
+          </div>
+
+          {/* Zone selection */}
+          <Field label="Select Property Zone">
+            <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto pr-0.5">
+              {/* Single-site option — always shown first */}
+              <label
+                className={`flex items-center gap-3 px-3 py-3 rounded border cursor-pointer transition-all ${
+                  wiz.selectedTag === ""
+                    ? "bg-indigo-600/15 border-indigo-500/40 text-white"
+                    : "bg-white/[0.02] border-white/[0.05] text-slate-400 hover:bg-white/[0.04]"
+                }`}
               >
-                <Ic d={I.search} className="w-3.5 h-3.5" />
-                {wiz.isLoading ? "Scanning..." : "Scan"}
-              </button>
+                <input
+                  type="radio"
+                  name="zone-tag"
+                  value=""
+                  checked={wiz.selectedTag === ""}
+                  onChange={() => wizSet({ selectedTag: "" })}
+                  className="accent-indigo-500 shrink-0"
+                />
+                <Ic d={I.building} className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                <div>
+                  <span className="text-sm font-medium">All Cameras — Single Site</span>
+                  <p className="text-[11px] text-slate-600 mt-0.5">
+                    No tag filter — syncs all cameras on this EEN account
+                  </p>
+                </div>
+              </label>
+
+              {/* Discovered tags */}
+              {wiz.discoveredTags.map((tag) => (
+                <label
+                  key={tag}
+                  className={`flex items-center gap-3 px-3 py-2.5 rounded border cursor-pointer transition-all ${
+                    wiz.selectedTag === tag
+                      ? "bg-indigo-600/15 border-indigo-500/40 text-white"
+                      : "bg-white/[0.02] border-white/[0.05] text-slate-400 hover:bg-white/[0.04]"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="zone-tag"
+                    value={tag}
+                    checked={wiz.selectedTag === tag}
+                    onChange={() => wizSet({ selectedTag: tag })}
+                    className="accent-indigo-500 shrink-0"
+                  />
+                  <Ic d={I.tag} className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                  <span className="text-sm">{tag}</span>
+                </label>
+              ))}
+
+              {wiz.discoveredTags.length === 0 && !wiz.isLoading && (
+                <p className="text-[11px] text-slate-700 py-2 px-3 italic">
+                  Run a scan above to discover tags, or select "All Cameras" for single-site.
+                </p>
+              )}
             </div>
           </Field>
 
-          {wiz.discoveredTags.length > 0 && (
-            <Field label={`Property Zones — ${wiz.discoveredTags.length} found`}>
-              <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto custom-scrollbar pr-1">
-                {wiz.discoveredTags.map((tag) => (
-                  <label
-                    key={tag}
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded-md border cursor-pointer transition-all ${
-                      wiz.selectedTag === tag
-                        ? "bg-indigo-600/15 border-indigo-500/40 text-white"
-                        : "bg-white/[0.02] border-white/[0.06] text-slate-300 hover:bg-white/[0.05]"
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="zone-tag"
-                      value={tag}
-                      checked={wiz.selectedTag === tag}
-                      onChange={() => wizSet({ selectedTag: tag })}
-                      className="accent-indigo-500 shrink-0"
-                    />
-                    <Ic d={I.tag} className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                    <span className="text-sm">{tag}</span>
-                  </label>
-                ))}
-              </div>
-            </Field>
-          )}
-
-          <div className="mt-auto pt-4 border-t border-white/[0.06] flex justify-end">
+          <div className="mt-auto pt-4 border-t border-white/[0.05] flex justify-end">
             <button
               type="button"
               onClick={wizStep3Next}
-              disabled={!wiz.selectedTag}
-              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium px-5 py-2.5 rounded-md transition-all"
+              disabled={wiz.selectedTag === "__UNSET__"}
+              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-medium px-5 py-2 rounded transition-all"
             >
               Configure Zone <Ic d={I.arrowR} className="w-4 h-4" />
             </button>
@@ -626,13 +849,17 @@ export default function SetupPage() {
         </div>
       )}
 
-      {/* ── Step 4: Configure ───────────────────────────────────────────── */}
+      {/* ── Step 4: Configure ────────────────────────────────────────────── */}
       {wiz.step === 4 && (
         <form onSubmit={wizStep4Submit} className="flex flex-col gap-5 flex-1">
-          {/* Selected zone summary */}
-          <div className="bg-white/[0.02] border border-white/[0.06] rounded-md px-4 py-3">
-            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Selected Zone</p>
-            <p className="text-sm text-white font-medium mt-0.5">{wiz.selectedTag}</p>
+          {/* Selected zone badge */}
+          <div className="bg-white/[0.02] border border-white/[0.05] rounded px-4 py-3">
+            <p className="text-[9px] text-slate-600 uppercase tracking-widest font-bold">
+              Selected Zone
+            </p>
+            <p className="text-sm text-white font-medium mt-0.5">
+              {wiz.selectedTag === "" ? "All Cameras — Single Site" : wiz.selectedTag}
+            </p>
           </div>
 
           <Field label="Timezone">
@@ -641,24 +868,14 @@ export default function SetupPage() {
               value={wiz.timezone}
               onChange={(e) => wizSet({ timezone: e.target.value })}
             >
-              {[
-                "America/New_York",
-                "America/Chicago",
-                "America/Denver",
-                "America/Los_Angeles",
-                "America/Phoenix",
-                "Pacific/Honolulu",
-                "America/Anchorage",
-              ].map((tz) => (
-                <option key={tz} value={tz} className="bg-[#0d0f14]">
-                  {tz}
-                </option>
+              {TIMEZONES.map((tz) => (
+                <option key={tz} value={tz} className="bg-[#0a0c11]">{tz}</option>
               ))}
             </select>
           </Field>
 
           <div className="grid grid-cols-2 gap-4">
-            <Field label="Schedule Start" help="Time the monitoring window begins (24h)">
+            <Field label="Default Window Start" help="Default monitoring start time (24h)">
               <input
                 className={inputCls}
                 type="time"
@@ -666,7 +883,7 @@ export default function SetupPage() {
                 onChange={(e) => wizSet({ scheduleStart: e.target.value })}
               />
             </Field>
-            <Field label="Schedule End" help="Time the monitoring window ends (24h)">
+            <Field label="Default Window End" help="Default monitoring end time (24h)">
               <input
                 className={inputCls}
                 type="time"
@@ -677,10 +894,13 @@ export default function SetupPage() {
           </div>
 
           <div
-            className="flex items-center gap-4 px-4 py-3.5 bg-white/[0.02] border border-white/[0.06] rounded-md cursor-pointer hover:bg-white/[0.04] transition-all"
+            className="flex items-center gap-4 px-4 py-3 bg-white/[0.02] border border-white/[0.05] rounded cursor-pointer hover:bg-white/[0.04] transition-all"
             onClick={() => wizSet({ isMonitored: !wiz.isMonitored })}
           >
-            <Toggle checked={wiz.isMonitored} onChange={() => wizSet({ isMonitored: !wiz.isMonitored })} />
+            <Toggle
+              checked={wiz.isMonitored}
+              onChange={() => wizSet({ isMonitored: !wiz.isMonitored })}
+            />
             <div>
               <p className="text-sm text-white font-medium">Enable SOC Monitoring</p>
               <p className="text-[11px] text-slate-500 mt-0.5">
@@ -689,60 +909,74 @@ export default function SetupPage() {
             </div>
           </div>
 
-          <div className="mt-auto pt-4 border-t border-white/[0.06] flex justify-end">
+          <div className="flex items-start gap-2 bg-indigo-950/20 border border-indigo-500/[0.12] rounded p-3">
+            <Ic d={I.info} className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Detailed scheduling, contacts, procedures, and site information can be configured
+              in the zone detail view after setup completes.
+            </p>
+          </div>
+
+          <div className="mt-auto pt-4 border-t border-white/[0.05] flex justify-end">
             <button
               type="submit"
               disabled={wiz.isLoading}
-              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium px-5 py-2.5 rounded-md transition-all"
+              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-medium px-5 py-2 rounded transition-all"
             >
               {wiz.isLoading ? (
                 <>
-                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Saving & Harvesting...
+                  <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Saving & Syncing…
                 </>
               ) : (
-                <>
-                  Save & Harvest Cameras <Ic d={I.arrowR} className="w-4 h-4" />
-                </>
+                <>Save & Sync Cameras <Ic d={I.arrowR} className="w-4 h-4" /></>
               )}
             </button>
           </div>
         </form>
       )}
 
-      {/* ── Step 5: Complete ────────────────────────────────────────────── */}
+      {/* ── Step 5: Complete ─────────────────────────────────────────────── */}
       {wiz.step === 5 && (
         <div className="flex flex-col gap-5 flex-1">
-          <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-md p-4">
+          <div className="bg-emerald-500/[0.08] border border-emerald-500/20 rounded p-4">
             <div className="flex items-center gap-2 mb-1">
               <Ic d={I.check} className="w-4 h-4 text-emerald-400" />
               <p className="text-sm font-semibold text-emerald-400">Setup Complete</p>
             </div>
-            <p className="text-xs text-slate-400">
+            <p className="text-xs text-slate-400 leading-relaxed">
               <span className="text-white">{wiz.harvestedCameras.length}</span> camera
-              {wiz.harvestedCameras.length !== 1 ? "s" : ""} discovered under{" "}
-              <span className="text-white">{wiz.selectedTag}</span>. Toggle monitoring per
-              device below, then click Finish.
+              {wiz.harvestedCameras.length !== 1 ? "s" : ""} synced
+              {wiz.selectedTag ? (
+                <> under tag <span className="text-white">"{wiz.selectedTag}"</span></>
+              ) : (
+                " (all cameras — single site)"
+              )}.
+              Toggle per-device monitoring below, then click Finish.
             </p>
           </div>
 
           <div>
-            <p className="text-[11px] text-slate-500 uppercase tracking-wider font-semibold mb-2">
-              Hardware Nodes
-            </p>
-            <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto custom-scrollbar">
+            <SectionDivider>Hardware Nodes</SectionDivider>
+            <div className="border border-white/[0.05] rounded overflow-hidden">
               {wiz.harvestedCameras.length === 0 && (
-                <p className="text-xs text-slate-600 py-4 text-center">No cameras returned by harvest.</p>
+                <p className="text-xs text-slate-600 py-4 text-center">
+                  No cameras returned by EEN sync.
+                </p>
               )}
-              {wiz.harvestedCameras.map((cam) => (
+              {wiz.harvestedCameras.map((cam, idx) => (
                 <div
                   key={cam.id}
-                  className="flex items-center justify-between px-3 py-2.5 bg-white/[0.02] border border-white/[0.06] rounded-md"
+                  className={`flex items-center justify-between px-3 py-2.5 ${
+                    idx < wiz.harvestedCameras.length - 1
+                      ? "border-b border-white/[0.04]"
+                      : ""
+                  }`}
                 >
                   <div className="flex items-center gap-2.5">
                     <div
                       className={`w-1.5 h-1.5 rounded-full ${
-                        cam.is_monitored ? "bg-emerald-400" : "bg-slate-600"
+                        cam.is_monitored ? "bg-emerald-400" : "bg-slate-700"
                       }`}
                     />
                     <span className="text-sm text-slate-300">{cam.name}</span>
@@ -756,12 +990,15 @@ export default function SetupPage() {
             </div>
           </div>
 
-          <div className="mt-auto pt-4 border-t border-white/[0.06] flex justify-end">
+          <div className="mt-auto pt-4 border-t border-white/[0.05] flex items-center justify-between gap-4">
+            <p className="text-[11px] text-slate-600">
+              Configure contacts, procedures & full schedule in the zone detail view.
+            </p>
             <button
               onClick={wizFinish}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-5 py-2.5 rounded-md transition-all"
+              className="bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-5 py-2 rounded transition-all whitespace-nowrap"
             >
-              Finish & View Accounts
+              Finish & View Zone
             </button>
           </div>
         </div>
@@ -770,126 +1007,725 @@ export default function SetupPage() {
   );
 
   // ══════════════════════════════════════════════════════════════════════════
-  // RENDER: ZONE DETAIL
+  // ZONE DETAIL RENDER
   // ══════════════════════════════════════════════════════════════════════════
   const renderZoneDetail = () => {
     const zone = zones.find((z) => z.id === selectedZoneId);
     if (!zone) return null;
-    const cams = zoneCameras[zone.id] || [];
+
+    const cams = zoneCameras[zone.id] ?? [];
+    const contacts = zoneContacts[zone.id] ?? [];
+
+    const TABS = [
+      { key: "overview",   label: "Overview" },
+      { key: "schedule",   label: "Schedule" },
+      { key: "contacts",   label: contacts.length ? `Contacts (${contacts.length})` : "Contacts" },
+      { key: "procedures", label: "Procedures" },
+      { key: "site-info",  label: "Site Info" },
+    ] as const;
 
     return (
-      <div className="max-w-2xl flex flex-col gap-6">
-        {/* Header */}
-        <div className="flex items-start justify-between">
+      <div className="flex flex-col h-full overflow-hidden">
+        {/* Zone header */}
+        <div className="flex items-start justify-between mb-5 shrink-0">
           <div>
-            <p className="text-[11px] text-slate-500 uppercase tracking-wider mb-1">
+            <p className="text-[9px] text-slate-600 uppercase tracking-widest font-bold">
               Property Zone
             </p>
-            <h2 className="text-lg font-semibold text-white">{zone.name}</h2>
+            <h2 className="text-base font-semibold text-white mt-0.5">{zone.name}</h2>
+            {zone.een_tag && (
+              <p className="text-[11px] text-slate-600 font-mono mt-0.5">
+                EEN Tag: {zone.een_tag}
+              </p>
+            )}
+            {!zone.een_tag && (
+              <p className="text-[11px] text-slate-700 mt-0.5">Single Site — All Cameras</p>
+            )}
           </div>
           <div
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-semibold border ${
+            className={`flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest border ${
               zone.is_monitored
-                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
-                : "bg-white/[0.04] border-white/[0.08] text-slate-500"
+                ? "bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400"
+                : "bg-white/[0.02] border-white/[0.06] text-slate-600"
             }`}
           >
             <div
               className={`w-1.5 h-1.5 rounded-full ${
-                zone.is_monitored ? "bg-emerald-400" : "bg-slate-600"
+                zone.is_monitored ? "bg-emerald-400" : "bg-slate-700"
               }`}
             />
-            {zone.is_monitored ? "SOC ARMED" : "UNMONITORED"}
+            {zone.is_monitored ? "SOC Armed" : "Unmonitored"}
           </div>
         </div>
 
-        {/* Meta grid */}
-        <div className="grid grid-cols-3 gap-3">
-          {[
-            { label: "Tag", value: zone.een_tag || "—", icon: I.tag },
-            {
-              label: "Schedule",
-              value:
-                zone.schedule_start
-                  ? `${zone.schedule_start} – ${zone.schedule_end}`
-                  : "Not configured",
-              icon: I.clock,
-            },
-            { label: "Timezone", value: zone.timezone || "Not set", icon: I.signal },
-          ].map(({ label, value, icon }) => (
-            <div
-              key={label}
-              className="bg-white/[0.02] border border-white/[0.06] rounded-md px-3 py-2.5"
+        {/* Tab bar */}
+        <div className="flex border-b border-white/[0.06] mb-6 shrink-0 overflow-x-auto">
+          {TABS.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setDetailTab(tab.key as any)}
+              className={`px-4 py-2.5 text-[11px] font-bold tracking-widest uppercase whitespace-nowrap border-b-2 transition-all ${
+                detailTab === tab.key
+                  ? "border-indigo-500 text-indigo-400"
+                  : "border-transparent text-slate-600 hover:text-slate-400"
+              }`}
             >
-              <div className="flex items-center gap-1.5 mb-1">
-                <Ic d={icon} className="w-3 h-3 text-slate-500" />
-                <p className="text-[10px] text-slate-500 uppercase tracking-wider">{label}</p>
-              </div>
-              <p className="text-xs text-slate-300 font-mono truncate">{value}</p>
-            </div>
+              {tab.label}
+            </button>
           ))}
         </div>
 
-        {/* Monitoring toggle */}
-        <div
-          className="flex items-center gap-4 px-4 py-3.5 bg-white/[0.02] border border-white/[0.06] rounded-md cursor-pointer hover:bg-white/[0.04] transition-all"
-          onClick={() => toggleZoneMonitoring(zone)}
-        >
-          <Toggle
-            checked={zone.is_monitored}
-            onChange={() => toggleZoneMonitoring(zone)}
-          />
-          <div>
-            <p className="text-sm text-white font-medium">
-              SOC Monitoring {zone.is_monitored ? "Enabled" : "Disabled"}
-            </p>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              Alarms from this zone will{" "}
-              {zone.is_monitored ? "" : "not "}appear in the Dispatch Station
-            </p>
-          </div>
-        </div>
+        {/* Tab content */}
+        <div className="flex-1 overflow-y-auto">
 
-        {/* Camera list */}
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <p className="text-[11px] text-slate-500 uppercase tracking-wider font-semibold">
-              Hardware Nodes ({cams.length})
-            </p>
-            <button
-              onClick={() => loadZoneCameras(zone.id)}
-              className="flex items-center gap-1.5 text-[11px] text-slate-500 hover:text-slate-300 transition-all"
-            >
-              <Ic d={I.refresh} className="w-3 h-3" />
-              Refresh
-            </button>
-          </div>
-
-          {cams.length === 0 ? (
-            <div className="flex items-center justify-center h-20 border border-white/[0.06] rounded-md text-[11px] text-slate-600 uppercase tracking-wider">
-              No cameras — run a Harvest to populate
-            </div>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              {cams.map((cam) => (
-                <div
-                  key={cam.id}
-                  className="flex items-center justify-between px-3 py-2.5 bg-white/[0.02] border border-white/[0.06] rounded-md hover:bg-white/[0.04] transition-all"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div
-                      className={`w-1.5 h-1.5 rounded-full ${
-                        cam.is_monitored ? "bg-emerald-400" : "bg-slate-600"
-                      }`}
-                    />
-                    <span className="text-sm text-slate-300">{cam.name}</span>
+          {/* ────────────────── OVERVIEW TAB ────────────────── */}
+          {detailTab === "overview" && (
+            <div className="flex flex-col gap-5 max-w-xl">
+              {/* Meta grid */}
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  {
+                    label: "Tag",
+                    value: zone.een_tag || "— Single Site",
+                    icon: I.tag,
+                  },
+                  {
+                    label: "Schedule",
+                    value: zone.schedule_start
+                      ? `${zone.schedule_start} – ${zone.schedule_end}`
+                      : "Not configured",
+                    icon: I.clock,
+                  },
+                  {
+                    label: "Timezone",
+                    value: zone.timezone || "Not set",
+                    icon: I.signal,
+                  },
+                ].map(({ label, value, icon }) => (
+                  <div
+                    key={label}
+                    className="bg-white/[0.02] border border-white/[0.05] rounded px-3 py-2.5"
+                  >
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Ic d={icon} className="w-3 h-3 text-slate-600" />
+                      <p className="text-[9px] text-slate-600 uppercase tracking-widest">
+                        {label}
+                      </p>
+                    </div>
+                    <p className="text-xs text-slate-300 font-mono truncate">{value}</p>
                   </div>
-                  <Toggle
-                    checked={cam.is_monitored}
-                    onChange={() => toggleCamera(cam)}
-                  />
+                ))}
+              </div>
+
+              {/* Monitoring toggle */}
+              <div
+                className="flex items-center gap-4 px-4 py-3 bg-white/[0.02] border border-white/[0.05] rounded cursor-pointer hover:bg-white/[0.04] transition-all"
+                onClick={() => toggleZoneMonitoring(zone)}
+              >
+                <Toggle
+                  checked={zone.is_monitored}
+                  onChange={() => toggleZoneMonitoring(zone)}
+                />
+                <div>
+                  <p className="text-sm text-white font-medium">
+                    SOC Monitoring {zone.is_monitored ? "Enabled" : "Disabled"}
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Alarms from this zone will{" "}
+                    {zone.is_monitored ? "" : "not "}
+                    appear in the Dispatch Station
+                  </p>
                 </div>
-              ))}
+              </div>
+
+              {/* Camera list */}
+              <div>
+                <div className="flex items-center mb-3">
+                  <SectionDivider>Hardware Nodes ({cams.length})</SectionDivider>
+                  <button
+                    onClick={() => harvestCameras(zone.id)}
+                    disabled={saving}
+                    className="flex items-center gap-1.5 text-[10px] text-slate-600 hover:text-slate-300 transition-all disabled:opacity-50 ml-3 shrink-0 whitespace-nowrap"
+                  >
+                    <Ic d={I.refresh} className="w-3 h-3" />
+                    {saving ? "Syncing…" : "Re-Sync EEN"}
+                  </button>
+                </div>
+
+                {cams.length === 0 ? (
+                  <div className="flex items-center justify-center h-16 border border-white/[0.05] rounded text-[11px] text-slate-700 uppercase tracking-wider">
+                    No cameras — click Re-Sync EEN to populate
+                  </div>
+                ) : (
+                  <div className="border border-white/[0.05] rounded overflow-hidden">
+                    {cams.map((cam, idx) => (
+                      <div
+                        key={cam.id}
+                        className={`flex items-center justify-between px-3 py-2.5 hover:bg-white/[0.03] transition-all ${
+                          idx < cams.length - 1 ? "border-b border-white/[0.04]" : ""
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <div
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              cam.is_monitored ? "bg-emerald-400" : "bg-slate-700"
+                            }`}
+                          />
+                          <span className="text-sm text-slate-300">{cam.name}</span>
+                        </div>
+                        <Toggle
+                          checked={cam.is_monitored}
+                          onChange={() => toggleCamera(cam)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ────────────────── SCHEDULE TAB ────────────────── */}
+          {detailTab === "schedule" && (
+            <div className="flex flex-col gap-6 max-w-2xl">
+              <div>
+                <SectionDivider>Weekly Monitoring Schedule</SectionDivider>
+                <div className="border border-white/[0.05] rounded overflow-hidden">
+                  {/* Table header */}
+                  <div className="grid grid-cols-[64px_72px_1fr_1fr_1fr] bg-white/[0.02] border-b border-white/[0.05] px-3 py-2 gap-2">
+                    {["Day", "Active", "Shift 1", "Shift 2", "Shift 3"].map((h) => (
+                      <p
+                        key={h}
+                        className="text-[9px] text-slate-600 uppercase tracking-widest font-bold"
+                      >
+                        {h}
+                      </p>
+                    ))}
+                  </div>
+
+                  {DAYS.map((day, rowIdx) => {
+                    const ds = weeklySchedule[day] ?? defaultDaySchedule();
+                    const setDs = (patch: Partial<typeof ds>) =>
+                      setWeeklySchedule((prev) => ({
+                        ...prev,
+                        [day]: { ...prev[day], ...patch },
+                      }));
+                    const setShift = (
+                      s: "shift1" | "shift2" | "shift3",
+                      patch: Partial<ReturnType<typeof defaultShift>>
+                    ) =>
+                      setDs({
+                        [s]: { ...(ds[s] ?? defaultShift()), ...patch },
+                      });
+                    const toggleShift = (s: "shift2" | "shift3") =>
+                      setDs({ [s]: ds[s] ? null : defaultShift() });
+
+                    const ShiftCell = ({
+                      shiftKey,
+                    }: {
+                      shiftKey: "shift1" | "shift2" | "shift3";
+                    }) => {
+                      if (!ds.operating) return <p className="text-[10px] text-slate-800">—</p>;
+                      const shift = ds[shiftKey];
+                      if (!shift && shiftKey !== "shift1") {
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => toggleShift(shiftKey as "shift2" | "shift3")}
+                            className="text-[10px] text-slate-700 hover:text-indigo-400 transition-all text-left"
+                          >
+                            + Add shift
+                          </button>
+                        );
+                      }
+                      if (!shift) return null;
+                      return (
+                        <div className="flex flex-col gap-1">
+                          <div className="flex gap-1">
+                            <input
+                              type="time"
+                              value={shift.start}
+                              onChange={(e) => setShift(shiftKey, { start: e.target.value })}
+                              className={inputSmCls + " w-20"}
+                            />
+                            <input
+                              type="time"
+                              value={shift.end}
+                              onChange={(e) => setShift(shiftKey, { end: e.target.value })}
+                              className={inputSmCls + " w-20"}
+                            />
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <label className="flex items-center gap-1.5 text-[10px] text-slate-600 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={shift.concierge}
+                                onChange={(e) =>
+                                  setShift(shiftKey, { concierge: e.target.checked })
+                                }
+                                className="accent-indigo-500 w-3 h-3"
+                              />
+                              Concierge
+                            </label>
+                            {shiftKey !== "shift1" && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  toggleShift(shiftKey as "shift2" | "shift3")
+                                }
+                                className="text-[10px] text-red-500/50 hover:text-red-400 transition-all"
+                              >
+                                Remove
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    };
+
+                    return (
+                      <div
+                        key={day}
+                        className={`grid grid-cols-[64px_72px_1fr_1fr_1fr] items-start gap-2 px-3 py-3 ${
+                          rowIdx < DAYS.length - 1 ? "border-b border-white/[0.04]" : ""
+                        } hover:bg-white/[0.02] transition-all`}
+                      >
+                        <p className="text-xs font-bold text-slate-400 pt-1">
+                          {DAY_LABELS[day]}
+                        </p>
+                        <div className="pt-0.5">
+                          <Toggle
+                            checked={ds.operating}
+                            onChange={() => setDs({ operating: !ds.operating })}
+                          />
+                        </div>
+                        <ShiftCell shiftKey="shift1" />
+                        <ShiftCell shiftKey="shift2" />
+                        <ShiftCell shiftKey="shift3" />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Holidays */}
+              <div>
+                <SectionDivider>Holidays & Special Hours</SectionDivider>
+                <div className="border border-white/[0.05] rounded overflow-hidden">
+                  <div className="grid grid-cols-[160px_1fr_72px] bg-white/[0.02] border-b border-white/[0.05] px-3 py-2 gap-3">
+                    {["Holiday", "Schedule / Notes", "24 / 7"].map((h) => (
+                      <p
+                        key={h}
+                        className="text-[9px] text-slate-600 uppercase tracking-widest font-bold"
+                      >
+                        {h}
+                      </p>
+                    ))}
+                  </div>
+                  {HOLIDAYS.map(({ key, label }, idx) => {
+                    const hs = holidaySchedule[key] ?? { schedule: "", is_247: false };
+                    return (
+                      <div
+                        key={key}
+                        className={`grid grid-cols-[160px_1fr_72px] items-center gap-3 px-3 py-2 ${
+                          idx < HOLIDAYS.length - 1 ? "border-b border-white/[0.04]" : ""
+                        }`}
+                      >
+                        <p className="text-xs text-slate-400">{label}</p>
+                        <input
+                          className={inputSmCls + " w-full"}
+                          placeholder="e.g., 18:00–02:00 or Closed"
+                          value={hs.schedule}
+                          onChange={(e) =>
+                            setHolidaySchedule((p) => ({
+                              ...p,
+                              [key]: { ...p[key], schedule: e.target.value },
+                            }))
+                          }
+                        />
+                        <div className="flex justify-center">
+                          <Toggle
+                            checked={hs.is_247}
+                            onChange={() =>
+                              setHolidaySchedule((p) => ({
+                                ...p,
+                                [key]: { ...p[key], is_247: !p[key]?.is_247 },
+                              }))
+                            }
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <SaveBar onSave={() => saveSchedule(zone.id)} saving={saving} label="Save Schedule" />
+            </div>
+          )}
+
+          {/* ────────────────── CONTACTS TAB ────────────────── */}
+          {detailTab === "contacts" && (
+            <div className="flex flex-col gap-4 max-w-xl">
+              <div className="flex items-center">
+                <SectionDivider>Personnel &amp; Emergency Contacts</SectionDivider>
+                <button
+                  onClick={() =>
+                    setEditContact({
+                      zone_id: zone.id,
+                      name: "",
+                      role: "Emergency Contact",
+                      phone: "",
+                      email: "",
+                      priority: contacts.length,
+                    })
+                  }
+                  className="flex items-center gap-1.5 text-[11px] text-indigo-400 hover:text-indigo-300 transition-all ml-3 shrink-0"
+                >
+                  <Ic d={I.plus} className="w-3 h-3" />
+                  Add Contact
+                </button>
+              </div>
+
+              {/* Inline add/edit form */}
+              {editContact && (
+                <div className="bg-white/[0.02] border border-indigo-500/20 rounded p-4 flex flex-col gap-3">
+                  <p className="text-[9px] text-indigo-400 uppercase tracking-widest font-bold">
+                    {editContact.id ? "Edit Contact" : "New Contact"}
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Name">
+                      <input
+                        className={inputCls}
+                        placeholder="Full name"
+                        value={editContact.name}
+                        onChange={(e) =>
+                          setEditContact((c) => c && { ...c, name: e.target.value })
+                        }
+                      />
+                    </Field>
+                    <Field label="Role">
+                      <select
+                        className={inputCls + " cursor-pointer"}
+                        value={editContact.role}
+                        onChange={(e) =>
+                          setEditContact((c) => c && { ...c, role: e.target.value })
+                        }
+                      >
+                        {CONTACT_ROLES.map((r) => (
+                          <option key={r} value={r} className="bg-[#0a0c11]">{r}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Phone">
+                      <input
+                        className={inputCls}
+                        type="tel"
+                        placeholder="(404) 555-0100"
+                        value={editContact.phone}
+                        onChange={(e) =>
+                          setEditContact((c) => c && { ...c, phone: e.target.value })
+                        }
+                      />
+                    </Field>
+                    <Field label="Email">
+                      <input
+                        className={inputCls}
+                        type="email"
+                        placeholder="name@company.com"
+                        value={editContact.email}
+                        onChange={(e) =>
+                          setEditContact((c) => c && { ...c, email: e.target.value })
+                        }
+                      />
+                    </Field>
+                  </div>
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setEditContact(null)}
+                      className="text-xs text-slate-500 hover:text-slate-300 px-3 py-1.5 transition-all"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => editContact && saveContact(editContact)}
+                      className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium px-4 py-1.5 rounded transition-all"
+                    >
+                      {editContact.id ? "Save Changes" : "Add Contact"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {contacts.length === 0 && !editContact ? (
+                <div className="flex flex-col items-center justify-center h-20 border border-white/[0.05] rounded text-[11px] text-slate-700 uppercase tracking-wider gap-1">
+                  No contacts configured for this zone
+                </div>
+              ) : (
+                <div className="border border-white/[0.05] rounded overflow-hidden">
+                  {contacts.map((contact, idx) => (
+                    <div
+                      key={contact.id}
+                      className={`flex items-center gap-3 px-3 py-3 group hover:bg-white/[0.02] transition-all ${
+                        idx < contacts.length - 1 ? "border-b border-white/[0.04]" : ""
+                      }`}
+                    >
+                      {/* Avatar */}
+                      <div className="w-7 h-7 bg-white/[0.03] border border-white/[0.06] rounded flex items-center justify-center shrink-0">
+                        <Ic d={I.user} className="w-3.5 h-3.5 text-slate-600" />
+                      </div>
+
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-slate-200 font-medium truncate">
+                          {contact.name}
+                        </p>
+                        <p className="text-[9px] text-slate-600 uppercase tracking-widest mt-0.5">
+                          {contact.role}
+                        </p>
+                      </div>
+
+                      {/* Phone / email */}
+                      <div className="text-right hidden sm:block mr-2">
+                        {contact.phone && (
+                          <p className="text-xs text-slate-400 font-mono">{contact.phone}</p>
+                        )}
+                        {contact.email && (
+                          <p className="text-[11px] text-slate-600">{contact.email}</p>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
+                        <button
+                          onClick={() => setEditContact(contact)}
+                          className="p-1.5 hover:bg-white/[0.06] rounded text-slate-600 hover:text-slate-300 transition-all"
+                        >
+                          <Ic d={I.edit} className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => contact.id && deleteContact(contact.id, zone.id)}
+                          className="p-1.5 hover:bg-red-500/10 rounded text-slate-700 hover:text-red-400 transition-all"
+                        >
+                          <Ic d={I.trash} className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Role key */}
+              <div className="bg-white/[0.01] border border-white/[0.04] rounded p-3 mt-1">
+                <p className="text-[9px] text-slate-700 uppercase tracking-widest font-bold mb-2">
+                  Available Roles
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {CONTACT_ROLES.map((r) => (
+                    <span
+                      key={r}
+                      className="text-[10px] text-slate-600 bg-white/[0.03] border border-white/[0.05] px-2 py-0.5 rounded"
+                    >
+                      {r}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ────────────────── PROCEDURES TAB ────────────────── */}
+          {detailTab === "procedures" && (
+            <div className="flex flex-col gap-4 max-w-xl">
+              <SectionDivider>Custom Response Procedures</SectionDivider>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Define event-specific SOPs for operators responding to alarms at this zone.
+                Procedures appear in the Dispatch Station during active alarm handling.
+              </p>
+              <div className="flex flex-col items-center justify-center h-28 border border-dashed border-white/[0.06] rounded text-[11px] text-slate-700 gap-2">
+                <Ic d={I.list} className="w-5 h-5 text-slate-700" />
+                Procedure editor — available in the next platform release
+              </div>
+            </div>
+          )}
+
+          {/* ────────────────── SITE INFO TAB ────────────────── */}
+          {detailTab === "site-info" && (
+            <div className="flex flex-col gap-6 max-w-xl">
+              {/* Property & Customer */}
+              <div>
+                <SectionDivider>Property &amp; Customer Information</SectionDivider>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Property Name">
+                    <input
+                      className={inputCls}
+                      placeholder="e.g., Willow Creek Apartments"
+                      value={siteInfo.property ?? ""}
+                      onChange={(e) =>
+                        setSiteInfo((p) => ({ ...p, property: e.target.value }))
+                      }
+                    />
+                  </Field>
+                  <Field label="Customer Name">
+                    <input
+                      className={inputCls}
+                      placeholder="e.g., Pegasus Residential"
+                      value={siteInfo.customer_name ?? ""}
+                      onChange={(e) =>
+                        setSiteInfo((p) => ({ ...p, customer_name: e.target.value }))
+                      }
+                    />
+                  </Field>
+                  <div className="col-span-2">
+                    <Field label="Service Address">
+                      <input
+                        className={inputCls}
+                        placeholder="123 Main St, Atlanta, GA 30301"
+                        value={siteInfo.service_address ?? ""}
+                        onChange={(e) =>
+                          setSiteInfo((p) => ({ ...p, service_address: e.target.value }))
+                        }
+                      />
+                    </Field>
+                  </div>
+                  <Field label="Phone">
+                    <input
+                      className={inputCls}
+                      type="tel"
+                      placeholder="(404) 555-0100"
+                      value={siteInfo.phone ?? ""}
+                      onChange={(e) =>
+                        setSiteInfo((p) => ({ ...p, phone: e.target.value }))
+                      }
+                    />
+                  </Field>
+                  <Field label="Email">
+                    <input
+                      className={inputCls}
+                      type="email"
+                      placeholder="manager@property.com"
+                      value={siteInfo.email ?? ""}
+                      onChange={(e) =>
+                        setSiteInfo((p) => ({ ...p, email: e.target.value }))
+                      }
+                    />
+                  </Field>
+                </div>
+              </div>
+
+              {/* Guard & Security */}
+              <div>
+                <SectionDivider>Guard Service &amp; Security</SectionDivider>
+                <div className="flex flex-col gap-3">
+                  <div
+                    className="flex items-center gap-4 px-4 py-3 bg-white/[0.02] border border-white/[0.05] rounded cursor-pointer hover:bg-white/[0.04] transition-all"
+                    onClick={() =>
+                      setSiteInfo((p) => ({ ...p, guard_on_site: !p.guard_on_site }))
+                    }
+                  >
+                    <Toggle
+                      checked={siteInfo.guard_on_site ?? false}
+                      onChange={() =>
+                        setSiteInfo((p) => ({ ...p, guard_on_site: !p.guard_on_site }))
+                      }
+                    />
+                    <div>
+                      <p className="text-sm text-white font-medium">Guard Service On Site</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        A physical security guard is stationed at this property
+                      </p>
+                    </div>
+                  </div>
+
+                  {siteInfo.guard_on_site && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <Field label="Guard Company">
+                        <input
+                          className={inputCls}
+                          placeholder="e.g., Allied Universal"
+                          value={siteInfo.guard_company ?? ""}
+                          onChange={(e) =>
+                            setSiteInfo((p) => ({ ...p, guard_company: e.target.value }))
+                          }
+                        />
+                      </Field>
+                      <Field label="Guard Company Phone">
+                        <input
+                          className={inputCls}
+                          type="tel"
+                          placeholder="(404) 555-0200"
+                          value={siteInfo.guard_phone ?? ""}
+                          onChange={(e) =>
+                            setSiteInfo((p) => ({ ...p, guard_phone: e.target.value }))
+                          }
+                        />
+                      </Field>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Cameras & Operations */}
+              <div>
+                <SectionDivider>Camera Directory &amp; Operations</SectionDivider>
+                <div className="flex flex-col gap-3">
+                  <Field
+                    label="Camera Directory / Layout Notes"
+                    help="Describe each camera's name, location, and coverage area"
+                  >
+                    <textarea
+                      className={inputCls + " resize-none"}
+                      rows={4}
+                      placeholder={
+                        "Cam 1 — Main entrance, faces parking lot\n" +
+                        "Cam 2 — Parking Lot A, NW corner\n" +
+                        "Cam 3 — Pool deck entrance"
+                      }
+                      value={siteInfo.camera_directory ?? ""}
+                      onChange={(e) =>
+                        setSiteInfo((p) => ({ ...p, camera_directory: e.target.value }))
+                      }
+                    />
+                  </Field>
+
+                  <Field
+                    label="Expected Activity"
+                    help="What is normal at this site during monitoring hours?"
+                  >
+                    <textarea
+                      className={inputCls + " resize-none"}
+                      rows={2}
+                      placeholder="Residents may enter/exit at all hours. Delivery vehicles 7am–9pm…"
+                      value={siteInfo.expected_activity ?? ""}
+                      onChange={(e) =>
+                        setSiteInfo((p) => ({ ...p, expected_activity: e.target.value }))
+                      }
+                    />
+                  </Field>
+                </div>
+              </div>
+
+              {/* Special Notes */}
+              <div>
+                <SectionDivider>Special Notes</SectionDivider>
+                <textarea
+                  className={inputCls + " resize-none"}
+                  rows={3}
+                  placeholder="Additional notes for operators — parking waivers, known issues, after-hours protocols…"
+                  value={siteInfo.special_notes ?? ""}
+                  onChange={(e) =>
+                    setSiteInfo((p) => ({ ...p, special_notes: e.target.value }))
+                  }
+                />
+              </div>
+
+              <SaveBar
+                onSave={() => saveSiteInfo(zone.id)}
+                saving={saving}
+                label="Save Site Info"
+              />
             </div>
           )}
         </div>
@@ -902,51 +1738,50 @@ export default function SetupPage() {
   // ══════════════════════════════════════════════════════════════════════════
   return (
     <div className="w-full h-full flex flex-col overflow-hidden">
-
-      {/* ── Page Header ──────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-8 py-5 border-b border-white/[0.06] shrink-0">
+      {/* ── Page header ───────────────────────────────────────────────────── */}
+      <div className="flex items-center justify-between px-8 py-4 border-b border-white/[0.06] shrink-0">
         <div>
-          <h1 className="text-xl font-semibold text-white tracking-tight">
+          <h1 className="text-sm font-bold text-white tracking-tight uppercase">
             Infrastructure Hub
           </h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Provision accounts, discover property zones, and manage hardware nodes
+          <p className="text-[11px] text-slate-600 mt-0.5">
+            Provision accounts · Discover property zones · Manage hardware nodes
           </p>
         </div>
         <button
           onClick={() => {
             setWiz({ ...defaultWizard });
             setRightView("wizard");
+            setSelectedZoneId(null);
           }}
-          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-4 py-2 rounded-md transition-all"
+          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2 rounded uppercase tracking-wide transition-all"
         >
-          <Ic d={I.plus} className="w-4 h-4" />
+          <Ic d={I.plus} className="w-3.5 h-3.5" />
           Add Account
         </button>
       </div>
 
-      {/* ── Body ─────────────────────────────────────────────────────────── */}
+      {/* ── Body ──────────────────────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden">
-
-        {/* LEFT: Account Tree ───────────────────────────────────────────── */}
-        <div className="w-72 shrink-0 border-r border-white/[0.06] flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-white/[0.04]">
-            <p className="text-[11px] text-slate-500 uppercase tracking-wider font-semibold">
+        {/* Left: Account tree */}
+        <div className="w-64 shrink-0 border-r border-white/[0.06] flex flex-col overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-white/[0.04]">
+            <p className="text-[9px] text-slate-700 uppercase tracking-widest font-bold">
               Connected Accounts
             </p>
           </div>
 
-          <div className="flex-1 overflow-y-auto custom-scrollbar py-2">
+          <div className="flex-1 overflow-y-auto py-1">
             {loading && (
-              <div className="flex items-center justify-center h-20 text-[11px] text-slate-600 uppercase tracking-wider">
-                Loading...
+              <div className="flex items-center justify-center h-16 text-[10px] text-slate-700 uppercase tracking-widest">
+                Loading…
               </div>
             )}
 
             {!loading && accounts.length === 0 && (
-              <div className="flex flex-col items-center justify-center h-32 gap-2 px-4 text-center">
-                <Ic d={I.building} className="w-6 h-6 text-slate-700" />
-                <p className="text-xs text-slate-600">No accounts provisioned yet.</p>
+              <div className="flex flex-col items-center justify-center h-28 gap-2 px-4 text-center">
+                <Ic d={I.building} className="w-5 h-5 text-slate-700" />
+                <p className="text-[11px] text-slate-600">No accounts provisioned yet.</p>
                 <button
                   onClick={() => {
                     setWiz({ ...defaultWizard });
@@ -966,12 +1801,12 @@ export default function SetupPage() {
 
               return (
                 <div key={account.id}>
-                  {/* Account Row */}
+                  {/* Account row */}
                   <button
                     onClick={() =>
                       setExpandedAccountId(isExpanded ? null : account.id)
                     }
-                    className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-left transition-all hover:bg-white/[0.04] ${
+                    className={`w-full flex items-center gap-2 px-3 py-2.5 text-left transition-all hover:bg-white/[0.04] ${
                       isExpanded ? "bg-white/[0.02]" : ""
                     }`}
                   >
@@ -984,42 +1819,42 @@ export default function SetupPage() {
                         isConnected ? "bg-emerald-400" : "bg-amber-400"
                       }`}
                     />
-                    <span className="text-sm text-slate-300 truncate flex-1">
+                    <span className="text-xs text-slate-300 truncate flex-1">
                       {account.name}
                     </span>
-                    <span className="text-[10px] text-slate-600 shrink-0">
+                    <span className="text-[10px] text-slate-700 shrink-0 font-mono">
                       {accountZones.length}
                     </span>
                   </button>
 
-                  {/* Zone Sub-rows */}
+                  {/* Zone sub-rows */}
                   {isExpanded && (
-                    <div className="pl-8">
+                    <div className="border-l border-white/[0.04] ml-[22px]">
                       {accountZones.length === 0 && (
-                        <p className="px-4 py-2 text-[11px] text-slate-600">
-                          No zones discovered
+                        <p className="px-4 py-2 text-[10px] text-slate-700">
+                          No zones configured
                         </p>
                       )}
                       {accountZones.map((zone) => (
                         <button
                           key={zone.id}
                           onClick={() => handleSelectZone(zone)}
-                          className={`w-full flex items-center gap-2.5 px-4 py-2 text-left rounded transition-all hover:bg-white/[0.04] ${
+                          className={`w-full flex items-center gap-2 px-4 py-1.5 text-left transition-all hover:bg-white/[0.04] ${
                             selectedZoneId === zone.id && rightView === "zone-detail"
-                              ? "bg-indigo-600/10"
+                              ? "bg-indigo-600/[0.08]"
                               : ""
                           }`}
                         >
                           <div
-                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                            className={`w-1 h-1 rounded-full shrink-0 ${
                               zone.is_monitored ? "bg-emerald-400" : "bg-slate-700"
                             }`}
                           />
                           <span
-                            className={`text-xs truncate ${
+                            className={`text-[11px] truncate ${
                               selectedZoneId === zone.id && rightView === "zone-detail"
                                 ? "text-indigo-400"
-                                : "text-slate-400"
+                                : "text-slate-500"
                             }`}
                           >
                             {zone.name}
@@ -1034,16 +1869,15 @@ export default function SetupPage() {
           </div>
         </div>
 
-        {/* RIGHT: Detail Panel ──────────────────────────────────────────── */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar p-8">
-
+        {/* Right: Detail panel */}
+        <div className="flex-1 overflow-y-auto p-8">
           {rightView === "empty" && (
             <div className="h-full flex flex-col items-center justify-center gap-3 text-center">
-              <div className="w-12 h-12 bg-white/[0.03] border border-white/[0.06] rounded-lg flex items-center justify-center">
-                <Ic d={I.shield} className="w-5 h-5 text-slate-600" />
+              <div className="w-10 h-10 border border-white/[0.06] bg-white/[0.02] flex items-center justify-center">
+                <Ic d={I.shield} className="w-5 h-5 text-slate-700" />
               </div>
               <p className="text-sm text-slate-500">
-                Select a zone from the panel to view its details,
+                Select a zone to view its configuration,
                 <br />
                 or add a new account to get started.
               </p>
