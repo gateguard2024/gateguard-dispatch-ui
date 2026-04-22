@@ -14,13 +14,14 @@ const supabase = createClient(
 );
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Account {
-  id:         string;
-  name:       string;
-  address?:   string;
-  cameraCount: number;
-  onlineCount: number;
-  hasAlert:   boolean;
-  firstSnap:  string | null;
+  id:            string;
+  name:          string;
+  address?:      string;
+  cameraCount:   number;
+  onlineCount:   number;
+  hasAlert:      boolean;
+  firstSnap:     string | null;   // static snapshot_url (Brivo cameras)
+  firstEenCamId: string | null;   // ESN for live snapshot proxy (EEN cameras)
 }
 interface CameraRow {
   id:              string;
@@ -150,7 +151,7 @@ export default function CamerasPage() {
       if (zoneIds.length > 0) {
         const { data: cams, error: camErr } = await supabase
           .from('cameras')
-          .select('id, zone_id, source, is_monitored, snapshot_url')
+          .select('id, zone_id, source, is_monitored, snapshot_url, een_camera_id')
           .in('zone_id', zoneIds);
         if (camErr) console.error('[cameras] cameras query error:', camErr);
         camRows = cams ?? [];
@@ -170,17 +171,21 @@ export default function CamerasPage() {
       }
 
       const mapped: Account[] = accts.map((a: any) => {
-        const allCams = camsByAccount[a.id] ?? [];
-        const online  = allCams.filter((c: any) => c.is_monitored).length;
-        const snap    = allCams.find((c: any) => c.snapshot_url)?.snapshot_url ?? null;
+        const allCams     = camsByAccount[a.id] ?? [];
+        const online      = allCams.filter((c: any) => c.is_monitored).length;
+        const snap        = allCams.find((c: any) => c.snapshot_url)?.snapshot_url ?? null;
+        // Pick first monitored EEN camera for live snapshot thumbnail
+        const firstEenCam = allCams.find((c: any) => c.source === 'een' && c.een_camera_id && c.is_monitored)
+                         ?? allCams.find((c: any) => c.source === 'een' && c.een_camera_id);
         return {
-          id:          a.id,
-          name:        a.name,
-          address:     undefined,
-          cameraCount: allCams.length,
-          onlineCount: online,
-          hasAlert:    false,
-          firstSnap:   snap,
+          id:            a.id,
+          name:          a.name,
+          address:       undefined,
+          cameraCount:   allCams.length,
+          onlineCount:   online,
+          hasAlert:      false,
+          firstSnap:     snap,
+          firstEenCamId: firstEenCam?.een_camera_id ?? null,
         };
       });
 
@@ -318,9 +323,16 @@ export default function CamerasPage() {
                   onClick={() => openAccount(account)}
                   className="group relative flex flex-col rounded border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.12] transition-all text-left overflow-hidden"
                 >
-                  {/* Thumbnail */}
+                  {/* Thumbnail — EEN live snapshot or static snap */}
                   <div className="aspect-video bg-black relative overflow-hidden">
-                    {account.firstSnap ? (
+                    {account.firstEenCamId ? (
+                      <img
+                        src={`/api/een/image?accountId=${account.id}&cameraId=${account.firstEenCamId}`}
+                        alt={account.name}
+                        className="w-full h-full object-cover opacity-70 group-hover:opacity-90 transition-opacity"
+                        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    ) : account.firstSnap ? (
                       <img
                         src={account.firstSnap}
                         alt={account.name}
