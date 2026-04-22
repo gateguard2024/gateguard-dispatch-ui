@@ -124,11 +124,11 @@ async function pollAccount(supabase: any, accountId: string): Promise<number> {
   if (!token || !cluster) return 0;
 
   // Look back 90 seconds (60s interval + 30s buffer to avoid gaps)
-  // Keep full ISO with milliseconds — EEN requires this format e.g. 2026-04-22T14:30:00.000Z
+  // EEN requires +00:00 format NOT Z — e.g. 2026-04-22T14:30:00.000+00:00
   const now      = new Date();
   const lookback = new Date(now.getTime() - 90 * 1000);
-  const startIso = lookback.toISOString();
-  const endIso   = now.toISOString();
+  const startIso = lookback.toISOString().replace(/Z$/, '+00:00');
+  const endIso   = now.toISOString().replace(/Z$/, '+00:00');
 
   // Fetch cameras for this account so we can map ESN → camera record
   const { data: cameras } = await supabase
