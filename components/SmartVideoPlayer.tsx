@@ -135,22 +135,13 @@ export default function SmartVideoPlayer({
     return () => { cleanup.then(fn => fn && fn()); };
   }, [startStream]);
 
-  const handleDoubleClick = async () => {
-    if (!containerRef.current) return;
-    try {
-      if (!document.fullscreenElement) {
-        await containerRef.current.requestFullscreen();
-      } else {
-        await document.exitFullscreen();
-      }
-    } catch {}
-  };
+  // Fullscreen removed — handled by the parent view (View 3 single-cam).
+  // Browser native fullscreen still available via right-click on the video element.
 
   return (
     <div
       ref={containerRef}
-      onDoubleClick={handleDoubleClick}
-      className="relative w-full h-full bg-black flex items-center justify-center cursor-pointer group overflow-hidden"
+      className="relative w-full h-full bg-black flex items-center justify-center group overflow-hidden"
     >
       {/* Loading overlay */}
       {isLoading && (
