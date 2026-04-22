@@ -19,6 +19,15 @@ import { createClient } from '@supabase/supabase-js';
 import { getValidEENToken } from '@/lib/een';
 
 // ─── Priority + label maps (matches webhook receiver) ────────────────────────
+// PRIORITY GUIDE:
+//   P1 — Immediate threat — requires emergency response
+//   P2 — Security concern — requires operator review
+//   P3 — Informational — general monitoring
+//   P4 — System/device events (never creates alarms)
+//
+// To adjust per site: edit the map below and redeploy.
+// Example: 'een.loiterDetectionEvent.v1': 'P1'  (for high-risk sites)
+// ─────────────────────────────────────────────────────────────────────────────
 type Priority = 'P1' | 'P2' | 'P3' | 'P4';
 
 const PRIORITY_MAP: Record<string, Priority> = {
@@ -33,10 +42,10 @@ const PRIORITY_MAP: Record<string, Priority> = {
   'een.objectIntrusionEvent.v1':          'P1',
   'een.personTailgateEvent.v1':           'P1',
   'een.fireDetectionEvent.v1':            'P1',
-  // P2 — Persons / vehicles / security
+  // P2 — Persons / vehicles / security — promote to P1 per site if needed
   'een.personDetectionEvent.v1':          'P2',
   'een.vehicleDetectionEvent.v1':         'P2',
-  'een.loiterDetectionEvent.v1':          'P2',
+  'een.loiterDetectionEvent.v1':          'P2',  // ← promote to P1 for high-risk sites
   'een.objectLineCrossEvent.v1':          'P2',
   'een.faceDetectionEvent.v1':            'P2',
   'een.animalDetectionEvent.v1':          'P2',
@@ -44,7 +53,7 @@ const PRIORITY_MAP: Record<string, Priority> = {
   'een.lprPlateReadEvent.v1':             'P2',
   'een.objectRemovalEvent.v1':            'P2',
   'een.crowdFormationDetectionEvent.v1':  'P2',
-  // P3 — General motion + scene analysis (already enabled in EEN analytics)
+  // P3 — General motion + scene analysis
   'een.motionDetectionEvent.v1':          'P3',
   'een.motionInRegionDetectionEvent.v1':  'P3',
   'een.sceneLabelEvent.v1':               'P3',
