@@ -51,17 +51,17 @@ export async function POST(request: Request) {
     if (apiKey) headers['x-api-key'] = apiKey;
 
     // ── Query EEN media list ──────────────────────────────────────────────────
-    // Note: filter params use __gte / __lte suffixes per EEN V3 spec
-    const params = new URLSearchParams({
-      deviceId:               cameraId,
-      type:                   'preview',   // 'preview' = lower res, faster to load
-      mediaType:              'video',
-      'startTimestamp__gte':  startIso,
-      'endTimestamp__lte':    endIso,
-      pageSize:               '10',
-    });
-
-    const mediaUrl = `https://${cluster}/api/v3.0/media?${params.toString()}`;
+    // NOTE: Do NOT use URLSearchParams — it encodes colons in timestamps as %3A
+    // which EEN rejects. Build the query string manually with raw ISO timestamps.
+    const mediaUrl = [
+      `https://${cluster}/api/v3.0/media`,
+      `?deviceId=${encodeURIComponent(cameraId)}`,
+      `&type=preview`,
+      `&mediaType=video`,
+      `&startTimestamp__gte=${startIso}`,   // raw ISO — colons must not be encoded
+      `&endTimestamp__lte=${endIso}`,
+      `&pageSize=10`,
+    ].join('');
     console.log(`[een/recorded] Querying: ${mediaUrl}`);
 
     const res      = await fetch(mediaUrl, { method: 'GET', headers });
