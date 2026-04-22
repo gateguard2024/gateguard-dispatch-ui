@@ -61,15 +61,12 @@ export async function POST(request: Request) {
     }
 
     // ── 3. Fetch cameras from EEN V3 ──────────────────────────────────────────
+    // Note: EEN V3 does not support a server-side tag filter on GET /cameras.
+    // We fetch all cameras and apply the tag filter in JS below.
     const params = new URLSearchParams({
       pageSize: '500',
       include:  'tags,status',
     });
-
-    // Primary engine: API-level tag filter for multi-site accounts
-    if (!isSingleSite) {
-      params.append('tags[]', eenTag);
-    }
 
     const eenHeaders: Record<string, string> = {
       Authorization: `Bearer ${token}`,
