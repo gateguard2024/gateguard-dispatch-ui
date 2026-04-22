@@ -1,21 +1,17 @@
 "use client";
-
 // FILE: app/cameras/page.tsx
 // GateGuard 5.0 — Cameras Page
 // 3-view flow:
 //   View 1 — Site Tile Grid  (accounts with camera count + status)
 //   View 2 — Camera Wall     (grid of live tiles for selected site)
 //   View 3 — Single Camera   (full player + timeline scrubber + notes)
-
 import React, { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import SmartVideoPlayer from '@/components/SmartVideoPlayer';
-
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
-
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Account {
   id:         string;
@@ -26,7 +22,6 @@ interface Account {
   hasAlert:   boolean;
   firstSnap:  string | null;
 }
-
 interface CameraRow {
   id:              string;
   name:            string;
@@ -37,19 +32,16 @@ interface CameraRow {
   snapshot_url:    string | null;
   zone_id:         string;
 }
-
 interface Zone {
   id:         string;
   name:       string;
   account_id: string;
 }
-
 interface CameraNoteRow {
   id:         string;
   details:    string;
   created_at: string;
 }
-
 // ─── SVG Icons ────────────────────────────────────────────────────────────────
 const Ic = {
   ArrowLeft: () => (
@@ -93,33 +85,27 @@ const Ic = {
     </svg>
   ),
 };
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function camKey(cam: CameraRow): string {
   return cam.brivo_camera_id ?? cam.een_camera_id ?? cam.id;
 }
-
 function fmtTime(iso: string): string {
   return new Date(iso).toLocaleString('en-US', {
     month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit', hour12: false,
   });
 }
-
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function CamerasPage() {
   // View state: 1 = tile grid, 2 = camera wall, 3 = single camera
   const [view, setView] = useState<1 | 2 | 3>(1);
-
   // View 1 data
   const [accounts, setAccounts]   = useState<Account[]>([]);
   const [loading, setLoading]     = useState(true);
-
   // View 2 data
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [cameras, setCameras]                 = useState<CameraRow[]>([]);
   const [wallLoading, setWallLoading]         = useState(false);
-
   // View 3 data
   const [selectedCamera, setSelectedCamera]   = useState<CameraRow | null>(null);
   const [recordedUrl, setRecordedUrl]         = useState<string | null>(null);
@@ -130,12 +116,10 @@ export default function CamerasPage() {
   const [cameraNote, setCameraNote]           = useState('');
   const [notesSaving, setNotesSaving]         = useState(false);
   const [pastNotes, setPastNotes]             = useState<CameraNoteRow[]>([]);
-
   // ── View 1: Load accounts ─────────────────────────────────────────────────
   useEffect(() => {
     loadAccounts();
   }, []);
-
   async function loadAccounts() {
     setLoading(true);
     try {
@@ -149,9 +133,7 @@ export default function CamerasPage() {
           )
         `)
         .order('name');
-
       if (!accts) return;
-
       const mapped: Account[] = accts.map((a: any) => {
         const allCams = (a.zones ?? []).flatMap((z: any) => z.cameras ?? []);
         const online  = allCams.filter((c: any) => c.is_monitored).length;
@@ -166,43 +148,38 @@ export default function CamerasPage() {
           firstSnap:   snap,
         };
       });
-
       setAccounts(mapped);
     } finally {
       setLoading(false);
     }
   }
-
   // ── View 2: Load cameras for account ─────────────────────────────────────
   const openAccount = useCallback(async (account: Account) => {
     setSelectedAccount(account);
     setView(2);
     setWallLoading(true);
-
     // Get zone IDs for this account
     const { data: zones } = await supabase
       .from('zones')
       .select('id')
       .eq('account_id', account.id);
 
-    const zoneIds = (zones ?? []).map((z: Zone) => z.id);
+    // Only select id — TypeScript infers { id: string }[] from the narrow select above
+    const zoneIds = (zones ?? []).map((z) => z.id);
 
     if (zoneIds.length === 0) {
       setCameras([]);
       setWallLoading(false);
       return;
     }
-
     const { data: cams } = await supabase
       .from('cameras')
       .select('id, name, source, brivo_camera_id, een_camera_id, is_monitored, snapshot_url, zone_id')
       .in('zone_id', zoneIds)
       .order('name');
-
     setCameras((cams as CameraRow[]) ?? []);
     setWallLoading(false);
   }, []);
-
   // ── View 3: Open single camera ────────────────────────────────────────────
   const openCamera = useCallback(async (cam: CameraRow) => {
     setSelectedCamera(cam);
@@ -210,13 +187,11 @@ export default function CamerasPage() {
     setRecordedError(null);
     setCameraNote('');
     setView(3);
-
     // Default time range: last 30 min
     const now   = new Date();
     const minus  = new Date(now.getTime() - 30 * 60_000);
     setEndTime(now.toISOString().slice(0, 16));
     setStartTime(minus.toISOString().slice(0, 16));
-
     // Load past notes
     const { data: notes } = await supabase
       .from('audit_logs')
@@ -227,17 +202,14 @@ export default function CamerasPage() {
       .limit(5);
     setPastNotes(notes ?? []);
   }, []);
-
   // ── Fetch recorded clip ───────────────────────────────────────────────────
   async function loadRecorded() {
     if (!selectedCamera || !selectedAccount) return;
     setRecordedLoading(true);
     setRecordedError(null);
-
     const endpoint = selectedCamera.source === 'brivo'
       ? '/api/brivo/recorded'
       : '/api/een/recorded';
-
     try {
       const res  = await fetch(endpoint, {
         method:  'POST',
@@ -258,7 +230,6 @@ export default function CamerasPage() {
       setRecordedLoading(false);
     }
   }
-
   // ── Save camera note ──────────────────────────────────────────────────────
   async function saveNote() {
     if (!selectedCamera || !cameraNote.trim()) return;
@@ -279,9 +250,7 @@ export default function CamerasPage() {
     setCameraNote('');
     setNotesSaving(false);
   }
-
   // ─── Render ───────────────────────────────────────────────────────────────
-
   // ── VIEW 1: Site Tile Grid ────────────────────────────────────────────────
   if (view === 1) {
     return (
@@ -294,7 +263,6 @@ export default function CamerasPage() {
           </div>
           <span className="text-[10px] text-slate-600">{accounts.length} sites</span>
         </div>
-
         {/* Grid */}
         <div className="flex-1 p-6">
           {loading ? (
@@ -327,7 +295,6 @@ export default function CamerasPage() {
                         <div className="w-8 h-8 text-slate-700"><Ic.Building /></div>
                       </div>
                     )}
-
                     {/* Status dot */}
                     <div className="absolute top-2 right-2 flex items-center gap-1 bg-black/60 backdrop-blur-sm border border-white/10 rounded px-2 py-0.5">
                       <span className={`w-1.5 h-1.5 rounded-full ${account.onlineCount > 0 ? 'bg-emerald-500' : 'bg-slate-600'}`} />
@@ -335,7 +302,6 @@ export default function CamerasPage() {
                         {account.onlineCount}/{account.cameraCount}
                       </span>
                     </div>
-
                     {/* Hover overlay */}
                     <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
                       <span className="text-[10px] font-semibold text-white uppercase tracking-wider border border-white/30 rounded px-3 py-1">
@@ -343,7 +309,6 @@ export default function CamerasPage() {
                       </span>
                     </div>
                   </div>
-
                   {/* Info */}
                   <div className="px-3 py-2.5">
                     <p className="text-[12px] font-semibold text-white truncate">{account.name}</p>
@@ -364,7 +329,6 @@ export default function CamerasPage() {
       </div>
     );
   }
-
   // ── VIEW 2: Camera Wall ───────────────────────────────────────────────────
   if (view === 2 && selectedAccount) {
     return (
@@ -384,7 +348,6 @@ export default function CamerasPage() {
             {cameras.length} camera{cameras.length !== 1 ? 's' : ''}
           </span>
         </div>
-
         {/* Camera wall */}
         <div className="flex-1 p-3 overflow-auto">
           {wallLoading ? (
@@ -412,17 +375,14 @@ export default function CamerasPage() {
                       source={cam.source}
                       streamType="preview"
                     />
-
                     {/* Label */}
                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 pointer-events-none">
                       <p className="text-[9px] font-semibold text-white truncate">{cam.name}</p>
                     </div>
-
                     {/* Status dot */}
                     <div className="absolute top-1.5 left-1.5 pointer-events-none">
                       <span className={`block w-1.5 h-1.5 rounded-full ${cam.is_monitored ? 'bg-emerald-500' : 'bg-slate-600'}`} />
                     </div>
-
                     {/* Hover actions */}
                     <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
@@ -449,11 +409,9 @@ export default function CamerasPage() {
       </div>
     );
   }
-
   // ── VIEW 3: Single Camera Detail ──────────────────────────────────────────
   if (view === 3 && selectedCamera && selectedAccount) {
     const key = camKey(selectedCamera);
-
     return (
       <div className="flex flex-col h-full bg-[#030406] text-white overflow-hidden">
         {/* Header */}
@@ -473,7 +431,6 @@ export default function CamerasPage() {
             <span className="text-[10px] text-slate-600">{selectedCamera.is_monitored ? 'Monitored' : 'Offline'}</span>
           </div>
         </div>
-
         {/* Main content */}
         <div className="flex-1 flex min-h-0">
           {/* LEFT: Main player (full-width top 60%) + scrubber */}
@@ -489,14 +446,12 @@ export default function CamerasPage() {
                 label={selectedCamera.name}
               />
             </div>
-
             {/* Timeline scrubber — 40% */}
             <div className="flex-1 overflow-y-auto p-4 border-t border-white/[0.06]">
               <div className="flex items-center gap-2 mb-3">
                 <div className="w-3.5 h-3.5 text-slate-500"><Ic.Clock /></div>
                 <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Recorded Footage</span>
               </div>
-
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <div>
                   <label className="block text-[9px] text-slate-500 uppercase tracking-wider mb-1">Start</label>
@@ -517,11 +472,9 @@ export default function CamerasPage() {
                   />
                 </div>
               </div>
-
               {recordedError && (
                 <p className="text-[10px] text-red-400 mb-2">{recordedError}</p>
               )}
-
               <button
                 onClick={loadRecorded}
                 disabled={recordedLoading || !startTime || !endTime}
@@ -534,7 +487,6 @@ export default function CamerasPage() {
                 )}
                 {recordedLoading ? 'Fetching...' : 'Load Recorded Clip'}
               </button>
-
               {recordedUrl && (
                 <div className="mt-2 flex items-center gap-2">
                   <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
@@ -549,13 +501,11 @@ export default function CamerasPage() {
               )}
             </div>
           </div>
-
           {/* RIGHT: Camera notes */}
           <div className="w-[280px] shrink-0 flex flex-col">
             <div className="px-4 py-3 border-b border-white/[0.06]">
               <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Camera Notes</span>
             </div>
-
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
               {/* Input */}
               <textarea
@@ -565,7 +515,6 @@ export default function CamerasPage() {
                 rows={4}
                 className="w-full bg-white/[0.03] border border-white/[0.06] rounded px-3 py-2 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500/50"
               />
-
               <button
                 onClick={saveNote}
                 disabled={!cameraNote.trim() || notesSaving}
@@ -574,7 +523,6 @@ export default function CamerasPage() {
                 <div className="w-3.5 h-3.5"><Ic.Save /></div>
                 {notesSaving ? 'Saving...' : 'Save Note'}
               </button>
-
               {/* Past notes */}
               {pastNotes.length > 0 && (
                 <div className="space-y-2 pt-2 border-t border-white/[0.06]">
@@ -596,6 +544,5 @@ export default function CamerasPage() {
       </div>
     );
   }
-
   return null;
 }
