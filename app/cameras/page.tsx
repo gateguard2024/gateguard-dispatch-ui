@@ -123,19 +123,54 @@ export default function CamerasPage() {
   async function loadAccounts() {
     setLoading(true);
     try {
-      const { data: accts } = await supabase
+      // Two flat queries instead of a nested join — more reliable across
+      // Supabase deployments where FK schema cache may not resolve chains.
+
+      const { data: accts, error: acctErr } = await supabase
         .from('accounts')
-        .select(`
-          id, name, address,
-          zones (
-            id,
-            cameras ( id, source, is_monitored, snapshot_url )
-          )
-        `)
+        .select('id, name, address')
         .order('name');
-      if (!accts) return;
+
+      if (acctErr) { console.error('[cameras] accounts query error:', acctErr); return; }
+      if (!accts || accts.length === 0) return;
+
+      // Pull all cameras for these accounts in one query via zones
+      const accountIds = accts.map((a: any) => a.id);
+
+      const { data: zones, error: zoneErr } = await supabase
+        .from('zones')
+        .select('id, account_id')
+        .in('account_id', accountIds);
+
+      if (zoneErr) { console.error('[cameras] zones query error:', zoneErr); }
+
+      const zoneIds = (zones ?? []).map((z: any) => z.id);
+
+      let camRows: any[] = [];
+      if (zoneIds.length > 0) {
+        const { data: cams, error: camErr } = await supabase
+          .from('cameras')
+          .select('id, zone_id, source, is_monitored, snapshot_url')
+          .in('zone_id', zoneIds);
+        if (camErr) console.error('[cameras] cameras query error:', camErr);
+        camRows = cams ?? [];
+      }
+
+      // Build a zone_id → account_id lookup
+      const zoneToAccount: Record<string, string> = {};
+      for (const z of (zones ?? [])) zoneToAccount[z.id] = z.account_id;
+
+      // Group cameras by account_id
+      const camsByAccount: Record<string, any[]> = {};
+      for (const cam of camRows) {
+        const acctId = zoneToAccount[cam.zone_id];
+        if (!acctId) continue;
+        if (!camsByAccount[acctId]) camsByAccount[acctId] = [];
+        camsByAccount[acctId].push(cam);
+      }
+
       const mapped: Account[] = accts.map((a: any) => {
-        const allCams = (a.zones ?? []).flatMap((z: any) => z.cameras ?? []);
+        const allCams = camsByAccount[a.id] ?? [];
         const online  = allCams.filter((c: any) => c.is_monitored).length;
         const snap    = allCams.find((c: any) => c.snapshot_url)?.snapshot_url ?? null;
         return {
@@ -148,6 +183,7 @@ export default function CamerasPage() {
           firstSnap:   snap,
         };
       });
+
       setAccounts(mapped);
     } finally {
       setLoading(false);
