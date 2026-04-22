@@ -2,11 +2,13 @@
 //
 // Returns a time-bounded HLS recording URL for a given EEN camera.
 //
-// EEN V3 recorded media endpoint:
-//   GET /api/v3.0/media.m3u8?deviceId={esn}&startTimestamp={iso}&endTimestamp={iso}
+// EEN V3 Media API:
+//   GET /api/v3.0/media
+//   Required params: deviceId, type (preview|main), mediaType (video|image),
+//                    startTimestamp__gte, endTimestamp__lte
+//   Response: { results: [{ hlsUrl, mp4Url, startTimestamp, endTimestamp, ... }] }
 //
-// The returned URL is an HLS manifest (.m3u8) that SmartVideoPlayer can load directly.
-// No separate proxy needed — the manifest URL is pre-authenticated by EEN.
+// The hlsUrl from the first result is returned directly to SmartVideoPlayer.
 //
 // Request body:
 //   { accountId: string, cameraId: string, startTime: ISO string, endTime: ISO string }
@@ -39,40 +41,64 @@ export async function POST(request: Request) {
       );
     }
 
-    // Build the EEN recorded media URL
-    // EEN V3 uses ISO 8601 timestamps for startTimestamp and endTimestamp
-    const params = new URLSearchParams({
-      deviceId:       cameraId,
-      startTimestamp: new Date(startTime).toISOString(),
-      endTimestamp:   new Date(endTime).toISOString(),
-      type:           'preview',  // 'preview' = lower res, faster; 'main' = full quality
-    });
+    const startIso = new Date(startTime).toISOString();
+    const endIso   = new Date(endTime).toISOString();
 
-    const mediaUrl = `https://${cluster}/api/v3.0/media.m3u8?${params.toString()}`;
-
-    // Verify the clip exists by checking the EEN response
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
-      Accept:        'application/vnd.apple.mpegurl',
+      Accept:        'application/json',
     };
     if (apiKey) headers['x-api-key'] = apiKey;
 
-    const eenRes = await fetch(mediaUrl, { method: 'GET', headers });
+    // ── Query EEN media list ──────────────────────────────────────────────────
+    // Note: filter params use __gte / __lte suffixes per EEN V3 spec
+    const params = new URLSearchParams({
+      deviceId:               cameraId,
+      type:                   'preview',   // 'preview' = lower res, faster to load
+      mediaType:              'video',
+      'startTimestamp__gte':  startIso,
+      'endTimestamp__lte':    endIso,
+      pageSize:               '10',
+    });
 
-    if (!eenRes.ok) {
-      if (eenRes.status === 404) {
-        return NextResponse.json(
-          { error: 'No recording found for the selected time range. The camera may not have been recording.' },
-          { status: 404 }
-        );
-      }
-      const errText = await eenRes.text();
-      throw new Error(`EEN recorded media error ${eenRes.status}: ${errText}`);
+    const mediaUrl = `https://${cluster}/api/v3.0/media?${params.toString()}`;
+    console.log(`[een/recorded] Querying: ${mediaUrl}`);
+
+    const res      = await fetch(mediaUrl, { method: 'GET', headers });
+    const resText  = await res.text();
+    console.log(`[een/recorded] EEN status: ${res.status} | body: ${resText.slice(0, 500)}`);
+
+    if (!res.ok) {
+      return NextResponse.json(
+        { error: `EEN media error ${res.status}: ${resText}` },
+        { status: res.status }
+      );
     }
 
-    // Return the URL — SmartVideoPlayer loads it via HLS.js
-    // We pass the token so the player can auth requests if needed
-    return NextResponse.json({ url: mediaUrl, token });
+    const data     = JSON.parse(resText);
+    const clips: any[] = data.results ?? [];
+
+    if (clips.length === 0) {
+      return NextResponse.json(
+        { error: 'No recording found for the selected time range. The camera may not have been recording during this window.' },
+        { status: 404 }
+      );
+    }
+
+    // Use the hlsUrl from the first clip — this is the pre-authenticated
+    // HLS manifest URL for the recorded segment
+    const hlsUrl = clips[0].hlsUrl ?? clips[0].mp4Url ?? null;
+
+    if (!hlsUrl) {
+      return NextResponse.json(
+        { error: 'EEN returned a clip but no HLS URL was available. The recording may still be processing.' },
+        { status: 404 }
+      );
+    }
+
+    console.log(`[een/recorded] Returning HLS URL for ${clips.length} clip(s): ${hlsUrl}`);
+
+    return NextResponse.json({ url: hlsUrl, token, clipCount: clips.length });
 
   } catch (err: any) {
     console.error('[een/recorded] Error:', err.message);
