@@ -1,3 +1,19 @@
+// app/api/een/sync-hardware/route.ts
+//
+// Syncs Eagle Eye Networks cameras into the GateGuard cameras table for a given zone.
+//
+// How it works:
+//   - Reads the zone's een_tag field to determine which cameras belong to this zone
+//   - een_tag = ''  → single-site account: syncs ALL cameras on the EEN account
+//   - een_tag = 'X' → multi-site account: syncs only cameras tagged 'X' in EEN
+//
+// Uses a dual-engine filter:
+//   Primary:  EEN API-level tag filter (?tags[]={tagName})
+//   Fallback: JavaScript-side filter on camera.tags array (catches EEN deployments
+//             that ignore the API filter param)
+//
+// Called by: Setup wizard Step 4, and the Refresh button on zone detail view.
+
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getValidEENToken } from '@/lib/een';
@@ -55,15 +71,15 @@ export async function POST(request: Request) {
       params.append('tags[]', eenTag);
     }
 
+    const eenHeaders: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      Accept:        'application/json',
+    };
+    if (apiKey) eenHeaders['x-api-key'] = apiKey;
+
     const eenRes = await fetch(
       `https://${cluster}/api/v3.0/cameras?${params.toString()}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'x-api-key':   apiKey,
-          Accept:        'application/json',
-        },
-      }
+      { headers: eenHeaders }
     );
 
     if (!eenRes.ok) {
