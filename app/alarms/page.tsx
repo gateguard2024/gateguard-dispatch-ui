@@ -200,12 +200,13 @@ function PriorityBadge({ p }: { p: Priority }) {
   );
 }
 
-function SectionHeader({ icon, label }: { icon: React.ReactNode; label: string }) {
+function SectionHeader({ icon, label, action }: { icon: React.ReactNode; label: string; action?: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2 mb-2">
-      <div className="w-3.5 h-3.5 text-slate-500 shrink-0">{icon}</div>
-      <span className="text-[9px] font-semibold text-slate-500 uppercase tracking-[0.12em]">{label}</span>
-      <div className="flex-1 h-px bg-white/[0.06]" />
+      <div className="w-3.5 h-3.5 text-slate-400 shrink-0">{icon}</div>
+      <span className="text-[9px] font-semibold text-slate-300 uppercase tracking-[0.12em]">{label}</span>
+      <div className="flex-1 h-px bg-white/[0.08]" />
+      {action && <div className="shrink-0">{action}</div>}
     </div>
   );
 }
@@ -247,7 +248,10 @@ export default function AlarmsPage() {
   // expandedPanel: null = dual view, 'pre-alarm' | 'live' = that panel fills the top section
   const [expandedPanel, setExpandedPanel]     = useState<'pre-alarm' | 'live' | null>(null);
   // camerasView: 'grid' = thumbnail grid, 'list' = compact list
-  const [camerasView, setCamerasView]         = useState<'grid' | 'list'>('grid');
+  const [camerasView, setCamerasView]         = useState<'grid' | 'list'>('list');
+  // Procedure suggest state
+  const [suggestingSteps, setSuggestingSteps] = useState(false);
+  const [stepSuggestion, setStepSuggestion]   = useState<{ title: string; steps: ProcedureStep[]; reasoning: string } | null>(null);
 
   // Resolve state
   const [actionTaken, setActionTaken]   = useState<ActionTaken>('');
@@ -441,9 +445,54 @@ export default function AlarmsPage() {
       .eq('id', alarm.id);
   }, []);
 
+  // ── Suggest procedure steps via AI ───────────────────────────────────────
+  const suggestSteps = useCallback(async () => {
+    if (!activeAlarm) return;
+    setSuggestingSteps(true);
+    setStepSuggestion(null);
+    try {
+      const res = await fetch('/api/procedures/suggest', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          zoneId:    activeAlarm.zone_id,
+          eventType: activeAlarm.event_type,
+          save:      false,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setStepSuggestion(data.suggested ?? null);
+      }
+    } catch {}
+    finally { setSuggestingSteps(false); }
+  }, [activeAlarm]);
+
+  const acceptSuggestion = useCallback(async () => {
+    if (!activeAlarm || !stepSuggestion) return;
+    // Save to procedures table and update UI
+    await fetch('/api/procedures/suggest', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        zoneId:    activeAlarm.zone_id,
+        eventType: activeAlarm.event_type,
+        save:      true,
+        steps:     stepSuggestion.steps,
+        title:     stepSuggestion.title,
+      }),
+    });
+    setProcedure(stepSuggestion.steps);
+    setProcedureTitle(stepSuggestion.title);
+    setProcedureChecked(new Array(stepSuggestion.steps.length).fill(false));
+    setStepSuggestion(null);
+  }, [activeAlarm, stepSuggestion]);
+
   // ── Quick dismiss (Nothing Seen / False Alarm) ────────────────────────────
   // Accepts any alarm — used from queue cards AND from the active alarm header
   const dismissAlarm = useCallback(async (alarm: Alarm, reason: 'nothing_seen' | 'false_alarm') => {
+    // Optimistically remove from queue immediately
+    setQueue(prev => prev.filter(a => a.id !== alarm.id));
     const accountId = alarm.account_id ?? alarm.zones?.account_id;
     await supabase.from('alarms').update({ status: 'resolved' }).eq('id', alarm.id);
     await supabase.from('audit_logs').insert({
@@ -694,7 +743,7 @@ export default function AlarmsPage() {
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); dismissAlarm(alarm, 'false_alarm'); }}
-                        className="px-2 py-1 rounded text-[9px] font-bold bg-amber-800/30 hover:bg-amber-700/40 border border-amber-600/20 text-amber-600 hover:text-amber-400 transition-all"
+                        className="px-2 py-1 rounded text-[9px] font-bold bg-sky-800/30 hover:bg-sky-700/40 border border-sky-600/20 text-sky-400 hover:text-sky-300 transition-all"
                         title="False alarm — dismiss"
                       >
                         FA
@@ -714,7 +763,7 @@ export default function AlarmsPage() {
                         >NS</button>
                         <button
                           onClick={(e) => { e.stopPropagation(); dismissAlarm(alarm, 'false_alarm'); }}
-                          className="px-2 py-0.5 rounded text-[8px] font-bold bg-amber-800/30 hover:bg-amber-700/40 border border-amber-600/20 text-amber-600 hover:text-amber-400 transition-all"
+                          className="px-2 py-0.5 rounded text-[8px] font-bold bg-sky-800/30 hover:bg-sky-700/40 border border-sky-600/20 text-sky-400 hover:text-sky-300 transition-all"
                           title="False alarm — dismiss"
                         >FA</button>
                       </div>
@@ -768,7 +817,7 @@ export default function AlarmsPage() {
                 </button>
                 <button
                   onClick={() => dismissAlarm(activeAlarm, 'false_alarm')}
-                  className="px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-700/30 hover:bg-amber-600/40 border border-amber-500/20 text-amber-400 hover:text-amber-300 transition-all"
+                  className="px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider bg-sky-700/30 hover:bg-sky-600/40 border border-sky-500/20 text-sky-400 hover:text-sky-300 transition-all"
                   title="Mark as false alarm and clear from queue"
                 >
                   False Alarm
@@ -1077,13 +1126,13 @@ export default function AlarmsPage() {
           <section>
             <SectionHeader icon={<Ic.Lock />} label="Brivo Access Control" />
             {!activeAlarm ? (
-              <p className="text-[10px] text-slate-600 text-center py-3">Awaiting alarm</p>
+              <p className="text-[10px] text-slate-500 text-center py-3">Awaiting alarm</p>
             ) : doorsLoading ? (
               <div className="flex justify-center py-3">
                 <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
               </div>
             ) : doors.length === 0 ? (
-              <p className="text-[10px] text-slate-600 text-center py-3">No doors configured for this site</p>
+              <p className="text-[10px] text-slate-500 text-center py-3">No doors configured for this site</p>
             ) : (
               <div className="space-y-1.5">
                 {doors.map((door) => {
@@ -1130,14 +1179,60 @@ export default function AlarmsPage() {
 
           {/* ── 2. AI Recommended Steps ── */}
           <section>
-            <SectionHeader icon={<Ic.ClipboardList />} label="AI Recommended Steps" />
+            <SectionHeader
+              icon={<Ic.ClipboardList />}
+              label="AI Recommended Steps"
+              action={activeAlarm ? (
+                <button
+                  onClick={suggestSteps}
+                  disabled={suggestingSteps}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-violet-600/20 hover:bg-violet-600/40 border border-violet-500/30 text-violet-300 hover:text-violet-200 transition-all disabled:opacity-40 disabled:cursor-wait"
+                  title="Use AI to analyze past incidents and suggest updated steps"
+                >
+                  {suggestingSteps ? (
+                    <><span className="w-2.5 h-2.5 border border-violet-400 border-t-transparent rounded-full animate-spin inline-block" /> Thinking...</>
+                  ) : '✦ Suggest'}
+                </button>
+              ) : undefined}
+            />
+
+            {/* AI suggestion panel */}
+            {stepSuggestion && (
+              <div className="mb-2 rounded border border-violet-500/30 bg-violet-600/10 p-2.5 space-y-1.5">
+                <p className="text-[9px] font-bold text-violet-300 uppercase tracking-wider">AI Suggestion</p>
+                <p className="text-[10px] font-semibold text-white">{stepSuggestion.title}</p>
+                <p className="text-[9px] text-slate-400 italic">{stepSuggestion.reasoning}</p>
+                <div className="space-y-0.5 mt-1">
+                  {stepSuggestion.steps.map((s, i) => (
+                    <p key={i} className="text-[9px] text-slate-300 flex gap-1.5">
+                      <span className="text-violet-500 font-mono shrink-0">{i+1}.</span>{s.text}
+                    </p>
+                  ))}
+                </div>
+                <div className="flex gap-1.5 pt-1">
+                  <button
+                    onClick={acceptSuggestion}
+                    className="flex-1 py-1 rounded text-[9px] font-bold uppercase tracking-wider bg-violet-600/40 hover:bg-violet-600/60 border border-violet-500/40 text-violet-200 transition-all"
+                  >
+                    ✓ Accept & Save
+                  </button>
+                  <button
+                    onClick={() => setStepSuggestion(null)}
+                    className="px-2.5 py-1 rounded text-[9px] font-bold bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-slate-400 transition-all"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
+
             {procedure.length === 0 ? (
-              <p className="text-[10px] text-slate-600 text-center py-3">
-                {activeAlarm ? 'No procedure configured for this event type' : 'Awaiting alarm'}
+              <p className="text-[10px] text-slate-500 text-center py-3">
+                {activeAlarm ? 'No procedure configured — use ✦ Suggest to generate one' : 'Awaiting alarm'}
               </p>
             ) : (
               <div className="space-y-1">
-                <p className="text-[9px] text-slate-500 mb-2">{procedureTitle}</p>
+                <p className="text-[9px] text-slate-400 mb-2">{procedureTitle}</p>
                 {procedure.map((step, i) => (
                   <label
                     key={i}
@@ -1173,7 +1268,7 @@ export default function AlarmsPage() {
           <section>
             <SectionHeader icon={<Ic.Users />} label="Emergency Contacts" />
             {contacts.length === 0 ? (
-              <p className="text-[10px] text-slate-600 text-center py-3">
+              <p className="text-[10px] text-slate-500 text-center py-3">
                 {activeAlarm ? 'No contacts configured for this site' : 'Awaiting alarm'}
               </p>
             ) : (
@@ -1266,7 +1361,7 @@ export default function AlarmsPage() {
               )}
 
               {!allClearanceChecked && activeAlarm && (
-                <p className="text-[9px] text-slate-600 px-1">
+                <p className="text-[9px] text-slate-400 px-1">
                   Complete all clearance protocol steps to enable resolve
                 </p>
               )}
@@ -1278,7 +1373,7 @@ export default function AlarmsPage() {
                   w-full py-2.5 rounded font-semibold text-[11px] uppercase tracking-wider transition-all
                   ${canResolve && !resolving && activeAlarm
                     ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-900/30'
-                    : 'bg-white/[0.04] text-slate-600 border border-white/[0.06] cursor-not-allowed'
+                    : 'bg-white/[0.06] text-slate-400 border border-white/[0.12] cursor-not-allowed'
                   }
                 `}
               >
