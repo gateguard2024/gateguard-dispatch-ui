@@ -176,7 +176,7 @@ export default function CamerasPage() {
         return {
           id:          a.id,
           name:        a.name,
-          address:     null,
+          address:     undefined,
           cameraCount: allCams.length,
           onlineCount: online,
           hasAlert:    false,
