@@ -128,7 +128,7 @@ export default function CamerasPage() {
 
       const { data: accts, error: acctErr } = await supabase
         .from('accounts')
-        .select('id, name, address')
+        .select('id, name')
         .order('name');
 
       if (acctErr) { console.error('[cameras] accounts query error:', acctErr); return; }
@@ -176,7 +176,7 @@ export default function CamerasPage() {
         return {
           id:          a.id,
           name:        a.name,
-          address:     a.address ?? null,
+          address:     null,
           cameraCount: allCams.length,
           onlineCount: online,
           hasAlert:    false,
