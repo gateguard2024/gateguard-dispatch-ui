@@ -44,9 +44,10 @@ const PRIORITY_MAP: Record<string, Priority> = {
   'een.lprPlateReadEvent.v1':             'P2',
   'een.objectRemovalEvent.v1':            'P2',
   'een.crowdFormationDetectionEvent.v1':  'P2',
-  // P3 — General motion
+  // P3 — General motion + scene analysis (already enabled in EEN analytics)
   'een.motionDetectionEvent.v1':          'P3',
   'een.motionInRegionDetectionEvent.v1':  'P3',
+  'een.sceneLabelEvent.v1':               'P3',
 };
 
 const LABEL_MAP: Record<string, string> = {
@@ -72,6 +73,7 @@ const LABEL_MAP: Record<string, string> = {
   'een.crowdFormationDetectionEvent.v1':  'Crowd Formation Detected',
   'een.motionDetectionEvent.v1':          'Motion Detected',
   'een.motionInRegionDetectionEvent.v1':  'Motion in Region Detected',
+  'een.sceneLabelEvent.v1':               'Activity Detected',
 };
 
 const SUBSCRIBED_TYPES = Object.keys(PRIORITY_MAP);
