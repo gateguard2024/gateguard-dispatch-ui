@@ -7,53 +7,55 @@ export async function POST(request: Request) {
     const { siteId } = await request.json();
 
     if (!siteId) {
-      return NextResponse.json({ error: "Missing siteId in request body" }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Missing siteId in request body' },
+        { status: 400 }
+      );
     }
 
-    // 1. Get the active token, cluster, and API key for this specific site
     const { token, cluster, apiKey } = await getValidEENToken(siteId);
 
-    console.log(`📡 Fetching EEN Locations from cluster: ${cluster}`);
+    if (!cluster || !token) {
+      return NextResponse.json(
+        { error: 'EEN not authenticated for this account. Re-run OAuth in Setup.' },
+        { status: 400 }
+      );
+    }
 
-    // 2. Fetch the locations (Sub-Accounts) from Eagle Eye V3
+    console.log(`[een/locations] Fetching from cluster: ${cluster}`);
+
     const response = await fetch(`https://${cluster}/api/v3.0/locations`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${token}`,
-        'x-api-key': apiKey ?? undefined,
-        'Content-Type': 'application/json'
-      }
+        Authorization:  `Bearer ${token}`,
+        'x-api-key':    apiKey ?? undefined,   // null → undefined (TypeScript requirement)
+        'Content-Type': 'application/json',
+      },
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("EEN Locations Error:", errText);
-      throw new Error(`Failed to fetch locations: ${response.status} - ${errText}`);
+      throw new Error(`EEN locations error ${response.status}: ${errText}`);
     }
 
     const data = await response.json();
-    const locations = data.results || [];
+    const locations: any[] = data.results ?? [];
 
-    console.log(`✅ SUCCESS! Found ${locations.length} locations/sub-accounts.`);
+    console.log(`[een/locations] Found ${locations.length} locations`);
 
-    // 3. Clean up the data so the frontend dropdown is easy to build
-    const mappedLocations = locations.map((loc: any) => ({
-      id: loc.id,
-      name: loc.name,
-      timezone: loc.timezone || 'UTC',
-      cameraCount: loc.cameraCount || 0
-    }));
+    const mappedLocations = locations
+      .map((loc: any) => ({
+        id:          loc.id,
+        name:        loc.name,
+        timezone:    loc.timezone ?? 'UTC',
+        cameraCount: loc.cameraCount ?? 0,
+      }))
+      .sort((a: any, b: any) => a.name.localeCompare(b.name));
 
-    // Sort alphabetically by name for a better UX
-    mappedLocations.sort((a: any, b: any) => a.name.localeCompare(b.name));
-
-    return NextResponse.json({
-      success: true,
-      locations: mappedLocations
-    });
+    return NextResponse.json({ success: true, locations: mappedLocations });
 
   } catch (error: any) {
-    console.error("❌ Fetch Locations Error:", error.message);
+    console.error('[een/locations] Error:', error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
