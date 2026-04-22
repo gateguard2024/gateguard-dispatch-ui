@@ -20,7 +20,7 @@ export async function POST(request: Request) {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`,
-        'x-api-key': apiKey,
+        'x-api-key': apiKey ?? undefined,
         'Content-Type': 'application/json'
       }
     });
