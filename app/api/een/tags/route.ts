@@ -1,3 +1,24 @@
+// app/api/een/tags/route.ts
+//
+// Returns the unique EEN property tags available on a given account.
+//
+// Strategy (two-tier):
+//   1. FAST PATH — if cameras already exist in Supabase for this account,
+//      derive tags directly from the stored een_tags column.
+//      No EEN API call needed, responds in ~50ms.
+//
+//   2. LIVE PATH — if no cameras exist yet (fresh account / first setup),
+//      call EEN GET /api/v3.0/cameras?include=tags and extract unique tags
+//      from the camera objects. Same auth pattern as sync-hardware.
+//
+// Why not a separate EEN "tags" endpoint?
+//   EEN V3 has no standalone tags endpoint. Tags are properties of cameras.
+//   This route is a lightweight version of sync-hardware that returns tag
+//   names only, without writing anything to the database.
+//
+// Request body:  { siteId: string }   ← Supabase accounts.id (UUID)
+// Response:      { success: true, tags: string[], source: "db" | "een" }
+
 import { NextResponse } from 'next/server';
 import { createClient }  from '@supabase/supabase-js';
 import { getValidEENToken } from '@/lib/een';
