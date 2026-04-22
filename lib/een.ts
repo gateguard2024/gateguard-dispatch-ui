@@ -1,3 +1,18 @@
+// lib/een.ts
+//
+// Provides getValidEENToken(accountId) — called by every EEN API route.
+//
+// Why this file creates its own Supabase client instead of importing
+// from lib/supabase.ts:
+//   lib/supabase.ts uses the ANON key (safe for client-side bundles).
+//   This file needs the SERVICE ROLE key to read/write sensitive token
+//   columns on the accounts table. Importing the shared client here also
+//   causes a module-level initialisation crash in server-side API routes
+//   when the NEXT_PUBLIC_ env vars aren't available in that context.
+//
+// Solution: create the service-role client INSIDE the function (lazy),
+// so it only runs at request time — never at module load / build time.
+
 import { createClient } from '@supabase/supabase-js';
 
 function makeSupabase() {
@@ -7,11 +22,22 @@ function makeSupabase() {
   );
 }
 
+interface EENAccount {
+  een_access_token:     string | null;
+  een_cluster:          string | null;
+  een_api_key:          string | null;
+  een_client_id:        string | null;
+  een_client_secret:    string | null;
+  een_refresh_token:    string | null;
+  een_token_expires_at: string | null;
+  een_location_id:      string | null;
+}
+
 export async function getValidEENToken(accountId: string) {
   const supabase = makeSupabase();
 
   // 1. Load account credentials + current token state
-  const { data: site, error } = await supabase
+  const { data: siteRaw, error } = await supabase
     .from('accounts')
     .select(
       'een_access_token, een_cluster, een_api_key, een_client_id, ' +
@@ -20,9 +46,11 @@ export async function getValidEENToken(accountId: string) {
     .eq('id', accountId)
     .single();
 
-  if (error || !site) {
+  if (error || !siteRaw) {
     throw new Error(`Account not found or DB error for ID: ${accountId}`);
   }
+
+  const site = siteRaw as unknown as EENAccount;
 
   // 2. Return cached token if still valid
   const isExpired = site.een_token_expires_at
