@@ -19,6 +19,7 @@
 // Request body:  { siteId: string }   ← Supabase accounts.id (UUID)
 // Response:      { success: true, tags: string[], source: "db" | "een" }
 
+// app/api/een/tags/route.ts
 import { NextResponse } from 'next/server';
 import { createClient }  from '@supabase/supabase-js';
 import { getValidEENToken } from '@/lib/een';
@@ -31,8 +32,6 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-
-    // Accept both field names for backwards compatibility
     const accountId: string | undefined = body.siteId ?? body.accountId;
 
     if (!accountId) {
@@ -42,7 +41,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // ── 1. Fast path: derive tags from cameras already in Supabase ────────
+    // Fast path: derive tags from cameras already in Supabase
     const { data: existingCameras, error: camErr } = await supabase
       .from('cameras')
       .select('een_tags')
@@ -50,7 +49,6 @@ export async function POST(request: Request) {
       .not('een_tags', 'is', null);
 
     if (!camErr && existingCameras && existingCameras.length > 0) {
-      // Flatten all een_tags arrays and collect unique non-empty values
       const tagSet = new Set<string>();
       for (const cam of existingCameras) {
         const tags: string[] = cam.een_tags ?? [];
@@ -59,16 +57,11 @@ export async function POST(request: Request) {
           if (clean) tagSet.add(clean);
         }
       }
-
       const tags = Array.from(tagSet).sort();
-      console.log(`[een/tags] DB fast path: ${tags.length} unique tags for account ${accountId}`);
-
       return NextResponse.json({ success: true, tags, source: 'db' });
     }
 
-    // ── 2. Live path: call EEN cameras endpoint ───────────────────────────
-    console.log(`[een/tags] No cameras in DB — fetching live from EEN for account ${accountId}`);
-
+    // Live path: call EEN cameras endpoint
     const { token, cluster, apiKey } = await getValidEENToken(accountId);
 
     if (!cluster) {
@@ -78,10 +71,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const params = new URLSearchParams({
-      pageSize: '500',
-      include:  'tags',
-    });
+    const params = new URLSearchParams({ pageSize: '500', include: 'tags' });
 
     const eenHeaders: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -102,10 +92,6 @@ export async function POST(request: Request) {
     const eenData  = await eenRes.json();
     const cameras: any[] = eenData.results ?? eenData.data ?? [];
 
-    console.log(`[een/tags] EEN returned ${cameras.length} cameras`);
-
-    // Extract unique tags from camera objects
-    // EEN cameras may use .tags (array of strings or objects) or .tagList
     const tagSet = new Set<string>();
     for (const cam of cameras) {
       const rawTags: any[] = cam.tags ?? cam.tagList ?? [];
@@ -116,8 +102,6 @@ export async function POST(request: Request) {
     }
 
     const tags = Array.from(tagSet).sort();
-    console.log(`[een/tags] Live path: ${tags.length} unique tags discovered`);
-
     return NextResponse.json({ success: true, tags, source: 'een' });
 
   } catch (err: any) {
