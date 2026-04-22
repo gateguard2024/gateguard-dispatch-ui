@@ -240,12 +240,14 @@ export default function AlarmsPage() {
 
   // Video panel state
   // preAlarmUrl: undefined = fetching, null = no clip found, string = URL ready
-  const [preAlarmUrl, setPreAlarmUrl]     = useState<string | null | undefined>(undefined);
-  const [liveOffset, setLiveOffset]       = useState<number>(0);   // 0 = live, negative = minutes ago
-  const [liveOffsetUrl, setLiveOffsetUrl] = useState<string | null>(null);
-  const [fetchingClip, setFetchingClip]   = useState(false);
-  const preAlarmRef                       = useRef<HTMLDivElement>(null);
-  const liveRef                           = useRef<HTMLDivElement>(null);
+  const [preAlarmUrl, setPreAlarmUrl]         = useState<string | null | undefined>(undefined);
+  const [liveOffset, setLiveOffset]           = useState<number>(0);
+  const [liveOffsetUrl, setLiveOffsetUrl]     = useState<string | null>(null);
+  const [fetchingClip, setFetchingClip]       = useState(false);
+  // expandedPanel: null = dual view, 'pre-alarm' | 'live' = that panel fills the top section
+  const [expandedPanel, setExpandedPanel]     = useState<'pre-alarm' | 'live' | null>(null);
+  // camerasView: 'grid' = thumbnail grid, 'list' = compact list
+  const [camerasView, setCamerasView]         = useState<'grid' | 'list'>('grid');
 
   // Resolve state
   const [actionTaken, setActionTaken]   = useState<ActionTaken>('');
@@ -305,6 +307,7 @@ export default function AlarmsPage() {
     setPreAlarmUrl(undefined);   // undefined = currently fetching
     setLiveOffset(0);
     setLiveOffsetUrl(null);
+    setExpandedPanel(null);
 
     const accountId = alarm.account_id ?? alarm.zones?.account_id;
     const zoneId    = alarm.zone_id;
@@ -389,17 +392,30 @@ export default function AlarmsPage() {
     }
 
     // Fetch pre-alarm recorded clip (60s before → 30s after event)
-    const eenCamId = alarm.cameras?.een_camera_id;
-    if (eenCamId && alarm.account_id) {
+    // Try alarm.cameras?.een_camera_id first; fall back to looking up by camera_id
+    let eenCamId = alarm.cameras?.een_camera_id ?? null;
+    const accountId2 = alarm.account_id;
+
+    // If the join didn't populate een_camera_id, fetch it directly
+    if (!eenCamId && alarm.camera_id) {
+      const { data: camRow } = await supabase
+        .from('cameras')
+        .select('een_camera_id')
+        .eq('id', alarm.camera_id)
+        .maybeSingle();
+      eenCamId = camRow?.een_camera_id ?? null;
+    }
+
+    if (eenCamId && accountId2) {
       try {
         const alarmMs   = new Date(alarm.created_at).getTime();
-        const startTime = new Date(alarmMs - 60_000).toISOString();
-        const endTime   = new Date(alarmMs + 30_000).toISOString();
+        const startTime = new Date(alarmMs - 60_000).toISOString().replace(/Z$/, '+00:00');
+        const endTime   = new Date(alarmMs + 30_000).toISOString().replace(/Z$/, '+00:00');
         const clipRes   = await fetch('/api/een/recorded', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({
-            accountId: alarm.account_id,
+            accountId: accountId2,
             cameraId:  eenCamId,
             startTime,
             endTime,
@@ -407,13 +423,15 @@ export default function AlarmsPage() {
         });
         if (clipRes.ok) {
           const clipData = await clipRes.json();
-          setPreAlarmUrl(clipData.url ?? null);  // null = no clip in that window
+          setPreAlarmUrl(clipData.url ?? null);
         } else {
-          setPreAlarmUrl(null);  // null = no clip
+          setPreAlarmUrl(null);
         }
       } catch {
-        setPreAlarmUrl(null);  // null = no clip (error)
+        setPreAlarmUrl(null);
       }
+    } else {
+      setPreAlarmUrl(null);  // no een camera — stop spinner
     }
 
     // Mark alarm as processing
@@ -424,28 +442,32 @@ export default function AlarmsPage() {
   }, []);
 
   // ── Quick dismiss (Nothing Seen / False Alarm) ────────────────────────────
-  const dismissAlarm = useCallback(async (reason: 'nothing_seen' | 'false_alarm') => {
-    if (!activeAlarm) return;
-    const accountId = activeAlarm.account_id ?? activeAlarm.zones?.account_id;
-    await supabase.from('alarms').update({ status: 'resolved' }).eq('id', activeAlarm.id);
+  // Accepts any alarm — used from queue cards AND from the active alarm header
+  const dismissAlarm = useCallback(async (alarm: Alarm, reason: 'nothing_seen' | 'false_alarm') => {
+    const accountId = alarm.account_id ?? alarm.zones?.account_id;
+    await supabase.from('alarms').update({ status: 'resolved' }).eq('id', alarm.id);
     await supabase.from('audit_logs').insert({
       account_id:  accountId,
-      alarm_id:    activeAlarm.id,
-      zone_id:     activeAlarm.zone_id,
+      alarm_id:    alarm.id,
+      zone_id:     alarm.zone_id,
       operator_id: 'operator-1',
       action:      'alarm_dismissed',
       details:     JSON.stringify({ reason }),
       created_at:  new Date().toISOString(),
     });
-    setActiveAlarm(null);
-    setDoors([]);
-    setContacts([]);
-    setProcedure([]);
-    setSiteCameras([]);
-    setHistory([]);
-    setPreAlarmUrl(undefined);
-    setLiveOffset(0);
-    setLiveOffsetUrl(null);
+    // If dismissing the currently active alarm, clear the canvas
+    setActiveAlarm(prev => (prev?.id === alarm.id ? null : prev));
+    setDoors(prev => (activeAlarm?.id === alarm.id ? [] : prev));
+    setContacts(prev => (activeAlarm?.id === alarm.id ? [] : prev));
+    setProcedure(prev => (activeAlarm?.id === alarm.id ? [] : prev));
+    setSiteCameras(prev => (activeAlarm?.id === alarm.id ? [] : prev));
+    setHistory(prev => (activeAlarm?.id === alarm.id ? [] : prev));
+    if (activeAlarm?.id === alarm.id) {
+      setPreAlarmUrl(undefined);
+      setLiveOffset(0);
+      setLiveOffsetUrl(null);
+      setExpandedPanel(null);
+    }
   }, [activeAlarm]);
 
   // ── Fetch offset clip for live panel time nav ──────────────────────────────
@@ -552,6 +574,7 @@ export default function AlarmsPage() {
       setPreAlarmUrl(undefined);
       setLiveOffset(0);
       setLiveOffsetUrl(null);
+      setExpandedPanel(null);
 
     } catch (err: any) {
       setResolveError(err.message || 'Failed to resolve alarm');
@@ -646,25 +669,55 @@ export default function AlarmsPage() {
                   <p className="text-[11px] font-semibold text-white leading-tight mb-0.5 truncate">
                     {alarm.site_name}
                   </p>
-                  <p className="text-[10px] text-slate-400 truncate mb-1">
+                  <p className="text-[10px] text-slate-300 truncate mb-0.5">
                     {alarm.event_label}
                   </p>
                   {alarm.cameras?.name && (
-                    <p className="text-[9px] text-slate-600 truncate mb-2">
-                      {alarm.cameras.name}
+                    <p className="text-[9px] text-slate-500 truncate mb-2">
+                      <span className="text-slate-600">cam: </span>{alarm.cameras.name}
                     </p>
                   )}
                   {!isActive && (
-                    <button
-                      onClick={() => processAlarm(alarm)}
-                      className="w-full mt-1 py-1 rounded text-[9px] font-semibold uppercase tracking-wider bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 text-indigo-300 transition-all"
-                    >
-                      Process
-                    </button>
+                    <div className="flex gap-1 mt-1.5">
+                      <button
+                        onClick={() => processAlarm(alarm)}
+                        className="flex-1 py-1 rounded text-[9px] font-semibold uppercase tracking-wider bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 text-indigo-300 transition-all"
+                      >
+                        Process
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); dismissAlarm(alarm, 'nothing_seen'); }}
+                        className="px-2 py-1 rounded text-[9px] font-bold bg-slate-700/50 hover:bg-slate-600/60 border border-white/[0.07] text-slate-500 hover:text-slate-300 transition-all"
+                        title="Nothing seen — dismiss"
+                      >
+                        NS
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); dismissAlarm(alarm, 'false_alarm'); }}
+                        className="px-2 py-1 rounded text-[9px] font-bold bg-amber-800/30 hover:bg-amber-700/40 border border-amber-600/20 text-amber-600 hover:text-amber-400 transition-all"
+                        title="False alarm — dismiss"
+                      >
+                        FA
+                      </button>
+                    </div>
                   )}
                   {isActive && (
-                    <div className="text-[9px] text-indigo-400 font-semibold uppercase tracking-wider text-center">
-                      — Active —
+                    <div className="flex items-center justify-between mt-1.5">
+                      <div className="text-[9px] text-indigo-400 font-semibold uppercase tracking-wider">
+                        — Active —
+                      </div>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); dismissAlarm(alarm, 'nothing_seen'); }}
+                          className="px-2 py-0.5 rounded text-[8px] font-bold bg-slate-700/50 hover:bg-slate-600/60 border border-white/[0.07] text-slate-500 hover:text-slate-300 transition-all"
+                          title="Nothing seen — dismiss"
+                        >NS</button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); dismissAlarm(alarm, 'false_alarm'); }}
+                          className="px-2 py-0.5 rounded text-[8px] font-bold bg-amber-800/30 hover:bg-amber-700/40 border border-amber-600/20 text-amber-600 hover:text-amber-400 transition-all"
+                          title="False alarm — dismiss"
+                        >FA</button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -694,20 +747,27 @@ export default function AlarmsPage() {
             {/* Alarm header bar */}
             <div className="px-4 py-2 border-b border-white/[0.06] flex items-center gap-3 bg-white/[0.01]">
               <PriorityBadge p={activeAlarm.priority} />
-              <span className="text-[12px] font-semibold text-white">{activeAlarm.site_name}</span>
-              <span className="text-[11px] text-slate-500">{activeAlarm.event_label}</span>
-              <span className="text-[10px] text-slate-600 font-mono">{fmtTime(activeAlarm.created_at)}</span>
+              <div className="flex flex-col min-w-0">
+                <span className="text-[13px] font-bold text-white leading-tight truncate">{activeAlarm.site_name}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-slate-300">{activeAlarm.event_label}</span>
+                  {activeAlarm.cameras?.name && (
+                    <span className="text-[9px] text-slate-500 font-mono truncate">· {activeAlarm.cameras.name}</span>
+                  )}
+                </div>
+              </div>
+              <span className="text-[10px] text-slate-600 font-mono shrink-0">{fmtTime(activeAlarm.created_at)}</span>
               {/* Quick dismiss actions */}
               <div className="ml-auto flex items-center gap-1.5">
                 <button
-                  onClick={() => dismissAlarm('nothing_seen')}
+                  onClick={() => dismissAlarm(activeAlarm, 'nothing_seen')}
                   className="px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider bg-slate-700/60 hover:bg-slate-600/60 border border-white/[0.08] text-slate-400 hover:text-slate-200 transition-all"
                   title="Mark as nothing seen and clear from queue"
                 >
                   Nothing Seen
                 </button>
                 <button
-                  onClick={() => dismissAlarm('false_alarm')}
+                  onClick={() => dismissAlarm(activeAlarm, 'false_alarm')}
                   className="px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-700/30 hover:bg-amber-600/40 border border-amber-500/20 text-amber-400 hover:text-amber-300 transition-all"
                   title="Mark as false alarm and clear from queue"
                 >
@@ -716,128 +776,131 @@ export default function AlarmsPage() {
               </div>
             </div>
 
-            {/* TOP 55%: Dual Video */}
+            {/* TOP 55%: Dual Video (or single expanded panel) */}
             <div className="flex gap-px bg-black" style={{ height: '55%' }}>
-              {/* Pre-alarm / Recorded */}
-              <div
-                ref={preAlarmRef}
-                className="flex-1 relative cursor-pointer"
-                onDoubleClick={() => preAlarmRef.current?.requestFullscreen?.()}
-                title="Double-click for fullscreen"
-              >
-                <div className="absolute top-2 left-2 z-10 bg-amber-600/80 border border-amber-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-white uppercase tracking-wider pointer-events-none">
-                  Pre-Alarm Clip
-                </div>
-                <div className="absolute bottom-2 right-2 z-10 text-[8px] text-white/30 pointer-events-none">
-                  ⤡ dbl-click fullscreen
-                </div>
-                {activeCameraId && typeof preAlarmUrl === 'string' ? (
-                  /* Has a recorded URL — play it */
-                  <SmartVideoPlayer
-                    accountId={activeAccountId}
-                    cameraId={activeCameraId}
-                    source={activeCameraSource as 'brivo' | 'een'}
-                    streamType="preview"
-                    recordedUrl={preAlarmUrl}
-                    label=""
-                  />
-                ) : activeCameraId && preAlarmUrl === undefined ? (
-                  /* Still fetching */
-                  <div className="w-full h-full flex flex-col items-center justify-center bg-black gap-2">
-                    <div className="w-4 h-4 border-2 border-amber-600 border-t-transparent rounded-full animate-spin" />
-                    <p className="text-[9px] text-amber-700">Fetching clip...</p>
-                  </div>
-                ) : activeCameraId ? (
-                  /* null = no recording in that window */
-                  <div className="w-full h-full flex items-center justify-center bg-black">
-                    <p className="text-[10px] text-slate-600">No pre-alarm clip available</p>
-                  </div>
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-black">
-                    <p className="text-[10px] text-slate-600">No camera assigned</p>
-                  </div>
-                )}
-              </div>
 
-              {/* Live feed */}
-              <div
-                ref={liveRef}
-                className="flex-1 relative cursor-pointer"
-                onDoubleClick={(e) => {
-                  // Only fullscreen if clicking the container, not child buttons
-                  if (e.target === liveRef.current || (e.target as HTMLElement).tagName !== 'BUTTON') {
-                    liveRef.current?.requestFullscreen?.();
-                  }
-                }}
-                title="Double-click for fullscreen"
-              >
-                {/* Live / offset label */}
-                <div className="absolute top-2 left-2 z-10 flex items-center gap-1 pointer-events-none">
-                  {liveOffset === 0 ? (
-                    <span className="flex items-center gap-1 bg-red-600/80 border border-red-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-white uppercase tracking-wider">
-                      <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-                      Live
+              {/* ── Pre-alarm / Recorded panel ─────────────────────────── */}
+              {expandedPanel !== 'live' && (
+                <div
+                  className={`relative cursor-pointer ${expandedPanel === 'pre-alarm' ? 'flex-1' : 'flex-1'}`}
+                  onDoubleClick={() => setExpandedPanel(p => p === 'pre-alarm' ? null : 'pre-alarm')}
+                  title="Double-click to expand / collapse"
+                >
+                  {/* Label */}
+                  <div className="absolute top-2 left-2 z-10 bg-amber-600/80 border border-amber-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-white uppercase tracking-wider pointer-events-none">
+                    Pre-Alarm Clip
+                  </div>
+                  {/* Expand/collapse indicator */}
+                  <div className="absolute top-2 right-2 z-10 pointer-events-none">
+                    <span className="text-[8px] text-white/25 bg-black/40 px-1 py-0.5 rounded">
+                      {expandedPanel === 'pre-alarm' ? '⊡ dbl-click collapse' : '⤢ dbl-click expand'}
                     </span>
+                  </div>
+
+                  {activeCameraId && typeof preAlarmUrl === 'string' ? (
+                    <SmartVideoPlayer
+                      accountId={activeAccountId}
+                      cameraId={activeCameraId}
+                      source={activeCameraSource as 'brivo' | 'een'}
+                      streamType="preview"
+                      recordedUrl={preAlarmUrl}
+                      label=""
+                    />
+                  ) : activeCameraId && preAlarmUrl === undefined ? (
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-black gap-2">
+                      <div className="w-4 h-4 border-2 border-amber-600 border-t-transparent rounded-full animate-spin" />
+                      <p className="text-[9px] text-amber-700">Fetching clip...</p>
+                    </div>
+                  ) : activeCameraId ? (
+                    <div className="w-full h-full flex items-center justify-center bg-black">
+                      <p className="text-[10px] text-slate-600">No pre-alarm clip available</p>
+                    </div>
                   ) : (
-                    <span className="flex items-center gap-1 bg-slate-700/80 border border-slate-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-slate-200 uppercase tracking-wider">
-                      -{Math.abs(liveOffset)}m ago
-                    </span>
+                    <div className="w-full h-full flex items-center justify-center bg-black">
+                      <p className="text-[10px] text-slate-600">No camera assigned</p>
+                    </div>
                   )}
                 </div>
+              )}
 
-                {/* Time navigation buttons */}
-                <div className="absolute top-2 right-2 z-10 flex gap-1" onDoubleClick={e => e.stopPropagation()}>
-                  {([0, -5, -15, -30] as const).map((offset) => (
-                    <button
-                      key={offset}
-                      onClick={(e) => { e.stopPropagation(); fetchOffsetClip(offset); }}
-                      disabled={fetchingClip}
-                      className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider border transition-all
-                        ${liveOffset === offset
-                          ? 'bg-indigo-600/80 border-indigo-500/60 text-white'
-                          : 'bg-black/50 border-white/[0.12] text-slate-400 hover:text-white hover:border-white/30'
-                        } ${fetchingClip ? 'opacity-40 cursor-wait' : ''}`}
-                    >
-                      {offset === 0 ? 'Live' : `${Math.abs(offset)}m`}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="absolute bottom-2 right-2 z-10 text-[8px] text-white/30 pointer-events-none">
-                  ⤡ dbl-click fullscreen
-                </div>
-
-                {activeCameraId ? (
-                  liveOffset !== 0 && liveOffsetUrl ? (
-                    <SmartVideoPlayer
-                      accountId={activeAccountId}
-                      cameraId={activeCameraId}
-                      source={activeCameraSource as 'brivo' | 'een'}
-                      streamType="main"
-                      recordedUrl={liveOffsetUrl}
-                      label=""
-                    />
-                  ) : (
-                    <SmartVideoPlayer
-                      accountId={activeAccountId}
-                      cameraId={activeCameraId}
-                      source={activeCameraSource as 'brivo' | 'een'}
-                      streamType="main"
-                      label=""
-                    />
-                  )
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-black">
-                    <p className="text-[10px] text-slate-600">No live feed available</p>
+              {/* ── Live feed panel ────────────────────────────────────── */}
+              {expandedPanel !== 'pre-alarm' && (
+                <div
+                  className="flex-1 relative cursor-pointer"
+                  onDoubleClick={(e) => {
+                    if ((e.target as HTMLElement).tagName !== 'BUTTON') {
+                      setExpandedPanel(p => p === 'live' ? null : 'live');
+                    }
+                  }}
+                  title="Double-click to expand / collapse"
+                >
+                  {/* Live / offset label */}
+                  <div className="absolute top-2 left-2 z-10 flex items-center gap-1 pointer-events-none">
+                    {liveOffset === 0 ? (
+                      <span className="flex items-center gap-1 bg-red-600/80 border border-red-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-white uppercase tracking-wider">
+                        <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                        Live
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 bg-slate-700/80 border border-slate-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-slate-200 uppercase tracking-wider">
+                        -{Math.abs(liveOffset)}m ago
+                      </span>
+                    )}
                   </div>
-                )}
-              </div>
+
+                  {/* Time navigation + expand indicator */}
+                  <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5" onDoubleClick={e => e.stopPropagation()}>
+                    {([0, -5, -15, -30] as const).map((offset) => (
+                      <button
+                        key={offset}
+                        onClick={(e) => { e.stopPropagation(); fetchOffsetClip(offset); }}
+                        disabled={fetchingClip}
+                        className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider border transition-all
+                          ${liveOffset === offset
+                            ? 'bg-indigo-600/80 border-indigo-500/60 text-white'
+                            : 'bg-black/50 border-white/[0.12] text-slate-400 hover:text-white hover:border-white/30'
+                          } ${fetchingClip ? 'opacity-40 cursor-wait' : ''}`}
+                      >
+                        {offset === 0 ? 'Live' : `${Math.abs(offset)}m`}
+                      </button>
+                    ))}
+                    <span className="text-[8px] text-white/25 bg-black/40 px-1 py-0.5 rounded pointer-events-none">
+                      {expandedPanel === 'live' ? '⊡ dbl-click collapse' : '⤢ dbl-click expand'}
+                    </span>
+                  </div>
+
+                  {activeCameraId ? (
+                    liveOffset !== 0 && liveOffsetUrl ? (
+                      <SmartVideoPlayer
+                        accountId={activeAccountId}
+                        cameraId={activeCameraId}
+                        source={activeCameraSource as 'brivo' | 'een'}
+                        streamType="main"
+                        recordedUrl={liveOffsetUrl}
+                        label=""
+                      />
+                    ) : (
+                      <SmartVideoPlayer
+                        accountId={activeAccountId}
+                        cameraId={activeCameraId}
+                        source={activeCameraSource as 'brivo' | 'een'}
+                        streamType="main"
+                        label=""
+                      />
+                    )
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-black">
+                      <p className="text-[10px] text-slate-600">No live feed available</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* BOTTOM 45%: Tabs */}
             <div className="flex-1 flex flex-col min-h-0">
               {/* Tab bar */}
-              <div className="flex border-b border-white/[0.06] px-2 pt-1 gap-1">
+              <div className="flex border-b border-white/[0.06] px-2 pt-1 gap-1 items-end">
                 {(['cameras', 'history', 'notes'] as const).map((tab) => (
                   <button
                     key={tab}
@@ -848,50 +911,104 @@ export default function AlarmsPage() {
                         : 'text-slate-500 hover:text-slate-300'
                     }`}
                   >
-                    {tab === 'cameras' ? 'Site Cameras' : tab === 'history' ? 'Event History' : 'Operator Notes'}
+                    {tab === 'cameras' ? `Site Cameras (${siteCameras.length})` : tab === 'history' ? 'Event History' : 'Operator Notes'}
                   </button>
                 ))}
+                {/* Grid/List toggle — only visible on cameras tab */}
+                {activeTab === 'cameras' && siteCameras.length > 0 && (
+                  <div className="ml-auto mb-1 flex items-center gap-0.5 bg-white/[0.04] border border-white/[0.06] rounded p-0.5">
+                    <button
+                      onClick={() => setCamerasView('grid')}
+                      className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase transition-all ${camerasView === 'grid' ? 'bg-indigo-600/60 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                      title="Grid view"
+                    >⊞ Grid</button>
+                    <button
+                      onClick={() => setCamerasView('list')}
+                      className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase transition-all ${camerasView === 'list' ? 'bg-indigo-600/60 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                      title="List view"
+                    >≡ List</button>
+                  </div>
+                )}
               </div>
 
               {/* Tab content */}
               <div className="flex-1 overflow-y-auto p-3">
                 {/* Site Cameras */}
                 {activeTab === 'cameras' && (
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {siteCameras.map((cam) => {
-                      const camId = cam.brivo_camera_id ?? cam.een_camera_id ?? '';
-                      const isSelected = camId === activeCameraId;
-                      return (
-                        <div
-                          key={cam.id}
-                          onClick={() => setActiveCameraId(camId)}
-                          className={`
-                            relative aspect-video rounded overflow-hidden cursor-pointer
-                            border transition-all
-                            ${isSelected
-                              ? 'border-indigo-500 ring-1 ring-indigo-500/40'
-                              : 'border-white/[0.06] hover:border-white/20'
-                            }
-                          `}
-                        >
-                          <SmartVideoPlayer
-                            accountId={activeAccountId}
-                            cameraId={camId}
-                            source={cam.source as 'brivo' | 'een'}
-                            streamType="preview"
-                          />
-                          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-1 py-0.5">
-                            <p className="text-[8px] text-white truncate">{cam.name}</p>
+                  <>
+                    {/* Grid view */}
+                    {camerasView === 'grid' && (
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {siteCameras.map((cam) => {
+                          const camId = cam.brivo_camera_id ?? cam.een_camera_id ?? '';
+                          const isSelected = camId === activeCameraId;
+                          return (
+                            <div
+                              key={cam.id}
+                              onClick={() => setActiveCameraId(camId)}
+                              className={`
+                                relative aspect-video rounded overflow-hidden cursor-pointer
+                                border transition-all
+                                ${isSelected
+                                  ? 'border-indigo-500 ring-1 ring-indigo-500/40'
+                                  : 'border-white/[0.06] hover:border-white/20'
+                                }
+                              `}
+                            >
+                              <SmartVideoPlayer
+                                accountId={activeAccountId}
+                                cameraId={camId}
+                                source={cam.source as 'brivo' | 'een'}
+                                streamType="preview"
+                              />
+                              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-1 py-0.5">
+                                <p className="text-[8px] text-white truncate">{cam.name}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {siteCameras.length === 0 && (
+                          <div className="col-span-4 py-6 text-center text-[10px] text-slate-600">
+                            No cameras configured for this site
                           </div>
-                        </div>
-                      );
-                    })}
-                    {siteCameras.length === 0 && (
-                      <div className="col-span-4 py-6 text-center text-[10px] text-slate-600">
-                        No cameras configured for this site
+                        )}
                       </div>
                     )}
-                  </div>
+
+                    {/* List view */}
+                    {camerasView === 'list' && (
+                      <div className="space-y-1">
+                        {siteCameras.map((cam) => {
+                          const camId = cam.brivo_camera_id ?? cam.een_camera_id ?? '';
+                          const isSelected = camId === activeCameraId;
+                          return (
+                            <div
+                              key={cam.id}
+                              onClick={() => setActiveCameraId(camId)}
+                              className={`flex items-center gap-2.5 px-2.5 py-2 rounded border cursor-pointer transition-all
+                                ${isSelected
+                                  ? 'border-indigo-500/60 bg-indigo-600/10 ring-1 ring-indigo-500/20'
+                                  : 'border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.12]'
+                                }`}
+                            >
+                              <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${isSelected ? 'bg-indigo-400' : 'bg-slate-600'}`} />
+                              <div className="w-3 h-3 text-slate-500 shrink-0"><Ic.Camera /></div>
+                              <span className="text-[11px] font-medium text-slate-200 truncate flex-1">{cam.name}</span>
+                              <span className="text-[8px] text-slate-600 uppercase">{cam.source}</span>
+                              {isSelected && (
+                                <span className="text-[8px] text-indigo-400 font-bold uppercase tracking-wider shrink-0">Active</span>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {siteCameras.length === 0 && (
+                          <div className="py-6 text-center text-[10px] text-slate-600">
+                            No cameras configured for this site
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {/* Event History */}
@@ -933,6 +1050,28 @@ export default function AlarmsPage() {
       {/* ── RIGHT: Command Panel ────────────────────────────────────────── */}
       <aside className="w-[340px] shrink-0 flex flex-col overflow-y-auto">
         <div className="flex-1 space-y-4 p-3">
+
+          {/* ── Active Alarm Summary card ── */}
+          {activeAlarm ? (
+            <div className={`rounded-lg border px-3 py-2.5 ${PRIORITY_CONFIG[activeAlarm.priority].bg} ${PRIORITY_CONFIG[activeAlarm.priority].ring} ring-1 border-transparent`}>
+              <div className="flex items-center gap-2 mb-1">
+                <PriorityBadge p={activeAlarm.priority} />
+                <span className="text-[9px] text-slate-400 font-mono ml-auto">{fmtTime(activeAlarm.created_at)}</span>
+              </div>
+              <p className="text-[13px] font-bold text-white leading-snug">{activeAlarm.site_name}</p>
+              <p className="text-[11px] text-slate-200 mt-0.5">{activeAlarm.event_label}</p>
+              {activeAlarm.cameras?.name && (
+                <p className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1">
+                  <span className="w-2.5 h-2.5 inline-block text-slate-500"><Ic.Camera /></span>
+                  {activeAlarm.cameras.name}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-4 text-center">
+              <p className="text-[10px] text-slate-600 uppercase tracking-wider">No active alarm</p>
+            </div>
+          )}
 
           {/* ── 1. Brivo Access Control ── */}
           <section>
