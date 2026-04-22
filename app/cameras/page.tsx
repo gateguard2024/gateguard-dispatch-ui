@@ -403,7 +403,7 @@ export default function CamerasPage() {
                   <div
                     key={cam.id}
                     className="group relative aspect-video rounded border border-white/[0.06] bg-black overflow-hidden cursor-pointer hover:border-white/20 transition-all"
-                    onDoubleClick={() => openCamera(cam)}
+                    onDoubleClick={(e) => { e.stopPropagation(); openCamera(cam); }}
                   >
                     <SmartVideoPlayer
                       accountId={selectedAccount.id}
