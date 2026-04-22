@@ -1,51 +1,73 @@
+// app/api/een/image/route.ts
+//
+// Proxies a camera snapshot from EEN back to the browser.
+//
+// Old pattern: read cluster + token from NEXT_PUBLIC_SITE_CONFIG env var.
+// New pattern: look up token via getValidEENToken(accountId) — Supabase-backed,
+//              handles automatic refresh.
+//
+// Query params:
+//   cameraId  — EEN device ESN
+//   accountId — Supabase accounts.id (UUID)
+
 import { NextResponse } from 'next/server';
+import { getValidEENToken } from '@/lib/een';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const cameraId = searchParams.get('cameraId');
-  const siteName = searchParams.get('siteName');
-  const token = searchParams.get('token');
+  const cameraId  = searchParams.get('cameraId');
+  const accountId = searchParams.get('accountId');
 
-  if (!cameraId || !siteName || !token) {
-    return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
+  if (!cameraId || !accountId) {
+    return NextResponse.json(
+      { error: 'Missing required params: cameraId and accountId' },
+      { status: 400 }
+    );
   }
 
   try {
-    const SITES = JSON.parse(process.env.NEXT_PUBLIC_SITE_CONFIG || '[]');
-    const config = SITES.find((s: any) => s.siteName === siteName);
-    
-    let baseUrl = config ? config.cluster.trim() : "https://media.c031.eagleeyenetworks.com";
-    if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
-    if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
+    const { token, cluster, apiKey } = await getValidEENToken(accountId);
 
-    // EXACT V3 Endpoint (Singular 'image')
-    const targetUrl = `${baseUrl}/api/v3.0/cameras/${cameraId}/image`;
+    if (!cluster || !token) {
+      return NextResponse.json(
+        { error: 'EEN not authenticated for this account. Re-run OAuth in Setup.' },
+        { status: 400 }
+      );
+    }
+
+    const targetUrl = `https://${cluster}/api/v3.0/cameras/${cameraId}/image`;
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      Accept:        'image/jpeg',
+    };
+    if (apiKey) headers['x-api-key'] = apiKey;
 
     const response = await fetch(targetUrl, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'image/jpeg'
-      },
-      cache: 'no-store' // Never cache at the edge
+      method:  'GET',
+      headers,
+      cache:   'no-store',
     });
 
     if (!response.ok) {
-        return NextResponse.json({ error: `EEN API Error: ${response.status}`, targetUrl }, { status: response.status });
+      return NextResponse.json(
+        { error: `EEN API Error: ${response.status}`, targetUrl },
+        { status: response.status }
+      );
     }
 
     const imageBuffer = await response.arrayBuffer();
-    
+
     return new NextResponse(imageBuffer, {
       headers: {
-        'Content-Type': 'image/jpeg',
-        'Cache-Control': 'public, max-age=10', // Cache in browser for 10s to prevent spamming EEN
-        'Access-Control-Allow-Origin': '*'
-      }
+        'Content-Type':                'image/jpeg',
+        'Cache-Control':               'public, max-age=10',
+        'Access-Control-Allow-Origin': '*',
+      },
     });
 
-  } catch (error) {
-    console.error("Image proxy failed:", error);
-    return NextResponse.json({ error: 'Proxy crashed' }, { status: 500 });
+  } catch (err: any) {
+    console.error('[een/image] Error:', err.message);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
