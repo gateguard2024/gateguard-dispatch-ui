@@ -41,8 +41,9 @@ export async function POST(request: Request) {
       );
     }
 
-    const startIso = new Date(startTime).toISOString();
-    const endIso   = new Date(endTime).toISOString();
+    // EEN requires +00:00 format NOT Z — e.g. 2026-04-22T14:30:00.000+00:00
+    const startIso = new Date(startTime).toISOString().replace(/Z$/, '+00:00');
+    const endIso   = new Date(endTime).toISOString().replace(/Z$/, '+00:00');
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
