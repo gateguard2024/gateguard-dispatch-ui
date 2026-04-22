@@ -26,6 +26,7 @@ const supabase = createClient(
 type Priority = 'P1' | 'P2' | 'P3' | 'P4';
 type AlarmStatus = 'pending' | 'processing' | 'resolved';
 type ActionTaken = 'authorized' | 'unauthorized' | 'false_alarm' | 'police_dispatched' | 'other' | '';
+type TabName = 'cameras' | 'history' | 'scripts' | 'notes';
 
 interface Alarm {
   id:          string;
@@ -211,6 +212,30 @@ function SectionHeader({ icon, label, action }: { icon: React.ReactNode; label: 
   );
 }
 
+function ScriptCard({ label, color, text }: { label: string; color: string; text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+  return (
+    <div className={`rounded border ${color} p-2.5`}>
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">{label}</span>
+        <button
+          onClick={copy}
+          className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] text-slate-400 hover:text-white transition-all"
+        >
+          {copied ? '✓ Copied' : 'Copy'}
+        </button>
+      </div>
+      <p className="text-[10px] text-slate-300 leading-relaxed">{text}</p>
+    </div>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function AlarmsPage() {
   // Queue state
@@ -233,7 +258,7 @@ export default function AlarmsPage() {
   const [clearanceChecked, setClearanceChecked]   = useState([false, false, false]);
 
   // Action canvas state
-  const [activeTab, setActiveTab]     = useState<'cameras' | 'history' | 'notes'>('cameras');
+  const [activeTab, setActiveTab]     = useState<TabName>('cameras');
   const [siteCameras, setSiteCameras] = useState<SiteCameraEntry[]>([]);
   const [history, setHistory]         = useState<any[]>([]);
   const [notes, setNotes]             = useState('');
@@ -247,11 +272,15 @@ export default function AlarmsPage() {
   const [fetchingClip, setFetchingClip]       = useState(false);
   // expandedPanel: null = dual view, 'pre-alarm' | 'live' = that panel fills the top section
   const [expandedPanel, setExpandedPanel]     = useState<'pre-alarm' | 'live' | null>(null);
+  // Resolved EEN camera ID — stored after processAlarm resolves it (avoids stale joins)
+  const [resolvedEenCamId, setResolvedEenCamId] = useState<string | null>(null);
   // camerasView: 'grid' = thumbnail grid, 'list' = compact list
   const [camerasView, setCamerasView]         = useState<'grid' | 'list'>('list');
   // Procedure suggest state
   const [suggestingSteps, setSuggestingSteps] = useState(false);
   const [stepSuggestion, setStepSuggestion]   = useState<{ title: string; steps: ProcedureStep[]; reasoning: string } | null>(null);
+  // Total alarm count (includes beyond the 50-item display limit)
+  const [totalAlarmCount, setTotalAlarmCount] = useState(0);
 
   // Resolve state
   const [actionTaken, setActionTaken]   = useState<ActionTaken>('');
@@ -276,6 +305,13 @@ export default function AlarmsPage() {
   }, []);
 
   async function fetchQueue() {
+    // Get total count of pending alarms (not limited to display window)
+    const { count } = await supabase
+      .from('alarms')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'pending');
+    setTotalAlarmCount(count ?? 0);
+
     const { data } = await supabase
       .from('alarms')
       .select(`
@@ -284,13 +320,11 @@ export default function AlarmsPage() {
         zones ( name, account_id )
       `)
       .eq('status', 'pending')
-      .order('priority', { ascending: true })
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: false })   // newest first
       .limit(50);
 
     if (data) {
       setQueue(data as Alarm[]);
-
       // Audio alert when new P1 alarms arrive
       if (data.length > prevCountRef.current && data.some(a => a.priority === 'P1')) {
         audioRef.current?.play().catch(() => {});
@@ -312,6 +346,7 @@ export default function AlarmsPage() {
     setLiveOffset(0);
     setLiveOffsetUrl(null);
     setExpandedPanel(null);
+    setResolvedEenCamId(null);
 
     const accountId = alarm.account_id ?? alarm.zones?.account_id;
     const zoneId    = alarm.zone_id;
@@ -384,23 +419,22 @@ export default function AlarmsPage() {
       setSiteCameras(cams ?? []);
     }
 
-    // Load event history
+    // Load event history — show recent resolved/dismissed alarms for this zone
     if (zoneId) {
       const { data: hist } = await supabase
-        .from('audit_logs')
-        .select('*')
+        .from('alarms')
+        .select('id, priority, event_label, status, created_at, cameras(name)')
         .eq('zone_id', zoneId)
+        .in('status', ['resolved'])
         .order('created_at', { ascending: false })
-        .limit(10);
+        .limit(20);
       setHistory(hist ?? []);
     }
 
-    // Fetch pre-alarm recorded clip (60s before → 30s after event)
-    // Try alarm.cameras?.een_camera_id first; fall back to looking up by camera_id
+    // Resolve EEN camera ESN — try join first, then direct lookup
     let eenCamId = alarm.cameras?.een_camera_id ?? null;
     const accountId2 = alarm.account_id;
 
-    // If the join didn't populate een_camera_id, fetch it directly
     if (!eenCamId && alarm.camera_id) {
       const { data: camRow } = await supabase
         .from('cameras')
@@ -409,12 +443,16 @@ export default function AlarmsPage() {
         .maybeSingle();
       eenCamId = camRow?.een_camera_id ?? null;
     }
+    // Store for use by fetchOffsetClip (avoids stale join references)
+    setResolvedEenCamId(eenCamId);
 
+    // Fetch pre-alarm recorded clip — 3 minutes before → 1 minute after event
+    // (wider window improves hit rate for cameras with delayed cloud upload)
     if (eenCamId && accountId2) {
       try {
         const alarmMs   = new Date(alarm.created_at).getTime();
-        const startTime = new Date(alarmMs - 60_000).toISOString().replace(/Z$/, '+00:00');
-        const endTime   = new Date(alarmMs + 30_000).toISOString().replace(/Z$/, '+00:00');
+        const startTime = new Date(alarmMs - 180_000).toISOString().replace(/Z$/, '+00:00');
+        const endTime   = new Date(alarmMs + 60_000).toISOString().replace(/Z$/, '+00:00');
         const clipRes   = await fetch('/api/een/recorded', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -435,7 +473,7 @@ export default function AlarmsPage() {
         setPreAlarmUrl(null);
       }
     } else {
-      setPreAlarmUrl(null);  // no een camera — stop spinner
+      setPreAlarmUrl(null);
     }
 
     // Mark alarm as processing
@@ -528,13 +566,20 @@ export default function AlarmsPage() {
       return;
     }
     setFetchingClip(true);
-    const eenCamId  = activeAlarm.cameras?.een_camera_id;
+    // Use resolvedEenCamId from state (set during processAlarm) — avoids stale join
+    const eenCamId  = resolvedEenCamId;
     const accountId = activeAlarm.account_id;
-    if (!eenCamId || !accountId) { setFetchingClip(false); return; }
+    if (!eenCamId || !accountId) {
+      console.warn('[fetchOffsetClip] Missing eenCamId or accountId', { eenCamId, accountId });
+      setFetchingClip(false);
+      return;
+    }
 
     const now       = Date.now();
-    const startTime = new Date(now + offsetMinutes * 60_000).toISOString();
-    const endTime   = new Date(now + offsetMinutes * 60_000 + 120_000).toISOString();
+    // offsetMinutes is negative (e.g. -5 = 5 minutes ago)
+    const windowStart = now + offsetMinutes * 60_000;
+    const startTime = new Date(windowStart).toISOString().replace(/Z$/, '+00:00');
+    const endTime   = new Date(windowStart + 150_000).toISOString().replace(/Z$/, '+00:00'); // 2.5 min window
     try {
       const res = await fetch('/api/een/recorded', {
         method:  'POST',
@@ -545,10 +590,14 @@ export default function AlarmsPage() {
         const data = await res.json();
         setLiveOffsetUrl(data.url ?? null);
         setLiveOffset(offsetMinutes);
+      } else {
+        console.warn('[fetchOffsetClip] No clip found for offset', offsetMinutes);
       }
-    } catch {}
+    } catch (err: any) {
+      console.error('[fetchOffsetClip] Error:', err.message);
+    }
     finally { setFetchingClip(false); }
-  }, [activeAlarm]);
+  }, [activeAlarm, resolvedEenCamId]);
 
   // ── Open door ──────────────────────────────────────────────────────────────
   const openDoor = useCallback(async (door: Door) => {
@@ -681,10 +730,11 @@ export default function AlarmsPage() {
               Event Queue
             </span>
           </div>
-          {queue.length > 0 && (
+          {totalAlarmCount > 0 && (
             <span className="flex items-center gap-1 bg-red-500/20 border border-red-500/30 rounded px-2 py-0.5 text-[10px] font-bold text-red-400">
               <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-              {queue.length}
+              {totalAlarmCount}
+              {totalAlarmCount > 50 && <span className="text-red-500/60">+</span>}
             </span>
           )}
         </div>
@@ -950,7 +1000,7 @@ export default function AlarmsPage() {
             <div className="flex-1 flex flex-col min-h-0">
               {/* Tab bar */}
               <div className="flex border-b border-white/[0.06] px-2 pt-1 gap-1 items-end">
-                {(['cameras', 'history', 'notes'] as const).map((tab) => (
+                {(['cameras', 'history', 'scripts', 'notes'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -960,7 +1010,7 @@ export default function AlarmsPage() {
                         : 'text-slate-500 hover:text-slate-300'
                     }`}
                   >
-                    {tab === 'cameras' ? `Site Cameras (${siteCameras.length})` : tab === 'history' ? 'Event History' : 'Operator Notes'}
+                    {tab === 'cameras' ? `Cameras (${siteCameras.length})` : tab === 'history' ? 'History' : tab === 'scripts' ? 'Scripts' : 'Notes'}
                   </button>
                 ))}
                 {/* Grid/List toggle — only visible on cameras tab */}
@@ -1060,24 +1110,73 @@ export default function AlarmsPage() {
                   </>
                 )}
 
-                {/* Event History */}
+                {/* Event History — resolved alarms for this zone */}
                 {activeTab === 'history' && (
-                  <div className="space-y-1.5">
-                    {history.map((h, i) => (
-                      <div
-                        key={i}
-                        className="flex items-start gap-3 px-2.5 py-2 rounded bg-white/[0.02] border border-white/[0.05]"
-                      >
-                        <div className="w-1 h-1 rounded-full bg-slate-600 mt-1.5 shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-[10px] text-slate-300 truncate">{h.action ?? h.details}</p>
-                          <p className="text-[9px] text-slate-600 mt-0.5">{fmtTime(h.created_at)}</p>
+                  <div className="space-y-1">
+                    {history.map((h: any, i: number) => {
+                      const cfg = PRIORITY_CONFIG[h.priority as Priority] ?? PRIORITY_CONFIG.P3;
+                      return (
+                        <div
+                          key={i}
+                          className="flex items-start gap-2.5 px-2.5 py-2 rounded bg-white/[0.02] border border-white/[0.05]"
+                        >
+                          <span className={`mt-0.5 w-1.5 h-1.5 rounded-full shrink-0 ${cfg.dot}`} />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[10px] text-slate-200 truncate">{h.event_label}</p>
+                            {h.cameras?.name && (
+                              <p className="text-[9px] text-slate-500 truncate">{h.cameras.name}</p>
+                            )}
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <p className="text-[9px] text-slate-600 font-mono">{fmtTime(h.created_at)}</p>
+                              <span className="text-[8px] text-slate-600 uppercase">{h.status}</span>
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                     {history.length === 0 && (
-                      <p className="text-center text-[10px] text-slate-600 py-6">No event history for this site</p>
+                      <p className="text-center text-[10px] text-slate-500 py-6">No resolved events for this site yet</p>
                     )}
+                  </div>
+                )}
+
+                {/* Scripts — pre-written operator announcement scripts */}
+                {activeTab === 'scripts' && (
+                  <div className="space-y-2">
+                    {[
+                      {
+                        label: 'Identity Check',
+                        color: 'border-indigo-500/30 bg-indigo-600/10',
+                        text: 'This is GateGuard security monitoring. You are being recorded. Please identify yourself and state your purpose.',
+                      },
+                      {
+                        label: 'Unauthorized Warning',
+                        color: 'border-amber-500/30 bg-amber-600/10',
+                        text: 'Attention — this is a private property. You are in a restricted area. Please leave immediately or security will be dispatched.',
+                      },
+                      {
+                        label: 'No Trespassing',
+                        color: 'border-red-500/30 bg-red-600/10',
+                        text: 'Warning — you are trespassing on private property. This area is monitored 24/7. Law enforcement has been notified.',
+                      },
+                      {
+                        label: 'After-Hours Notice',
+                        color: 'border-slate-500/30 bg-slate-600/10',
+                        text: 'This property is closed. Business hours are Monday through Friday, 8am to 6pm. Please return during business hours.',
+                      },
+                      {
+                        label: 'Vehicle Warning',
+                        color: 'border-amber-500/30 bg-amber-600/10',
+                        text: 'Attention driver — you are in a monitored area. Parking in this location is prohibited. Please move your vehicle immediately.',
+                      },
+                      {
+                        label: 'Police Dispatched',
+                        color: 'border-red-500/30 bg-red-600/10',
+                        text: 'Attention — police have been dispatched to this location. For your safety, please remain where you are and cooperate with responding officers.',
+                      },
+                    ].map((script, i) => (
+                      <ScriptCard key={i} {...script} />
+                    ))}
                   </div>
                 )}
 
