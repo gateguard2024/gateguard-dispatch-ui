@@ -123,14 +123,11 @@ async function pollAccount(supabase: any, accountId: string): Promise<number> {
   const { token, cluster, apiKey } = await getValidEENToken(accountId);
   if (!token || !cluster) return 0;
 
-  // Look back 90 seconds (60s interval + 30s buffer to avoid gaps)
-  // EEN requires +00:00 format NOT Z — e.g. 2026-04-22T14:30:00.000+00:00
-  const now      = new Date();
-  const lookback = new Date(now.getTime() - 90 * 1000);
-  const startIso = lookback.toISOString().replace(/Z$/, '+00:00');
-  const endIso   = now.toISOString().replace(/Z$/, '+00:00');
+  // We use listRecentByType — NO timestamp params sent to EEN (avoids format issues).
+  // Instead, we check event.startTimestamp in JS after fetching.
+  const LOOKBACK_MS = 90 * 1000; // 90s window
+  const now = Date.now();
 
-  // Fetch cameras for this account so we can map ESN → camera record
   const { data: cameras } = await supabase
     .from('cameras')
     .select('id, name, zone_id, account_id, een_camera_id')
@@ -147,7 +144,6 @@ async function pollAccount(supabase: any, accountId: string): Promise<number> {
 
   let alarmsCreated = 0;
 
-  // Poll events per camera (EEN requires actor filter)
   await Promise.all(
     cameras.map(async (cam: any) => {
       if (!cam.een_camera_id) return;
@@ -155,36 +151,38 @@ async function pollAccount(supabase: any, accountId: string): Promise<number> {
       try {
         const actor = `camera:${cam.een_camera_id}`;
 
-        // Build URL manually — no URLSearchParams (colons in timestamps)
+        // Use listRecentByType — returns most recent event per type, no timestamps needed
         const eventUrl = [
-          `https://${cluster}/api/v3.0/events`,
+          `https://${cluster}/api/v3.0/events:listRecentByType`,
           `?actor=${encodeURIComponent(actor)}`,
           `&type__in=${SUBSCRIBED_TYPES.map(encodeURIComponent).join('&type__in=')}`,
-          `&startTimestamp__gte=${startIso}`,
-          `&startTimestamp__lte=${endIso}`,
-          `&pageSize=20`,
-          `&sort=-startTimestamp`,
         ].join('');
 
         const res = await fetch(eventUrl, { method: 'GET', headers });
         if (!res.ok) {
           const errText = await res.text();
-          console.error(`[poll-een-events] EEN error ${res.status} for camera ${cam.een_camera_id}: ${errText.slice(0, 300)}`);
+          console.error(`[poll-een-events] EEN error ${res.status} for camera ${cam.een_camera_id}: ${errText.slice(0, 200)}`);
           return;
         }
 
-        const data = await res.json();
-        const events: any[] = data.results ?? [];
+        const data  = await res.json();
+        // listRecentByType returns { results: { "een.xxx.v1": { event }, ... } }
+        const byType: Record<string, any> = data.results ?? {};
 
-        for (const event of events) {
+        for (const [, event] of Object.entries(byType)) {
+          if (!event?.id || !event?.startTimestamp) continue;
+
+          // Only create alarm if event happened within our lookback window
+          const eventAge = now - new Date(event.startTimestamp).getTime();
+          if (eventAge > LOOKBACK_MS || eventAge < 0) continue;
+
           const priority = PRIORITY_MAP[event.type] ?? 'P3';
           const label    = LABEL_MAP[event.type]    ?? event.type;
 
-          // Upsert on een_event_id — idempotent across overlapping poll windows
           const { error } = await supabase
             .from('alarms')
             .upsert({
-              een_event_id: event.id,        // unique EEN event ID — prevents duplicates
+              een_event_id: event.id,
               priority,
               event_type:   event.type,
               event_label:  label,
@@ -197,9 +195,16 @@ async function pollAccount(supabase: any, accountId: string): Promise<number> {
               created_at:   event.startTimestamp,
             }, { onConflict: 'een_event_id', ignoreDuplicates: true });
 
-          if (!error) alarmsCreated++;
+          if (!error) {
+            alarmsCreated++;
+            console.log(`[poll-een-events] Alarm: ${priority} ${label} @ camera ${cam.een_camera_id}`);
+          } else {
+            console.error(`[poll-een-events] Insert error:`, error.message);
+          }
         }
-      } catch {}
+      } catch (err: any) {
+        console.error(`[poll-een-events] Camera ${cam.een_camera_id} exception:`, err.message);
+      }
     })
   );
 
