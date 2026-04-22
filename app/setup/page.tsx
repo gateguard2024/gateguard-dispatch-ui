@@ -331,6 +331,106 @@ function SaveBar({
   );
 }
 
+// ─── Delete Confirmation Modal ────────────────────────────────────────────────
+// Requires the user to type "DELETE" before the destructive action fires.
+// Used for both zone deletion and full account removal.
+interface DeleteTarget {
+  type: "zone" | "account";
+  id: string;
+  name: string;
+  /** Extra detail shown under the name (e.g., camera count) */
+  detail?: string;
+}
+
+function DeleteConfirmModal({
+  target,
+  onConfirm,
+  onCancel,
+}: {
+  target: DeleteTarget;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const [input, setInput] = useState("");
+  const confirmed = input === "DELETE";
+
+  const consequences =
+    target.type === "zone"
+      ? "All cameras and contacts linked to this zone will be permanently removed."
+      : "All zones, cameras, and contacts for this account will be permanently removed. The account itself (credentials) will also be deleted.";
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 px-4"
+      onClick={(e) => e.target === e.currentTarget && onCancel()}
+    >
+      <div className="bg-[#0d0f14] border border-red-500/25 rounded-lg p-6 w-full max-w-md shadow-2xl">
+        {/* Header */}
+        <div className="flex items-start gap-3 mb-5">
+          <div className="w-8 h-8 bg-red-500/10 border border-red-500/20 rounded flex items-center justify-center shrink-0 mt-0.5">
+            <Ic d={I.excl} className="w-4 h-4 text-red-400" />
+          </div>
+          <div>
+            <p className="text-[10px] text-red-400 uppercase tracking-widest font-bold">
+              Permanent Deletion
+            </p>
+            <h3 className="text-sm font-semibold text-white mt-0.5">
+              Delete {target.type === "zone" ? "Zone" : "Account"}
+            </h3>
+          </div>
+        </div>
+
+        {/* What's being deleted */}
+        <div className="bg-white/[0.02] border border-white/[0.06] rounded px-4 py-3 mb-4">
+          <p className="text-sm font-medium text-white">{target.name}</p>
+          {target.detail && (
+            <p className="text-[11px] text-slate-500 mt-0.5">{target.detail}</p>
+          )}
+        </div>
+
+        <p className="text-xs text-slate-400 mb-4 leading-relaxed">{consequences}</p>
+
+        {/* Confirmation input */}
+        <div className="mb-4">
+          <label className="text-[10px] text-slate-500 uppercase tracking-widest font-bold block mb-1.5">
+            Type DELETE to confirm
+          </label>
+          <input
+            className={
+              "w-full bg-black/30 border rounded px-3 py-2 text-sm font-mono outline-none transition-all " +
+              (confirmed
+                ? "border-red-500/50 text-red-300"
+                : "border-white/[0.08] text-white focus:border-white/20")
+            }
+            placeholder="DELETE"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            autoFocus
+          />
+        </div>
+
+        {/* Actions */}
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 transition-all"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={!confirmed}
+            className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-30 disabled:cursor-not-allowed text-white text-xs font-bold rounded uppercase tracking-wide transition-all"
+          >
+            <Ic d={I.trash} className="w-3.5 h-3.5" />
+            Delete {target.type === "zone" ? "Zone" : "Account"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function SetupPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -364,6 +464,9 @@ export default function SetupPage() {
 
   // Contact editing
   const [editContact, setEditContact] = useState<Contact | null>(null);
+
+  // Deletion modal
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
 
   // ── Data loading ─────────────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
@@ -496,6 +599,69 @@ export default function SetupPage() {
     }
   };
 
+  // ── Delete camera (individual — re-syncable from EEN) ────────────────────
+  const deleteCamera = async (camId: string, zoneId: string) => {
+    await supabase.from("cameras").delete().eq("id", camId);
+    setZoneCameras((p) => ({
+      ...p,
+      [zoneId]: (p[zoneId] ?? []).filter((c) => c.id !== camId),
+    }));
+  };
+
+  // ── Delete zone (requires modal confirmation) ─────────────────────────────
+  const confirmDeleteZone = (zone: Zone, camCount: number) => {
+    setDeleteTarget({
+      type:   "zone",
+      id:     zone.id,
+      name:   zone.name,
+      detail: `${camCount} camera${camCount !== 1 ? "s" : ""} · EEN tag: ${zone.een_tag || "single site"}`,
+    });
+  };
+
+  const executeDeleteZone = async () => {
+    if (!deleteTarget || deleteTarget.type !== "zone") return;
+    const zoneId = deleteTarget.id;
+    // Delete child records first (cameras have ON DELETE SET NULL, not CASCADE)
+    await supabase.from("cameras").delete().eq("zone_id", zoneId);
+    await supabase.from("contacts").delete().eq("zone_id", zoneId);
+    await supabase.from("zones").delete().eq("id", zoneId);
+    setDeleteTarget(null);
+    setSelectedZoneId(null);
+    setRightView("empty");
+    fetchData();
+  };
+
+  // ── Delete account + all children ────────────────────────────────────────
+  const confirmDeleteAccount = (account: Account, zoneCount: number) => {
+    setDeleteTarget({
+      type:   "account",
+      id:     account.id,
+      name:   account.name,
+      detail: `${zoneCount} zone${zoneCount !== 1 ? "s" : ""} and all associated cameras and contacts`,
+    });
+  };
+
+  const executeDeleteAccount = async () => {
+    if (!deleteTarget || deleteTarget.type !== "account") return;
+    const accountId = deleteTarget.id;
+    const { data: accountZones } = await supabase
+      .from("zones")
+      .select("id")
+      .eq("account_id", accountId);
+    const zoneIds = (accountZones ?? []).map((z: any) => z.id);
+    if (zoneIds.length > 0) {
+      await supabase.from("cameras").delete().in("zone_id", zoneIds);
+      await supabase.from("contacts").delete().in("zone_id", zoneIds);
+      await supabase.from("zones").delete().in("id", zoneIds);
+    }
+    await supabase.from("accounts").delete().eq("id", accountId);
+    setDeleteTarget(null);
+    if (expandedAccountId === accountId) setExpandedAccountId(null);
+    setSelectedZoneId(null);
+    setRightView("empty");
+    fetchData();
+  };
+
   // ══════════════════════════════════════════════════════════════════════════
   // WIZARD ACTIONS
   // ══════════════════════════════════════════════════════════════════════════
@@ -624,6 +790,19 @@ export default function SetupPage() {
     await supabase.from("cameras").update({ is_monitored: next }).eq("id", cam.id);
   };
 
+  // ── Add zone to an existing account (skips credentials + OAuth) ──────────
+  const startAddZoneForAccount = (account: Account) => {
+    setWiz({
+      ...defaultWizard,
+      accountId:   account.id,
+      accountName: account.name,
+      step:        3,   // jump straight to tag discovery
+    });
+    setSelectedZoneId(null);
+    setRightView("wizard");
+    setExpandedAccountId(account.id);
+  };
+
   const wizFinish = () => {
     // Navigate to the newly created zone's detail view
     const harvestedId = wiz.harvestedZoneId;
@@ -647,13 +826,15 @@ export default function SetupPage() {
       {/* Wizard header */}
       <div className="mb-6">
         <p className="text-[9px] text-slate-600 uppercase tracking-widest font-bold mb-1">
-          New Account
+          {wiz.step >= 3 && wiz.accountName ? wiz.accountName : "New Account"}
         </p>
         <h2 className="text-base font-semibold text-white tracking-tight">
-          EEN Account Setup Wizard
+          {wiz.step >= 3 && wiz.accountName ? "Add Property Zone" : "EEN Account Setup Wizard"}
         </h2>
         <p className="text-xs text-slate-500 mt-0.5">
-          Connect an Eagle Eye Networks account and provision its property zones.
+          {wiz.step >= 3 && wiz.accountName
+            ? "Select a tag to provision as a monitored zone under this account."
+            : "Connect an Eagle Eye Networks account and provision its property zones."}
         </p>
       </div>
 
@@ -1042,19 +1223,29 @@ export default function SetupPage() {
               <p className="text-[11px] text-slate-700 mt-0.5">Single Site — All Cameras</p>
             )}
           </div>
-          <div
-            className={`flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest border ${
-              zone.is_monitored
-                ? "bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400"
-                : "bg-white/[0.02] border-white/[0.06] text-slate-600"
-            }`}
-          >
+          <div className="flex items-center gap-2">
             <div
-              className={`w-1.5 h-1.5 rounded-full ${
-                zone.is_monitored ? "bg-emerald-400" : "bg-slate-700"
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest border ${
+                zone.is_monitored
+                  ? "bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400"
+                  : "bg-white/[0.02] border-white/[0.06] text-slate-600"
               }`}
-            />
-            {zone.is_monitored ? "SOC Armed" : "Unmonitored"}
+            >
+              <div
+                className={`w-1.5 h-1.5 rounded-full ${
+                  zone.is_monitored ? "bg-emerald-400" : "bg-slate-700"
+                }`}
+              />
+              {zone.is_monitored ? "SOC Armed" : "Unmonitored"}
+            </div>
+            {/* Delete zone */}
+            <button
+              onClick={() => confirmDeleteZone(zone, cams.length)}
+              title="Delete this zone"
+              className="p-1.5 text-slate-700 hover:text-red-400 hover:bg-red-500/10 rounded transition-all"
+            >
+              <Ic d={I.trash} className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
@@ -1161,22 +1352,29 @@ export default function SetupPage() {
                     {cams.map((cam, idx) => (
                       <div
                         key={cam.id}
-                        className={`flex items-center justify-between px-3 py-2.5 hover:bg-white/[0.03] transition-all ${
+                        className={`flex items-center gap-2 px-3 py-2.5 hover:bg-white/[0.03] transition-all group ${
                           idx < cams.length - 1 ? "border-b border-white/[0.04]" : ""
                         }`}
                       >
-                        <div className="flex items-center gap-2.5">
+                        <div className="flex items-center gap-2.5 flex-1 min-w-0">
                           <div
                             className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                               cam.is_monitored ? "bg-emerald-400" : "bg-slate-700"
                             }`}
                           />
-                          <span className="text-sm text-slate-300">{cam.name}</span>
+                          <span className="text-sm text-slate-300 truncate">{cam.name}</span>
                         </div>
                         <Toggle
                           checked={cam.is_monitored}
                           onChange={() => toggleCamera(cam)}
                         />
+                        <button
+                          onClick={() => deleteCamera(cam.id, cam.zone_id)}
+                          title="Remove camera (re-syncable from EEN)"
+                          className="opacity-0 group-hover:opacity-100 p-1 text-slate-700 hover:text-red-400 transition-all shrink-0"
+                        >
+                          <Ic d={I.trash} className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -1802,30 +2000,38 @@ export default function SetupPage() {
               return (
                 <div key={account.id}>
                   {/* Account row */}
-                  <button
-                    onClick={() =>
-                      setExpandedAccountId(isExpanded ? null : account.id)
-                    }
-                    className={`w-full flex items-center gap-2 px-3 py-2.5 text-left transition-all hover:bg-white/[0.04] ${
-                      isExpanded ? "bg-white/[0.02]" : ""
-                    }`}
-                  >
-                    <Ic
-                      d={isExpanded ? I.chevD : I.chevR}
-                      className="w-3 h-3 text-slate-600 shrink-0"
-                    />
-                    <div
-                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                        isConnected ? "bg-emerald-400" : "bg-amber-400"
-                      }`}
-                    />
-                    <span className="text-xs text-slate-300 truncate flex-1">
-                      {account.name}
-                    </span>
-                    <span className="text-[10px] text-slate-700 shrink-0 font-mono">
-                      {accountZones.length}
-                    </span>
-                  </button>
+                  <div className={`flex items-center group transition-all hover:bg-white/[0.04] ${isExpanded ? "bg-white/[0.02]" : ""}`}>
+                    <button
+                      onClick={() =>
+                        setExpandedAccountId(isExpanded ? null : account.id)
+                      }
+                      className="flex-1 flex items-center gap-2 px-3 py-2.5 text-left min-w-0"
+                    >
+                      <Ic
+                        d={isExpanded ? I.chevD : I.chevR}
+                        className="w-3 h-3 text-slate-600 shrink-0"
+                      />
+                      <div
+                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                          isConnected ? "bg-emerald-400" : "bg-amber-400"
+                        }`}
+                      />
+                      <span className="text-xs text-slate-300 truncate flex-1">
+                        {account.name}
+                      </span>
+                      <span className="text-[10px] text-slate-700 shrink-0 font-mono">
+                        {accountZones.length}
+                      </span>
+                    </button>
+                    {/* Add Zone button — visible on hover */}
+                    <button
+                      onClick={() => startAddZoneForAccount(account)}
+                      title="Add zone to this account"
+                      className="opacity-0 group-hover:opacity-100 transition-all px-2 py-2.5 text-slate-600 hover:text-indigo-400"
+                    >
+                      <Ic d={I.plus} className="w-3 h-3" />
+                    </button>
+                  </div>
 
                   {/* Zone sub-rows */}
                   {isExpanded && (
@@ -1861,6 +2067,14 @@ export default function SetupPage() {
                           </span>
                         </button>
                       ))}
+                      {/* Delete account — shown at bottom of expanded list */}
+                      <button
+                        onClick={() => confirmDeleteAccount(account, accountZones.length)}
+                        className="w-full flex items-center gap-1.5 px-4 py-2 text-left text-[10px] text-slate-700 hover:text-red-400 hover:bg-red-500/[0.06] transition-all border-t border-white/[0.03] mt-1"
+                      >
+                        <Ic d={I.trash} className="w-3 h-3" />
+                        Delete Account
+                      </button>
                     </div>
                   )}
                 </div>
@@ -1897,6 +2111,17 @@ export default function SetupPage() {
           {rightView === "zone-detail" && renderZoneDetail()}
         </div>
       </div>
+
+      {/* ── Delete confirmation modal ──────────────────────────────────────── */}
+      {deleteTarget && (
+        <DeleteConfirmModal
+          target={deleteTarget}
+          onConfirm={
+            deleteTarget.type === "zone" ? executeDeleteZone : executeDeleteAccount
+          }
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
     </div>
   );
 }
