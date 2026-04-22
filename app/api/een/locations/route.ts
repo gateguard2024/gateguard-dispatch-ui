@@ -24,13 +24,15 @@ export async function POST(request: Request) {
 
     console.log(`[een/locations] Fetching from cluster: ${cluster}`);
 
+    const headers: Record<string, string> = {
+      Authorization:  `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    };
+    if (apiKey) headers['x-api-key'] = apiKey;
+
     const response = await fetch(`https://${cluster}/api/v3.0/locations`, {
       method: 'GET',
-      headers: {
-        Authorization:  `Bearer ${token}`,
-        'x-api-key':    apiKey ?? undefined,   // null → undefined (TypeScript requirement)
-        'Content-Type': 'application/json',
-      },
+      headers,
     });
 
     if (!response.ok) {
