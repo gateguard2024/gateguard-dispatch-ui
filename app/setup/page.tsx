@@ -705,7 +705,7 @@ export default function SetupPage() {
       const res = await fetch("/api/een/tags", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: wiz.accountId }),
+        body: JSON.stringify({ siteId: wiz.accountId }),
       });
       const data = await res.json();
       if (!data.success) throw new Error(data.error);
