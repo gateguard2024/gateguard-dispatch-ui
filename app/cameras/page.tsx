@@ -495,7 +495,7 @@ export default function CamerasPage() {
                     type="datetime-local"
                     value={startTime}
                     onChange={e => setStartTime(e.target.value)}
-                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2.5 py-1.5 text-[11px] text-slate-300 focus:outline-none focus:border-indigo-500/50"
+                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2.5 py-1.5 text-[11px] text-slate-300 focus:outline-none focus:border-indigo-500/50 [color-scheme:dark]"
                   />
                 </div>
                 <div>
@@ -504,7 +504,7 @@ export default function CamerasPage() {
                     type="datetime-local"
                     value={endTime}
                     onChange={e => setEndTime(e.target.value)}
-                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2.5 py-1.5 text-[11px] text-slate-300 focus:outline-none focus:border-indigo-500/50"
+                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2.5 py-1.5 text-[11px] text-slate-300 focus:outline-none focus:border-indigo-500/50 [color-scheme:dark]"
                   />
                 </div>
               </div>
