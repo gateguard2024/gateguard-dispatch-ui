@@ -238,6 +238,15 @@ export default function AlarmsPage() {
   const [notes, setNotes]             = useState('');
   const [activeCameraId, setActiveCameraId] = useState<string | null>(null);
 
+  // Video panel state
+  // preAlarmUrl: undefined = fetching, null = no clip found, string = URL ready
+  const [preAlarmUrl, setPreAlarmUrl]     = useState<string | null | undefined>(undefined);
+  const [liveOffset, setLiveOffset]       = useState<number>(0);   // 0 = live, negative = minutes ago
+  const [liveOffsetUrl, setLiveOffsetUrl] = useState<string | null>(null);
+  const [fetchingClip, setFetchingClip]   = useState(false);
+  const preAlarmRef                       = useRef<HTMLDivElement>(null);
+  const liveRef                           = useRef<HTMLDivElement>(null);
+
   // Resolve state
   const [actionTaken, setActionTaken]   = useState<ActionTaken>('');
   const [resolving, setResolving]       = useState(false);
@@ -293,6 +302,9 @@ export default function AlarmsPage() {
     setResolveError(null);
     setProcedureChecked([]);
     setClearanceChecked([false, false, false]);
+    setPreAlarmUrl(undefined);   // undefined = currently fetching
+    setLiveOffset(0);
+    setLiveOffsetUrl(null);
 
     const accountId = alarm.account_id ?? alarm.zones?.account_id;
     const zoneId    = alarm.zone_id;
@@ -376,12 +388,96 @@ export default function AlarmsPage() {
       setHistory(hist ?? []);
     }
 
+    // Fetch pre-alarm recorded clip (60s before → 30s after event)
+    const eenCamId = alarm.cameras?.een_camera_id;
+    if (eenCamId && alarm.account_id) {
+      try {
+        const alarmMs   = new Date(alarm.created_at).getTime();
+        const startTime = new Date(alarmMs - 60_000).toISOString();
+        const endTime   = new Date(alarmMs + 30_000).toISOString();
+        const clipRes   = await fetch('/api/een/recorded', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            accountId: alarm.account_id,
+            cameraId:  eenCamId,
+            startTime,
+            endTime,
+          }),
+        });
+        if (clipRes.ok) {
+          const clipData = await clipRes.json();
+          setPreAlarmUrl(clipData.url ?? null);  // null = no clip in that window
+        } else {
+          setPreAlarmUrl(null);  // null = no clip
+        }
+      } catch {
+        setPreAlarmUrl(null);  // null = no clip (error)
+      }
+    }
+
     // Mark alarm as processing
     await supabase
       .from('alarms')
       .update({ status: 'processing' })
       .eq('id', alarm.id);
   }, []);
+
+  // ── Quick dismiss (Nothing Seen / False Alarm) ────────────────────────────
+  const dismissAlarm = useCallback(async (reason: 'nothing_seen' | 'false_alarm') => {
+    if (!activeAlarm) return;
+    const accountId = activeAlarm.account_id ?? activeAlarm.zones?.account_id;
+    await supabase.from('alarms').update({ status: 'resolved' }).eq('id', activeAlarm.id);
+    await supabase.from('audit_logs').insert({
+      account_id:  accountId,
+      alarm_id:    activeAlarm.id,
+      zone_id:     activeAlarm.zone_id,
+      operator_id: 'operator-1',
+      action:      'alarm_dismissed',
+      details:     JSON.stringify({ reason }),
+      created_at:  new Date().toISOString(),
+    });
+    setActiveAlarm(null);
+    setDoors([]);
+    setContacts([]);
+    setProcedure([]);
+    setSiteCameras([]);
+    setHistory([]);
+    setPreAlarmUrl(undefined);
+    setLiveOffset(0);
+    setLiveOffsetUrl(null);
+  }, [activeAlarm]);
+
+  // ── Fetch offset clip for live panel time nav ──────────────────────────────
+  const fetchOffsetClip = useCallback(async (offsetMinutes: number) => {
+    if (!activeAlarm) return;
+    if (offsetMinutes === 0) {
+      setLiveOffset(0);
+      setLiveOffsetUrl(null);
+      return;
+    }
+    setFetchingClip(true);
+    const eenCamId  = activeAlarm.cameras?.een_camera_id;
+    const accountId = activeAlarm.account_id;
+    if (!eenCamId || !accountId) { setFetchingClip(false); return; }
+
+    const now       = Date.now();
+    const startTime = new Date(now + offsetMinutes * 60_000).toISOString();
+    const endTime   = new Date(now + offsetMinutes * 60_000 + 120_000).toISOString();
+    try {
+      const res = await fetch('/api/een/recorded', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ accountId, cameraId: eenCamId, startTime, endTime }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setLiveOffsetUrl(data.url ?? null);
+        setLiveOffset(offsetMinutes);
+      }
+    } catch {}
+    finally { setFetchingClip(false); }
+  }, [activeAlarm]);
 
   // ── Open door ──────────────────────────────────────────────────────────────
   const openDoor = useCallback(async (door: Door) => {
@@ -453,6 +549,9 @@ export default function AlarmsPage() {
       setProcedure([]);
       setSiteCameras([]);
       setHistory([]);
+      setPreAlarmUrl(undefined);
+      setLiveOffset(0);
+      setLiveOffsetUrl(null);
 
     } catch (err: any) {
       setResolveError(err.message || 'Failed to resolve alarm');
@@ -597,47 +696,136 @@ export default function AlarmsPage() {
               <PriorityBadge p={activeAlarm.priority} />
               <span className="text-[12px] font-semibold text-white">{activeAlarm.site_name}</span>
               <span className="text-[11px] text-slate-500">{activeAlarm.event_label}</span>
-              <span className="ml-auto text-[10px] text-slate-600 font-mono">
-                {fmtTime(activeAlarm.created_at)}
-              </span>
+              <span className="text-[10px] text-slate-600 font-mono">{fmtTime(activeAlarm.created_at)}</span>
+              {/* Quick dismiss actions */}
+              <div className="ml-auto flex items-center gap-1.5">
+                <button
+                  onClick={() => dismissAlarm('nothing_seen')}
+                  className="px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider bg-slate-700/60 hover:bg-slate-600/60 border border-white/[0.08] text-slate-400 hover:text-slate-200 transition-all"
+                  title="Mark as nothing seen and clear from queue"
+                >
+                  Nothing Seen
+                </button>
+                <button
+                  onClick={() => dismissAlarm('false_alarm')}
+                  className="px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-700/30 hover:bg-amber-600/40 border border-amber-500/20 text-amber-400 hover:text-amber-300 transition-all"
+                  title="Mark as false alarm and clear from queue"
+                >
+                  False Alarm
+                </button>
+              </div>
             </div>
 
             {/* TOP 55%: Dual Video */}
             <div className="flex gap-px bg-black" style={{ height: '55%' }}>
               {/* Pre-alarm / Recorded */}
-              <div className="flex-1 relative">
+              <div
+                ref={preAlarmRef}
+                className="flex-1 relative cursor-pointer"
+                onDoubleClick={() => preAlarmRef.current?.requestFullscreen?.()}
+                title="Double-click for fullscreen"
+              >
                 <div className="absolute top-2 left-2 z-10 bg-amber-600/80 border border-amber-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-white uppercase tracking-wider pointer-events-none">
                   Pre-Alarm Clip
                 </div>
-                {activeCameraId ? (
+                <div className="absolute bottom-2 right-2 z-10 text-[8px] text-white/30 pointer-events-none">
+                  ⤡ dbl-click fullscreen
+                </div>
+                {activeCameraId && typeof preAlarmUrl === 'string' ? (
+                  /* Has a recorded URL — play it */
                   <SmartVideoPlayer
                     accountId={activeAccountId}
                     cameraId={activeCameraId}
                     source={activeCameraSource as 'brivo' | 'een'}
                     streamType="preview"
+                    recordedUrl={preAlarmUrl}
                     label=""
                   />
+                ) : activeCameraId && preAlarmUrl === undefined ? (
+                  /* Still fetching */
+                  <div className="w-full h-full flex flex-col items-center justify-center bg-black gap-2">
+                    <div className="w-4 h-4 border-2 border-amber-600 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-[9px] text-amber-700">Fetching clip...</p>
+                  </div>
+                ) : activeCameraId ? (
+                  /* null = no recording in that window */
+                  <div className="w-full h-full flex items-center justify-center bg-black">
+                    <p className="text-[10px] text-slate-600">No pre-alarm clip available</p>
+                  </div>
                 ) : (
                   <div className="w-full h-full flex items-center justify-center bg-black">
-                    <p className="text-[10px] text-slate-600">No pre-alarm clip</p>
+                    <p className="text-[10px] text-slate-600">No camera assigned</p>
                   </div>
                 )}
               </div>
 
               {/* Live feed */}
-              <div className="flex-1 relative">
-                <div className="absolute top-2 left-2 z-10 flex items-center gap-1 bg-red-600/80 border border-red-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-white uppercase tracking-wider pointer-events-none">
-                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-                  Live
+              <div
+                ref={liveRef}
+                className="flex-1 relative cursor-pointer"
+                onDoubleClick={(e) => {
+                  // Only fullscreen if clicking the container, not child buttons
+                  if (e.target === liveRef.current || (e.target as HTMLElement).tagName !== 'BUTTON') {
+                    liveRef.current?.requestFullscreen?.();
+                  }
+                }}
+                title="Double-click for fullscreen"
+              >
+                {/* Live / offset label */}
+                <div className="absolute top-2 left-2 z-10 flex items-center gap-1 pointer-events-none">
+                  {liveOffset === 0 ? (
+                    <span className="flex items-center gap-1 bg-red-600/80 border border-red-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-white uppercase tracking-wider">
+                      <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                      Live
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 bg-slate-700/80 border border-slate-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-slate-200 uppercase tracking-wider">
+                      -{Math.abs(liveOffset)}m ago
+                    </span>
+                  )}
                 </div>
+
+                {/* Time navigation buttons */}
+                <div className="absolute top-2 right-2 z-10 flex gap-1" onDoubleClick={e => e.stopPropagation()}>
+                  {([0, -5, -15, -30] as const).map((offset) => (
+                    <button
+                      key={offset}
+                      onClick={(e) => { e.stopPropagation(); fetchOffsetClip(offset); }}
+                      disabled={fetchingClip}
+                      className={`px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider border transition-all
+                        ${liveOffset === offset
+                          ? 'bg-indigo-600/80 border-indigo-500/60 text-white'
+                          : 'bg-black/50 border-white/[0.12] text-slate-400 hover:text-white hover:border-white/30'
+                        } ${fetchingClip ? 'opacity-40 cursor-wait' : ''}`}
+                    >
+                      {offset === 0 ? 'Live' : `${Math.abs(offset)}m`}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="absolute bottom-2 right-2 z-10 text-[8px] text-white/30 pointer-events-none">
+                  ⤡ dbl-click fullscreen
+                </div>
+
                 {activeCameraId ? (
-                  <SmartVideoPlayer
-                    accountId={activeAccountId}
-                    cameraId={activeCameraId}
-                    source={activeCameraSource as 'brivo' | 'een'}
-                    streamType="main"
-                    label=""
-                  />
+                  liveOffset !== 0 && liveOffsetUrl ? (
+                    <SmartVideoPlayer
+                      accountId={activeAccountId}
+                      cameraId={activeCameraId}
+                      source={activeCameraSource as 'brivo' | 'een'}
+                      streamType="main"
+                      recordedUrl={liveOffsetUrl}
+                      label=""
+                    />
+                  ) : (
+                    <SmartVideoPlayer
+                      accountId={activeAccountId}
+                      cameraId={activeCameraId}
+                      source={activeCameraSource as 'brivo' | 'een'}
+                      streamType="main"
+                      label=""
+                    />
+                  )
                 ) : (
                   <div className="w-full h-full flex items-center justify-center bg-black">
                     <p className="text-[10px] text-slate-600">No live feed available</p>
