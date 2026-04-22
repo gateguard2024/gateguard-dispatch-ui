@@ -132,7 +132,7 @@ async function processEvents(bodyText: string) {
   }
 }
 
-async function processEvent(supabase: ReturnType<typeof createClient>, event: EENEvent) {
+async function processEvent(supabase: any, event: EENEvent) {
   const esn = esnFromActor(event.actor);
 
   if (!esn) {
