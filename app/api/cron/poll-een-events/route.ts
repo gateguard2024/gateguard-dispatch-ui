@@ -122,10 +122,11 @@ async function pollAccount(supabase: any, accountId: string): Promise<number> {
   if (!token || !cluster) return 0;
 
   // Look back 90 seconds (60s interval + 30s buffer to avoid gaps)
-  const now    = new Date();
+  // Keep full ISO with milliseconds — EEN requires this format e.g. 2026-04-22T14:30:00.000Z
+  const now      = new Date();
   const lookback = new Date(now.getTime() - 90 * 1000);
-  const startIso = lookback.toISOString().replace(/\.\d{3}Z$/, 'Z'); // strip ms — EEN prefers no ms
-  const endIso   = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const startIso = lookback.toISOString();
+  const endIso   = now.toISOString();
 
   // Fetch cameras for this account so we can map ESN → camera record
   const { data: cameras } = await supabase
@@ -158,13 +159,17 @@ async function pollAccount(supabase: any, accountId: string): Promise<number> {
           `?actor=${encodeURIComponent(actor)}`,
           `&type__in=${SUBSCRIBED_TYPES.map(encodeURIComponent).join('&type__in=')}`,
           `&startTimestamp__gte=${startIso}`,
-          `&endTimestamp__lte=${endIso}`,
+          `&startTimestamp__lte=${endIso}`,
           `&pageSize=20`,
           `&sort=-startTimestamp`,
         ].join('');
 
         const res = await fetch(eventUrl, { method: 'GET', headers });
-        if (!res.ok) return;
+        if (!res.ok) {
+          const errText = await res.text();
+          console.error(`[poll-een-events] EEN error ${res.status} for camera ${cam.een_camera_id}: ${errText.slice(0, 300)}`);
+          return;
+        }
 
         const data = await res.json();
         const events: any[] = data.results ?? [];
