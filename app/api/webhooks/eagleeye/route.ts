@@ -40,46 +40,62 @@ interface EENEvent {
 // ─── Priority + label map ─────────────────────────────────────────────────────
 // Keys are EEN event type strings. Add new types here as confirmed via /eventTypes.
 const PRIORITY_MAP: Record<string, Priority> = {
-  // P1 — Active security threats
-  'een.intrusionDetection.v1':      'P1',
-  'een.tamperDetection.v1':         'P1',
-  'een.loiteringDetection.v1':      'P1',
-  'een.trespassDetection.v1':       'P1',
-  'een.sabotagDetection.v1':        'P1',
-  'een.accessDenied.v1':            'P1',
+  // P1 — Active threats
+  'een.gunDetectionEvent.v1':             'P1',
+  'een.gunShotAudioDetectionEvent.v1':    'P1',
+  'een.handsUpDetectionEvent.v1':         'P1',
+  'een.fightDetectionEvent.v1':           'P1',
+  'een.violenceDetectionEvent.v1':        'P1',
+  'een.panicButtonEvent.v1':              'P1',
+  'een.tamperDetectionEvent.v1':          'P1',
+  'een.objectIntrusionEvent.v1':          'P1',
+  'een.personTailgateEvent.v1':           'P1',
+  'een.fireDetectionEvent.v1':            'P1',
 
-  // P2 — Person / vehicle / object
-  'een.personDetection.v1':         'P2',
-  'een.vehicleDetection.v1':        'P2',
-  'een.objectDetection.v1':         'P2',
-  'een.crowdDetection.v1':          'P2',
-  'een.crossLineDetection.v1':      'P2',
+  // P2 — Persons / vehicles / security
+  'een.personDetectionEvent.v1':          'P2',
+  'een.vehicleDetectionEvent.v1':         'P2',
+  'een.loiterDetectionEvent.v1':          'P2',
+  'een.objectLineCrossEvent.v1':          'P2',
+  'een.faceDetectionEvent.v1':            'P2',
+  'een.animalDetectionEvent.v1':          'P2',
+  'een.fallDetectionEvent.v1':            'P2',
+  'een.lprPlateReadEvent.v1':             'P2',
+  'een.objectRemovalEvent.v1':            'P2',
+  'een.crowdFormationDetectionEvent.v1':  'P2',
 
   // P3 — General motion
-  'een.motionDetection.v1':         'P3',
+  'een.motionDetectionEvent.v1':          'P3',
+  'een.motionInRegionDetectionEvent.v1':  'P3',
 
-  // P4 — Device / system health
-  'een.deviceCloudStatusUpdate.v1': 'P4',
-  'een.deviceOnline.v1':            'P4',
-  'een.deviceOffline.v1':           'P4',
+  // P4 — Device / system (skipped in alarm creation)
+  'een.deviceCloudStatusUpdateEvent.v1':  'P4',
 };
 
 const LABEL_MAP: Record<string, string> = {
-  'een.intrusionDetection.v1':      'Intrusion Detected',
-  'een.tamperDetection.v1':         'Camera Tampered',
-  'een.loiteringDetection.v1':      'Loitering Detected',
-  'een.trespassDetection.v1':       'Trespass Detected',
-  'een.sabotagDetection.v1':        'Sabotage Detected',
-  'een.accessDenied.v1':            'Access Denied',
-  'een.personDetection.v1':         'Person Detected',
-  'een.vehicleDetection.v1':        'Vehicle Detected',
-  'een.objectDetection.v1':         'Object Detected',
-  'een.crowdDetection.v1':          'Crowd Detected',
-  'een.crossLineDetection.v1':      'Line Crossing Detected',
-  'een.motionDetection.v1':         'Motion Detected',
-  'een.deviceCloudStatusUpdate.v1': 'Device Status Change',
-  'een.deviceOnline.v1':            'Device Online',
-  'een.deviceOffline.v1':           'Device Offline',
+  'een.gunDetectionEvent.v1':             'Gun Detected',
+  'een.gunShotAudioDetectionEvent.v1':    'Gunshot Audio Detected',
+  'een.handsUpDetectionEvent.v1':         'Hands Up Detected',
+  'een.fightDetectionEvent.v1':           'Fight Detected',
+  'een.violenceDetectionEvent.v1':        'Violence Detected',
+  'een.panicButtonEvent.v1':              'Panic Button Triggered',
+  'een.tamperDetectionEvent.v1':          'Camera Tampered',
+  'een.objectIntrusionEvent.v1':          'Intrusion Detected',
+  'een.personTailgateEvent.v1':           'Tailgate Detected',
+  'een.fireDetectionEvent.v1':            'Fire Detected',
+  'een.personDetectionEvent.v1':          'Person Detected',
+  'een.vehicleDetectionEvent.v1':         'Vehicle Detected',
+  'een.loiterDetectionEvent.v1':          'Loitering Detected',
+  'een.objectLineCrossEvent.v1':          'Line Crossing Detected',
+  'een.faceDetectionEvent.v1':            'Face Detected',
+  'een.animalDetectionEvent.v1':          'Animal Detected',
+  'een.fallDetectionEvent.v1':            'Fall Detected',
+  'een.lprPlateReadEvent.v1':             'License Plate Read',
+  'een.objectRemovalEvent.v1':            'Object Removed',
+  'een.crowdFormationDetectionEvent.v1':  'Crowd Formation Detected',
+  'een.motionDetectionEvent.v1':          'Motion Detected',
+  'een.motionInRegionDetectionEvent.v1':  'Motion in Region Detected',
+  'een.deviceCloudStatusUpdateEvent.v1':  'Device Status Change',
 };
 
 function priorityFor(type: string): Priority {
