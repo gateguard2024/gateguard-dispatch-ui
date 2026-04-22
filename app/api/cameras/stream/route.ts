@@ -1,33 +1,84 @@
 // app/api/cameras/stream/route.ts
+//
+// Returns a live HLS stream URL + auth token for a given camera.
+// Called by SmartVideoPlayer to bootstrap the cookie-proxied HLS session.
+//
+// Old pattern: read credentials from NEXT_PUBLIC_SITE_CONFIG env var.
+// New pattern: use getValidEENToken(accountId) — Supabase-backed, auto-refreshes.
+//
+// Request body:
+//   { accountId: string, cameraId: string, source?: 'een' | 'brivo' }
+//   (accountId also accepted as siteId for backwards compatibility)
+//
+// Response:
+//   { token: string, hlsUrl: string }
+//
+// The client then:
+//   1. POSTs token to /api/cameras/set-cookie
+//   2. Proxies HLS requests through /api/cameras/proxy with withCredentials:true
+
 import { NextResponse } from 'next/server';
 import { getValidEENToken } from '@/lib/een';
 
 export async function POST(request: Request) {
   try {
-    const { siteId, cameraId } = await request.json();
-    if (!siteId || !cameraId) throw new Error("Missing siteId or cameraId");
+    const body = await request.json();
 
-    // 1. Get the active token and cluster for this site
-    const { token, cluster } = await getValidEENToken(siteId);
+    // Accept both field names for backwards compatibility
+    const accountId: string | undefined = body.accountId ?? body.siteId;
+    const cameraId:  string | undefined = body.cameraId;
 
-    // 2. Ask EEN V3 for the HLS live feed URL
-    const response = await fetch(`https://${cluster}/api/v3.0/feeds?deviceId=${cameraId}&include=hlsUrl`, {
-      method: 'GET',
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
+    if (!accountId || !cameraId) {
+      return NextResponse.json(
+        { error: 'Missing required fields: accountId (or siteId) and cameraId' },
+        { status: 400 }
+      );
+    }
 
-    if (!response.ok) throw new Error("Failed to get EEN stream");
+    const { token, cluster, apiKey } = await getValidEENToken(accountId);
 
-    const data = await response.json();
-    
-    // The API returns an array of results. We want the HLS URL.
-    const hlsUrl = data.results?.[0]?.hlsUrl;
-    if (!hlsUrl) throw new Error("No HLS stream available for this camera");
+    if (!cluster || !token) {
+      return NextResponse.json(
+        { error: 'EEN not authenticated for this account. Re-run OAuth in Setup.' },
+        { status: 400 }
+      );
+    }
 
-    // 3. Return BOTH the URL and the Token
-    return NextResponse.json({ hlsUrl, token });
+    // Fetch the live HLS feed URL from EEN
+    const url = `https://${cluster}/api/v3.0/feeds?deviceId=${cameraId}&include=hlsUrl`;
 
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      Accept:        'application/json',
+    };
+    if (apiKey) headers['x-api-key'] = apiKey;
+
+    const response = await fetch(url, { method: 'GET', headers });
+    const data     = await response.json();
+
+    if (!response.ok) {
+      return NextResponse.json(
+        { error: data.message ?? `EEN feeds error ${response.status}` },
+        { status: response.status }
+      );
+    }
+
+    const results: any[]  = data.results ?? [];
+    const streamData      = results.find((feed: any) => feed.hlsUrl);
+
+    if (!streamData?.hlsUrl) {
+      return NextResponse.json(
+        { error: 'No HLS stream URL found for this camera. Camera may be offline.' },
+        { status: 404 }
+      );
+    }
+
+    // Return token + hlsUrl — SmartVideoPlayer sets token as cookie,
+    // then proxies HLS segment requests through /api/cameras/proxy
+    return NextResponse.json({ token, hlsUrl: streamData.hlsUrl });
+
+  } catch (err: any) {
+    console.error('[cameras/stream] Error:', err.message);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
