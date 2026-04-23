@@ -1,364 +1,344 @@
 "use client";
 
 // app/dashboard/page.tsx
-// GateGuard Dispatch — Live Dashboard
-//
-// Data sources (all from Supabase):
-//   accounts       → connected site count
-//   zones          → SOC-armed zone count
-//   cameras        → monitored camera count
-//   alarms         → KPIs, charts, live feed
-//   incident_reports → recent operator activity
-//
-// Live updates via Supabase Realtime — new alarms flash into the feed
-// instantly. Falls back to polling every 30s if Realtime drops.
+// GateGuard — Dashboard
+// No external chart dependencies — all charts are inline SVG.
+// Design language matches alarms / cameras / setup pages throughout.
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
-import {
-  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
-} from 'recharts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface KpiData {
-  sitesArmed:       number;
-  camerasMonitored: number;
   openAlarms:       number;
+  criticalToday:    number;
   resolvedToday:    number;
-  alarmsToday:      number;
+  armedSites:       number;
+  camerasMonitored: number;
+  resolutionRate:   number | null;
 }
 
-interface DailyPoint  { date: string; total: number; p1: number; }
-interface SitePoint   { site: string; count: number; }
-interface TypePoint   { name: string; value: number; }
-interface PriorityPt  { name: string; value: number; color: string; }
-
-interface LiveAlarm {
-  id:          string;
-  priority:    string;
+interface SlaRow   { label: string; pct: number; color: string; }
+interface HourPt   { hour: string; current: number; previous: number; }
+interface OperatorRow { name: string; count: number; }
+interface RecentAlarm {
+  id: string;
+  priority: string;
   event_label: string;
-  site_name:   string;
-  status:      string;
-  created_at:  string;
-  isNew?:      boolean;
+  site_name: string;
+  status: string;
+  created_at: string;
 }
-
-interface RecentAction {
-  id:            string;
-  operator_name: string;
-  action_taken:  string;
-  notes:         string;
-  generated_at:  string;
-  zones?:        { name: string } | null;
-}
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-const PRIORITY_COLORS: Record<string, string> = {
-  P1: '#ef4444',
-  P2: '#f97316',
-  P3: '#6366f1',
-  P4: '#475569',
-};
-
-const CHART_COLORS = ['#6366f1', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#a855f7'];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  const now = new Date();
-  const diffMs = now.getTime() - d.getTime();
-  const diffMin = Math.floor(diffMs / 60_000);
-  if (diffMin < 1)   return 'just now';
-  if (diffMin < 60)  return `${diffMin}m ago`;
-  if (diffMin < 1440) return `${Math.floor(diffMin / 60)}h ago`;
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+function fmtAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60_000);
+  if (m < 1)    return 'just now';
+  if (m < 60)   return `${m}m ago`;
+  if (m < 1440) return `${Math.floor(m / 60)}h ago`;
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-function shortDate(dateStr: string): string {
-  return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-// ─── Sub-components ───────────────────────────────────────────────────────────
-function KpiCard({
-  label, value, sub, accent, pulse,
-}: {
-  label: string; value: string | number; sub?: string; accent?: string; pulse?: boolean;
+// ─── KPI Card — same style as setup/alarms meta cards ────────────────────────
+function KpiCard({ label, value, sub, accent, pulse }: {
+  label: string;
+  value: string | number;
+  sub?: string;
+  accent?: string;
+  pulse?: boolean;
 }) {
   return (
-    <div className="flex flex-col gap-1.5 px-4 py-3.5 rounded border border-white/[0.06] bg-white/[0.02]">
-      <span className="text-[9px] font-semibold text-slate-500 uppercase tracking-[0.12em]">{label}</span>
+    <div className="bg-white/[0.02] border border-white/[0.06] rounded px-4 py-3.5 flex flex-col gap-1.5">
+      <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">{label}</p>
       <div className="flex items-center gap-2">
-        <span className={`text-[22px] font-bold leading-none ${accent ?? 'text-white'}`}>{value}</span>
-        {pulse && <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />}
+        <span className={`text-2xl font-bold leading-none ${accent ?? 'text-white'}`}>{value}</span>
+        {pulse && <span className={`w-2 h-2 rounded-full animate-pulse shrink-0 ${accent ?? 'bg-white'}`}
+          style={{ background: 'currentColor' }} />}
       </div>
-      {sub && <span className="text-[10px] text-slate-600">{sub}</span>}
+      {sub && <p className="text-[10px] text-slate-600">{sub}</p>}
     </div>
   );
 }
 
-function PriorityBadge({ priority }: { priority: string }) {
-  const colors: Record<string, string> = {
+// ─── Section header — matches setup page SectionDivider ──────────────────────
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-3">{children}</p>
+  );
+}
+
+// ─── Inline sparkline (14 days) ───────────────────────────────────────────────
+function Sparkline({ data, color = '#6366f1' }: { data: number[]; color?: string }) {
+  if (data.every(v => v === 0)) return (
+    <div className="h-12 flex items-center justify-center text-[10px] text-slate-700 uppercase tracking-widest">
+      No data yet
+    </div>
+  );
+  const W = 400; const H = 52;
+  const max = Math.max(...data, 1);
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * W;
+    const y = H - 4 - ((v / max) * (H - 8));
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const areaPath = `M${pts[0]} L${pts.join(' L')} L${W},${H} L0,${H} Z`;
+  const linePath = `M${pts.join(' L')}`;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 52 }}>
+      <defs>
+        <linearGradient id="spk" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.18" />
+          <stop offset="100%" stopColor={color} stopOpacity="0.01" />
+        </linearGradient>
+      </defs>
+      <path d={areaPath} fill="url(#spk)" />
+      <path d={linePath} fill="none" stroke={color} strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+// ─── Alarms by Hour chart ──────────────────────────────────────────────────────
+function HourChart({ data, trendPct }: { data: HourPt[]; trendPct: number | null }) {
+  if (data.every(d => d.current === 0 && d.previous === 0)) return (
+    <div className="h-36 flex items-center justify-center text-[10px] text-slate-700 uppercase tracking-widest">
+      No data yet
+    </div>
+  );
+  const W = 720; const H = 120;
+  const PAD = { t: 8, r: 8, b: 24, l: 24 };
+  const cW = W - PAD.l - PAD.r;
+  const cH = H - PAD.t - PAD.b;
+  const max = Math.max(...data.flatMap(d => [d.current, d.previous]), 1);
+  const x = (i: number) => PAD.l + (i / (data.length - 1)) * cW;
+  const y = (v: number) => PAD.t + cH - (v / max) * cH;
+  const line = (k: 'current' | 'previous') =>
+    data.map((d, i) => `${i === 0 ? 'M' : 'L'}${x(i).toFixed(1)},${y(d[k]).toFixed(1)}`).join(' ');
+  const area = (k: 'current' | 'previous') => {
+    const lx = x(data.length - 1).toFixed(1);
+    const by = (PAD.t + cH).toFixed(1);
+    return `${line(k)} L${lx},${by} L${PAD.l},${by} Z`;
+  };
+  const trendColor  = trendPct === null ? '#475569' : trendPct > 0 ? '#ef4444' : '#22c55e';
+  const trendSymbol = trendPct === null ? '' : trendPct > 0 ? '▲' : '▼';
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <div className="w-4 h-0.5 bg-indigo-400" />
+            <span className="text-[10px] text-slate-600">Current 24h</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-4 h-0.5 bg-white/20" />
+            <span className="text-[10px] text-slate-600">Previous 24h</span>
+          </div>
+        </div>
+        {trendPct !== null && (
+          <span className="text-[11px] font-bold" style={{ color: trendColor }}>
+            {trendSymbol} {Math.abs(trendPct)}%
+          </span>
+        )}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 120 }}>
+        <defs>
+          <linearGradient id="hgCur" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#6366f1" stopOpacity="0.2" />
+            <stop offset="100%" stopColor="#6366f1" stopOpacity="0.01" />
+          </linearGradient>
+          <linearGradient id="hgPrev" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.05" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0.01" />
+          </linearGradient>
+        </defs>
+        {[0.25, 0.5, 0.75, 1].map(f => (
+          <line key={f} x1={PAD.l} y1={PAD.t + cH * (1 - f)} x2={PAD.l + cW} y2={PAD.t + cH * (1 - f)}
+            stroke="rgba(255,255,255,0.04)" strokeWidth="1" />
+        ))}
+        <path d={area('previous')} fill="url(#hgPrev)" />
+        <path d={area('current')}  fill="url(#hgCur)" />
+        <path d={line('previous')} fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1.5" />
+        <path d={line('current')}  fill="none" stroke="#6366f1" strokeWidth="2" />
+        {data.filter((_, i) => i % 4 === 0).map((d, i) => {
+          const idx = data.indexOf(d);
+          return (
+            <text key={i} x={x(idx)} y={H - 5} textAnchor="middle" fill="#475569" fontSize="10">
+              {d.hour}
+            </text>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+// ─── Priority badge ───────────────────────────────────────────────────────────
+function PBadge({ p }: { p: string }) {
+  const cls: Record<string, string> = {
     P1: 'bg-red-500/15 border-red-500/30 text-red-400',
     P2: 'bg-orange-500/15 border-orange-500/30 text-orange-400',
     P3: 'bg-indigo-500/15 border-indigo-500/30 text-indigo-400',
-    P4: 'bg-slate-500/15 border-slate-500/30 text-slate-500',
   };
   return (
-    <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border shrink-0 ${colors[priority] ?? colors.P4}`}>
-      {priority}
+    <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border shrink-0 ${cls[p] ?? 'bg-white/5 border-white/10 text-slate-500'}`}>
+      {p}
     </span>
   );
 }
 
-function StatusDot({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    pending:    'bg-red-400',
-    processing: 'bg-amber-400',
-    resolved:   'bg-emerald-400',
-  };
-  return <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${colors[status] ?? 'bg-slate-600'}`} />;
-}
-
-function ChartTooltip({ active, payload, label }: any) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="bg-[#0d0f14] border border-white/[0.08] rounded px-3 py-2 text-[10px]">
-      {label && <p className="text-slate-400 mb-1">{label}</p>}
-      {payload.map((p: any, i: number) => (
-        <p key={i} className="font-semibold" style={{ color: p.color ?? p.fill ?? '#6366f1' }}>
-          {p.value} {p.name}
-        </p>
-      ))}
-    </div>
-  );
-}
-
-function SectionHeader({ children, right }: { children: React.ReactNode; right?: React.ReactNode }) {
-  return (
-    <div className="flex items-center justify-between mb-3">
-      <p className="text-[9px] font-bold text-slate-500 uppercase tracking-[0.12em]">{children}</p>
-      {right}
-    </div>
-  );
-}
-
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ─── Main ─────────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
-  const [kpis, setKpis]         = useState<KpiData | null>(null);
-  const [daily, setDaily]       = useState<DailyPoint[]>([]);
-  const [bySite, setBySite]     = useState<SitePoint[]>([]);
-  const [byType, setByType]     = useState<TypePoint[]>([]);
-  const [byPriority, setByPriority] = useState<PriorityPt[]>([]);
-  const [liveAlarms, setLiveAlarms] = useState<LiveAlarm[]>([]);
-  const [recentActions, setRecentActions] = useState<RecentAction[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [liveConnected, setLiveConnected] = useState(false);
-  const [lastRefresh, setLastRefresh] = useState(new Date());
-  const newAlarmIds = useRef(new Set<string>());
+  const [kpis,      setKpis]      = useState<KpiData | null>(null);
+  const [sla,       setSla]       = useState<SlaRow[]>([]);
+  const [daily,     setDaily]     = useState<number[]>([]);
+  const [hourData,  setHourData]  = useState<HourPt[]>([]);
+  const [operators, setOperators] = useState<OperatorRow[]>([]);
+  const [recent,    setRecent]    = useState<RecentAlarm[]>([]);
+  const [trendPct,  setTrendPct]  = useState<number | null>(null);
+  const [loading,   setLoading]   = useState(true);
+  const [liveOn,    setLiveOn]    = useState(false);
+  const [lastUpdate, setLastUpdate] = useState(new Date());
 
-  // ── Data loaders ─────────────────────────────────────────────────────────
   const loadKpis = useCallback(async () => {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     const todayIso = todayStart.toISOString();
-
     const [
-      { count: sitesArmed },
-      { count: camerasMonitored },
       { count: openAlarms },
+      { count: criticalToday },
       { count: resolvedToday },
-      { count: alarmsToday },
+      { count: allToday },
+      { count: armedSites },
+      { count: camerasMonitored },
     ] = await Promise.all([
+      supabase.from('alarms').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+      supabase.from('alarms').select('id', { count: 'exact', head: true }).in('priority', ['P1', 'P2']).gte('created_at', todayIso),
+      supabase.from('alarms').select('id', { count: 'exact', head: true }).eq('status', 'resolved').gte('created_at', todayIso),
+      supabase.from('alarms').select('id', { count: 'exact', head: true }).gte('created_at', todayIso),
       supabase.from('zones').select('id', { count: 'exact', head: true }).eq('is_monitored', true),
       supabase.from('cameras').select('id', { count: 'exact', head: true }).eq('is_monitored', true),
-      supabase.from('alarms').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
-      supabase.from('alarms').select('id', { count: 'exact', head: true })
-        .eq('status', 'resolved').gte('created_at', todayIso),
-      supabase.from('alarms').select('id', { count: 'exact', head: true })
-        .gte('created_at', todayIso),
     ]);
-
+    const total = allToday ?? 0;
+    const resolved = resolvedToday ?? 0;
     setKpis({
-      sitesArmed:       sitesArmed       ?? 0,
-      camerasMonitored: camerasMonitored ?? 0,
       openAlarms:       openAlarms       ?? 0,
-      resolvedToday:    resolvedToday    ?? 0,
-      alarmsToday:      alarmsToday      ?? 0,
+      criticalToday:    criticalToday    ?? 0,
+      resolvedToday:    resolved,
+      armedSites:       armedSites       ?? 0,
+      camerasMonitored: camerasMonitored ?? 0,
+      resolutionRate:   total > 0 ? Math.round((resolved / total) * 100) : null,
     });
+  }, []);
+
+  const loadSla = useCallback(async () => {
+    const since = new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
+    const { data: reports } = await supabase
+      .from('incident_reports')
+      .select('generated_at, alarm_id')
+      .gte('generated_at', since)
+      .not('alarm_id', 'is', null);
+
+    if (!reports?.length) {
+      setSla([
+        { label: '< 30s', pct: 0, color: '#6366f1' },
+        { label: '< 60s', pct: 0, color: '#6366f1' },
+        { label: '< 90s', pct: 0, color: '#6366f1' },
+        { label: '< 3m',  pct: 0, color: '#6366f1' },
+      ]);
+      return;
+    }
+    const ids = reports.map(r => r.alarm_id).filter(Boolean).slice(0, 100);
+    const { data: alarms } = await supabase.from('alarms').select('id, created_at').in('id', ids);
+    const aMap = new Map((alarms ?? []).map(a => [a.id, a.created_at]));
+    const diffs = reports
+      .map(r => {
+        const ts = aMap.get(r.alarm_id);
+        if (!ts) return null;
+        return (new Date(r.generated_at).getTime() - new Date(ts).getTime()) / 1000;
+      })
+      .filter((d): d is number => d !== null && d >= 0);
+    const n = diffs.length || 1;
+    const p = (t: number) => Math.round((diffs.filter(d => d <= t).length / n) * 100);
+    setSla([
+      { label: '< 30s', pct: p(30),  color: p(30)  >= 80 ? '#22c55e' : p(30)  >= 50 ? '#eab308' : '#ef4444' },
+      { label: '< 60s', pct: p(60),  color: p(60)  >= 80 ? '#22c55e' : p(60)  >= 50 ? '#eab308' : '#ef4444' },
+      { label: '< 90s', pct: p(90),  color: p(90)  >= 80 ? '#22c55e' : p(90)  >= 50 ? '#eab308' : '#ef4444' },
+      { label: '< 3m',  pct: p(180), color: p(180) >= 80 ? '#22c55e' : p(180) >= 50 ? '#eab308' : '#ef4444' },
+    ]);
   }, []);
 
   const loadDaily = useCallback(async () => {
     const from = new Date();
     from.setDate(from.getDate() - 13);
     from.setHours(0, 0, 0, 0);
-
-    const { data } = await supabase
-      .from('alarms')
-      .select('created_at, priority')
-      .gte('created_at', from.toISOString())
-      .order('created_at');
-
-    // Build 14-day buckets
-    const buckets: Record<string, { total: number; p1: number }> = {};
+    const { data } = await supabase.from('alarms').select('created_at').gte('created_at', from.toISOString());
+    const buckets: Record<string, number> = {};
     for (let i = 0; i < 14; i++) {
       const d = new Date(from);
       d.setDate(d.getDate() + i);
-      buckets[d.toISOString().slice(0, 10)] = { total: 0, p1: 0 };
+      buckets[d.toISOString().slice(0, 10)] = 0;
     }
-
     (data ?? []).forEach(r => {
-      const key = r.created_at.slice(0, 10);
-      if (key in buckets) {
-        buckets[key].total++;
-        if (r.priority === 'P1') buckets[key].p1++;
-      }
+      const k = r.created_at.slice(0, 10);
+      if (k in buckets) buckets[k]++;
     });
-
-    setDaily(
-      Object.entries(buckets).map(([date, v]) => ({
-        date: shortDate(date),
-        total: v.total,
-        p1: v.p1,
-      }))
-    );
+    setDaily(Object.values(buckets));
   }, []);
 
-  const loadBySite = useCallback(async () => {
-    const { data } = await supabase
-      .from('alarms')
-      .select('site_name')
-      .not('site_name', 'is', null);
+  const loadHour = useCallback(async () => {
+    const now = Date.now();
+    const [{ data: cur }, { data: prev }] = await Promise.all([
+      supabase.from('alarms').select('created_at').gte('created_at', new Date(now - 24 * 3600_000).toISOString()),
+      supabase.from('alarms').select('created_at').gte('created_at', new Date(now - 48 * 3600_000).toISOString()).lt('created_at', new Date(now - 24 * 3600_000).toISOString()),
+    ]);
+    const bucket = (rows: { created_at: string }[]) => {
+      const c: Record<number, number> = {};
+      for (let h = 0; h < 24; h++) c[h] = 0;
+      (rows ?? []).forEach(r => { const h = new Date(r.created_at).getHours(); c[h]++; });
+      return c;
+    };
+    const cB = bucket(cur ?? []);
+    const pB = bucket(prev ?? []);
+    const pts: HourPt[] = [];
+    for (let h = 0; h < 24; h++) {
+      pts.push({ hour: `${h.toString().padStart(2, '0')}:00`, current: cB[h], previous: pB[h] });
+    }
+    setHourData(pts);
+    const cT = Object.values(cB).reduce((a, b) => a + b, 0);
+    const pT = Object.values(pB).reduce((a, b) => a + b, 0);
+    setTrendPct(pT > 0 ? Math.round(((cT - pT) / pT) * 100) : null);
+  }, []);
 
+  const loadOperators = useCallback(async () => {
+    const since = new Date(Date.now() - 24 * 3600_000).toISOString();
+    const { data } = await supabase.from('incident_reports').select('operator_name').gte('generated_at', since).not('operator_name', 'is', null);
     const counts: Record<string, number> = {};
-    (data ?? []).forEach(r => {
-      const n = r.site_name ?? 'Unknown';
-      counts[n] = (counts[n] ?? 0) + 1;
-    });
-
-    setBySite(
-      Object.entries(counts)
-        .map(([site, count]) => ({ site: site.length > 20 ? site.slice(0, 18) + '…' : site, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 6)
-    );
+    (data ?? []).forEach(r => { const n = r.operator_name ?? 'Unknown'; counts[n] = (counts[n] ?? 0) + 1; });
+    setOperators(Object.entries(counts).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 5));
   }, []);
 
-  const loadByType = useCallback(async () => {
-    const { data } = await supabase
-      .from('alarms')
-      .select('event_label')
-      .not('event_label', 'is', null);
-
-    const counts: Record<string, number> = {};
-    (data ?? []).forEach(r => {
-      const n = r.event_label ?? 'Other';
-      counts[n] = (counts[n] ?? 0) + 1;
-    });
-
-    setByType(
-      Object.entries(counts)
-        .map(([name, value]) => ({ name, value }))
-        .sort((a, b) => b.value - a.value)
-        .slice(0, 6)
-    );
-  }, []);
-
-  const loadByPriority = useCallback(async () => {
-    const { data } = await supabase
-      .from('alarms')
-      .select('priority')
-      .not('priority', 'is', null);
-
-    const counts: Record<string, number> = {};
-    (data ?? []).forEach(r => {
-      const p = r.priority ?? 'P4';
-      counts[p] = (counts[p] ?? 0) + 1;
-    });
-
-    setByPriority(
-      ['P1', 'P2', 'P3', 'P4']
-        .filter(p => counts[p] > 0)
-        .map(p => ({ name: p, value: counts[p], color: PRIORITY_COLORS[p] }))
-    );
-  }, []);
-
-  const loadLiveAlarms = useCallback(async () => {
-    const { data } = await supabase
-      .from('alarms')
-      .select('id, priority, event_label, site_name, status, created_at')
-      .order('created_at', { ascending: false })
-      .limit(30);
-
-    setLiveAlarms((data ?? []).map(r => ({ ...r, isNew: newAlarmIds.current.has(r.id) })));
-  }, []);
-
-  const loadRecentActions = useCallback(async () => {
-    const { data } = await supabase
-      .from('incident_reports')
-      .select('id, operator_name, action_taken, notes, generated_at, zones(name)')
-      .order('generated_at', { ascending: false })
-      .limit(8);
-
-    setRecentActions(data ?? []);
+  const loadRecent = useCallback(async () => {
+    const { data } = await supabase.from('alarms').select('id, priority, event_label, site_name, status, created_at').order('created_at', { ascending: false }).limit(15);
+    setRecent(data ?? []);
   }, []);
 
   const loadAll = useCallback(async () => {
-    await Promise.all([
-      loadKpis(),
-      loadDaily(),
-      loadBySite(),
-      loadByType(),
-      loadByPriority(),
-      loadLiveAlarms(),
-      loadRecentActions(),
-    ]);
-    setLastRefresh(new Date());
+    await Promise.all([loadKpis(), loadSla(), loadDaily(), loadHour(), loadOperators(), loadRecent()]);
+    setLastUpdate(new Date());
     setLoading(false);
-  }, [loadKpis, loadDaily, loadBySite, loadByType, loadByPriority, loadLiveAlarms, loadRecentActions]);
+  }, [loadKpis, loadSla, loadDaily, loadHour, loadOperators, loadRecent]);
 
-  // ── Realtime subscription ─────────────────────────────────────────────────
   useEffect(() => {
     loadAll();
-
-    // Fallback polling every 30s
     const poll = setInterval(loadAll, 30_000);
+    const ch = supabase.channel('dashboard')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'alarms' }, () => { loadKpis(); loadHour(); loadRecent(); })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'incident_reports' }, () => { loadSla(); loadOperators(); })
+      .subscribe(s => setLiveOn(s === 'SUBSCRIBED'));
+    return () => { clearInterval(poll); supabase.removeChannel(ch); };
+  }, [loadAll, loadKpis, loadHour, loadRecent, loadSla, loadOperators]);
 
-    // Supabase Realtime — new alarms flash into feed instantly
-    const channel = supabase
-      .channel('dashboard-alarms')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'alarms' },
-        (payload) => {
-          const alarm = payload.new as LiveAlarm;
-          newAlarmIds.current.add(alarm.id);
-          setLiveAlarms(prev => [{ ...alarm, isNew: true }, ...prev.slice(0, 29)]);
-          // Clear the "new" highlight after 5s
-          setTimeout(() => {
-            newAlarmIds.current.delete(alarm.id);
-            setLiveAlarms(prev => prev.map(a => a.id === alarm.id ? { ...a, isNew: false } : a));
-          }, 5000);
-          // Refresh KPIs when new alarm arrives
-          loadKpis();
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'alarms' },
-        () => { loadKpis(); loadLiveAlarms(); }
-      )
-      .subscribe((status) => {
-        setLiveConnected(status === 'SUBSCRIBED');
-      });
-
-    return () => {
-      clearInterval(poll);
-      supabase.removeChannel(channel);
-    };
-  }, [loadAll, loadKpis, loadLiveAlarms]);
-
-  // ── Loading state ─────────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -367,234 +347,107 @@ export default function DashboardPage() {
     );
   }
 
-  const resolutionRate = kpis && kpis.alarmsToday > 0
-    ? Math.round((kpis.resolvedToday / kpis.alarmsToday) * 100)
-    : null;
-
-  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="w-full h-full flex flex-col overflow-hidden">
 
-      {/* Page header */}
+      {/* Header */}
       <div className="flex items-center justify-between px-8 py-4 border-b border-white/[0.06] shrink-0">
         <div>
-          <h1 className="text-sm font-bold text-white tracking-tight uppercase">
-            Dashboard
-          </h1>
+          <h1 className="text-sm font-bold text-white tracking-tight uppercase">Dashboard</h1>
           <p className="text-[11px] text-slate-600 mt-0.5">
-            Refreshed {lastRefresh.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
+            Live performance across all monitored sites
           </p>
         </div>
-        {/* Live indicator */}
-        <div className={`flex items-center gap-2 px-3 py-1.5 rounded border text-[10px] font-bold uppercase tracking-widest ${
-          liveConnected
-            ? 'bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400'
-            : 'bg-white/[0.02] border-white/[0.06] text-slate-600'
-        }`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${liveConnected ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
-          {liveConnected ? 'Live' : 'Polling'}
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] text-slate-700 font-mono">
+            {lastUpdate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
+          </span>
+          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded border text-[10px] font-bold uppercase tracking-widest ${
+            liveOn ? 'bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400' : 'bg-white/[0.02] border-white/[0.06] text-slate-600'
+          }`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${liveOn ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
+            {liveOn ? 'Live' : 'Polling'}
+          </div>
         </div>
       </div>
 
-      {/* Body — scrollable */}
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
 
-        {/* ── KPI Row ─────────────────────────────────────────────────────── */}
+        {/* ── KPI Row ── */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          <KpiCard
-            label="Sites Armed"
-            value={kpis?.sitesArmed ?? 0}
-            sub="SOC monitoring on"
-            accent="text-emerald-400"
-          />
-          <KpiCard
-            label="Cameras Monitored"
-            value={kpis?.camerasMonitored ?? 0}
-            sub="Alarm-generating"
-          />
           <KpiCard
             label="Open Alarms"
             value={kpis?.openAlarms ?? 0}
-            sub="Awaiting dispatch"
             accent={(kpis?.openAlarms ?? 0) > 0 ? 'text-red-400' : 'text-white'}
             pulse={(kpis?.openAlarms ?? 0) > 0}
+            sub="Awaiting dispatch"
+          />
+          <KpiCard
+            label="P1 / P2 Today"
+            value={kpis?.criticalToday ?? 0}
+            accent={(kpis?.criticalToday ?? 0) > 0 ? 'text-orange-400' : 'text-white'}
+            sub="Critical priority"
           />
           <KpiCard
             label="Resolved Today"
             value={kpis?.resolvedToday ?? 0}
-            sub={resolutionRate !== null ? `${resolutionRate}% resolution rate` : 'No alarms yet'}
             accent="text-indigo-400"
+            sub={kpis?.resolutionRate !== null ? `${kpis?.resolutionRate}% rate` : 'No alarms yet'}
           />
           <KpiCard
-            label="Alarms Today"
-            value={kpis?.alarmsToday ?? 0}
-            sub="All priorities"
+            label="Armed Sites"
+            value={kpis?.armedSites ?? 0}
+            accent="text-emerald-400"
+            sub="SOC monitoring on"
+          />
+          <KpiCard
+            label="Cameras"
+            value={kpis?.camerasMonitored ?? 0}
+            sub="Monitored"
           />
         </div>
 
-        {/* ── Charts ──────────────────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* ── Middle row: trend + SLA ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-          {/* 14-day alarm trend */}
-          <div className="rounded border border-white/[0.06] bg-white/[0.02] p-4">
-            <SectionHeader>Alarms — Last 14 Days</SectionHeader>
-            {daily.every(d => d.total === 0) ? (
-              <div className="h-36 flex items-center justify-center text-[10px] text-slate-700 uppercase tracking-widest">
-                No data yet
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height={148}>
-                <LineChart data={daily} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
-                  <XAxis dataKey="date" tick={{ fill: '#475569', fontSize: 9 }} tickLine={false} interval={2} />
-                  <YAxis tick={{ fill: '#475569', fontSize: 9 }} tickLine={false} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Line type="monotone" dataKey="total" name="total" stroke="#6366f1" strokeWidth={1.5} dot={false} activeDot={{ r: 3 }} />
-                  <Line type="monotone" dataKey="p1" name="P1" stroke="#ef4444" strokeWidth={1.5} dot={false} activeDot={{ r: 3 }} strokeDasharray="4 2" />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-            <div className="flex items-center gap-4 mt-2">
-              <div className="flex items-center gap-1.5"><div className="w-4 h-px bg-indigo-500" /><span className="text-[9px] text-slate-600">All alarms</span></div>
-              <div className="flex items-center gap-1.5"><div className="w-4 h-px bg-red-500 border-dashed" style={{ borderTop: '1px dashed #ef4444', height: 0 }} /><span className="text-[9px] text-slate-600">P1 only</span></div>
+          {/* 14-day sparkline */}
+          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
+            <SectionLabel>Alarms — Last 14 Days</SectionLabel>
+            <Sparkline data={daily} />
+            <div className="flex items-center justify-between mt-2">
+              {daily.reduce((a, b) => a + b, 0) > 0 ? (
+                <>
+                  <span className="text-[10px] text-slate-600">
+                    {daily.reduce((a, b) => a + b, 0)} total events
+                  </span>
+                  <span className="text-[10px] text-slate-600">
+                    avg {(daily.reduce((a, b) => a + b, 0) / 14).toFixed(1)}/day
+                  </span>
+                </>
+              ) : (
+                <span className="text-[10px] text-slate-700">No events in window</span>
+              )}
             </div>
           </div>
 
-          {/* Priority breakdown */}
-          <div className="rounded border border-white/[0.06] bg-white/[0.02] p-4">
-            <SectionHeader>Alarm Priority Breakdown</SectionHeader>
-            {byPriority.length === 0 ? (
-              <div className="h-36 flex items-center justify-center text-[10px] text-slate-700 uppercase tracking-widest">
-                No data yet
-              </div>
+          {/* SLA bars */}
+          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
+            <SectionLabel>Response Time SLA — 7 Days</SectionLabel>
+            {sla.every(s => s.pct === 0) ? (
+              <p className="text-[10px] text-slate-700 py-4 text-center">No response data yet</p>
             ) : (
-              <div className="flex items-center gap-6 h-36">
-                <ResponsiveContainer width={120} height={120}>
-                  <PieChart>
-                    <Pie data={byPriority} cx="50%" cy="50%" innerRadius={32} outerRadius={52} paddingAngle={2} dataKey="value">
-                      {byPriority.map((p, i) => <Cell key={i} fill={p.color} />)}
-                    </Pie>
-                    <Tooltip content={<ChartTooltip />} />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="flex-1 space-y-2.5">
-                  {byPriority.map((p) => {
-                    const total = byPriority.reduce((s, x) => s + x.value, 0);
-                    const pct   = total > 0 ? Math.round((p.value / total) * 100) : 0;
-                    return (
-                      <div key={p.name}>
-                        <div className="flex items-center justify-between mb-0.5">
-                          <div className="flex items-center gap-2">
-                            <span className="w-2 h-2 rounded-sm" style={{ background: p.color }} />
-                            <span className="text-[10px] font-bold text-slate-300">{p.name}</span>
-                          </div>
-                          <span className="text-[10px] text-slate-400">{p.value} <span className="text-slate-600">({pct}%)</span></span>
-                        </div>
-                        <div className="h-1 bg-white/[0.05] rounded-full overflow-hidden">
-                          <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: p.color }} />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Events by site */}
-          <div className="rounded border border-white/[0.06] bg-white/[0.02] p-4">
-            <SectionHeader>Events by Site (All Time)</SectionHeader>
-            {bySite.length === 0 ? (
-              <div className="h-36 flex items-center justify-center text-[10px] text-slate-700 uppercase tracking-widest">
-                No data yet
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height={148}>
-                <BarChart data={bySite} layout="vertical" margin={{ top: 0, right: 4, left: 4, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
-                  <XAxis type="number" tick={{ fill: '#475569', fontSize: 9 }} tickLine={false} />
-                  <YAxis type="category" dataKey="site" tick={{ fill: '#94a3b8', fontSize: 9 }} tickLine={false} width={90} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="count" name="events" fill="#6366f1" radius={[0, 2, 2, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-
-          {/* Event type breakdown */}
-          <div className="rounded border border-white/[0.06] bg-white/[0.02] p-4">
-            <SectionHeader>Top Event Types</SectionHeader>
-            {byType.length === 0 ? (
-              <div className="h-36 flex items-center justify-center text-[10px] text-slate-700 uppercase tracking-widest">
-                No data yet
-              </div>
-            ) : (
-              <div className="flex items-center gap-5 h-36">
-                <ResponsiveContainer width={120} height={120}>
-                  <PieChart>
-                    <Pie data={byType} cx="50%" cy="50%" innerRadius={32} outerRadius={52} paddingAngle={2} dataKey="value">
-                      {byType.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-                    </Pie>
-                    <Tooltip content={<ChartTooltip />} />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="flex-1 space-y-1.5">
-                  {byType.map((t, i) => (
-                    <div key={i} className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />
-                      <span className="text-[10px] text-slate-400 truncate flex-1">{t.name}</span>
-                      <span className="text-[10px] font-semibold text-slate-300">{t.value}</span>
+              <div className="space-y-3 mt-1">
+                {sla.map((s, i) => (
+                  <div key={i}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] text-slate-400 font-medium">{s.label}</span>
+                      <span className="text-[10px] font-bold" style={{ color: s.color }}>{s.pct}%</span>
                     </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ── Bottom row: Live feed + Recent actions ───────────────────────── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-
-          {/* Live alarm feed */}
-          <div className="rounded border border-white/[0.06] bg-white/[0.02] p-4">
-            <SectionHeader right={
-              liveConnected ? (
-                <span className="flex items-center gap-1 text-[9px] text-emerald-500">
-                  <span className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />
-                  Real-time
-                </span>
-              ) : undefined
-            }>
-              Recent Alarms
-            </SectionHeader>
-
-            {liveAlarms.length === 0 ? (
-              <div className="h-24 flex items-center justify-center text-[10px] text-slate-700 uppercase tracking-widest">
-                No alarms recorded yet
-              </div>
-            ) : (
-              <div className="space-y-1.5 max-h-72 overflow-y-auto pr-0.5">
-                {liveAlarms.map((alarm) => (
-                  <div
-                    key={alarm.id}
-                    className={`flex items-center gap-2.5 px-3 py-2 rounded border transition-all ${
-                      alarm.isNew
-                        ? 'border-indigo-500/40 bg-indigo-500/[0.08] animate-pulse'
-                        : 'border-white/[0.05] bg-white/[0.01]'
-                    }`}
-                  >
-                    <StatusDot status={alarm.status} />
-                    <PriorityBadge priority={alarm.priority} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[11px] text-slate-200 truncate">{alarm.event_label ?? alarm.priority}</p>
-                      <p className="text-[10px] text-slate-600 truncate">{alarm.site_name ?? '—'}</p>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className={`text-[9px] font-medium uppercase tracking-wide ${
-                        alarm.status === 'pending'    ? 'text-red-400' :
-                        alarm.status === 'processing' ? 'text-amber-400' : 'text-emerald-400'
-                      }`}>{alarm.status}</p>
-                      <p className="text-[9px] text-slate-700">{fmtTime(alarm.created_at)}</p>
+                    <div className="h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{ width: `${s.pct}%`, background: s.color }}
+                      />
                     </div>
                   </div>
                 ))}
@@ -602,46 +455,58 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Recent operator actions */}
-          <div className="rounded border border-white/[0.06] bg-white/[0.02] p-4">
-            <SectionHeader>Recent Operator Activity</SectionHeader>
-
-            {recentActions.length === 0 ? (
-              <div className="h-24 flex items-center justify-center text-[10px] text-slate-700 uppercase tracking-widest">
-                No incident reports yet
-              </div>
+          {/* Alarms per operator */}
+          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
+            <SectionLabel>Alarms Per Operator — 24h</SectionLabel>
+            {operators.length === 0 ? (
+              <p className="text-[10px] text-slate-700 py-4 text-center">No activity yet</p>
             ) : (
-              <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
-                {recentActions.map((r) => (
-                  <div key={r.id} className="flex items-start gap-3 px-3 py-2.5 rounded border border-white/[0.05] bg-white/[0.01]">
-                    {/* Avatar */}
-                    <div className="w-7 h-7 rounded-full bg-indigo-600/20 border border-indigo-500/20 flex items-center justify-center shrink-0 mt-0.5">
-                      <span className="text-[10px] font-bold text-indigo-400">
-                        {(r.operator_name ?? '?').charAt(0).toUpperCase()}
-                      </span>
-                    </div>
-
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-[11px] font-semibold text-slate-200 truncate">
-                          {r.operator_name ?? 'Operator'}
-                        </p>
-                        <p className="text-[9px] text-slate-700 shrink-0">{fmtTime(r.generated_at)}</p>
+              <div className="space-y-2.5 mt-1">
+                {operators.map((op, i) => {
+                  const max = operators[0].count;
+                  const pct = Math.round((op.count / max) * 100);
+                  return (
+                    <div key={i}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[11px] text-slate-300 truncate max-w-[140px]">{op.name}</span>
+                        <span className="text-[10px] font-semibold text-slate-400 shrink-0 ml-2">{op.count}</span>
                       </div>
-                      {r.action_taken && (
-                        <p className="text-[10px] text-indigo-400 font-medium mt-0.5 capitalize">
-                          {r.action_taken.replace(/_/g, ' ')}
-                        </p>
-                      )}
-                      {(r as any).zones?.name && (
-                        <p className="text-[10px] text-slate-600 truncate">{(r as any).zones.name}</p>
-                      )}
-                      {r.notes && (
-                        <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 leading-relaxed">
-                          {r.notes}
-                        </p>
-                      )}
+                      <div className="h-1 bg-white/[0.05] rounded-full overflow-hidden">
+                        <div className="h-full bg-indigo-500/60 rounded-full transition-all duration-700" style={{ width: `${pct}%` }} />
+                      </div>
                     </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Bottom row: hour chart + recent feed ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
+            <SectionLabel>Alarms by Hour</SectionLabel>
+            <HourChart data={hourData} trendPct={trendPct} />
+          </div>
+
+          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
+            <SectionLabel>Recent Events</SectionLabel>
+            {recent.length === 0 ? (
+              <p className="text-[10px] text-slate-700 py-4 text-center">No alarms recorded yet</p>
+            ) : (
+              <div className="space-y-1.5 max-h-64 overflow-y-auto pr-0.5">
+                {recent.map(a => (
+                  <div key={a.id} className="flex items-center gap-2.5 px-2.5 py-2 rounded border border-white/[0.04] hover:bg-white/[0.02] transition-all">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                      a.status === 'pending' ? 'bg-red-400' : a.status === 'processing' ? 'bg-amber-400' : 'bg-emerald-400'
+                    }`} />
+                    <PBadge p={a.priority} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[11px] text-slate-200 truncate">{a.event_label ?? a.priority}</p>
+                      <p className="text-[10px] text-slate-600 truncate">{a.site_name ?? '—'}</p>
+                    </div>
+                    <span className="text-[9px] text-slate-700 shrink-0">{fmtAgo(a.created_at)}</span>
                   </div>
                 ))}
               </div>
