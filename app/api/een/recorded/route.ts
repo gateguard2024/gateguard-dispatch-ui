@@ -4,9 +4,13 @@
 //
 // EEN V3 Media API:
 //   GET /api/v3.0/media
-//   Required params: deviceId, type (preview|main), mediaType (video|image),
+//   Required params: deviceId, type (main|preview), mediaType (video|image),
 //                    startTimestamp__gte, endTimestamp__lte
 //   Response: { results: [{ hlsUrl, mp4Url, startTimestamp, endTimestamp, ... }] }
+//
+// TIMESTAMP FORMAT: Use epoch milliseconds (Unix ms integers), NOT ISO strings.
+// ISO strings cause encoding problems: colons (%3A) and '+' in '+00:00' (%2B / space).
+// Confirmed via Postman — EEN accepts epoch ms and returns correct results.
 //
 // The hlsUrl from the first result is returned directly to SmartVideoPlayer.
 //
@@ -41,9 +45,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // EEN requires +00:00 format NOT Z — e.g. 2026-04-22T14:30:00.000+00:00
-    const startIso = new Date(startTime).toISOString().replace(/Z$/, '+00:00');
-    const endIso   = new Date(endTime).toISOString().replace(/Z$/, '+00:00');
+    // Use epoch milliseconds for timestamps — confirmed via Postman testing.
+    // ISO strings cause encoding problems (%3A for colons, %2B for '+' in +00:00).
+    // Epoch ms are plain integers — no encoding issues, accepted by EEN V3.
+    const startMs = new Date(startTime).getTime();
+    const endMs   = new Date(endTime).getTime();
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -52,15 +58,13 @@ export async function POST(request: Request) {
     if (apiKey) headers['x-api-key'] = apiKey;
 
     // ── Query EEN media list ──────────────────────────────────────────────────
-    // NOTE: Do NOT use URLSearchParams — it encodes colons in timestamps as %3A
-    // which EEN rejects. Build the query string manually with raw ISO timestamps.
     const mediaUrl = [
       `https://${cluster}/api/v3.0/media`,
       `?deviceId=${encodeURIComponent(cameraId)}`,
-      `&type=preview`,
+      `&type=main`,
       `&mediaType=video`,
-      `&startTimestamp__gte=${startIso}`,   // raw ISO — colons must not be encoded
-      `&endTimestamp__lte=${endIso}`,
+      `&startTimestamp__gte=${startMs}`,
+      `&endTimestamp__lte=${endMs}`,
       `&pageSize=10`,
     ].join('');
     console.log(`[een/recorded] Querying: ${mediaUrl}`);
