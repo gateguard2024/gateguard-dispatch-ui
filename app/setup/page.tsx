@@ -176,8 +176,7 @@ const defaultWizard = {
   step: 1 as 1 | 2 | 3 | 4 | 5,
   accountId: null as string | null,
   accountName: "",
-  clientId: "",
-  clientSecret: "",
+  apiKey: "",        // EEN API Key — unique per customer account (x-api-key header)
   discoveredTags: [] as string[],
   selectedTag: "__UNSET__" as string,
   timezone: "America/New_York",
@@ -668,8 +667,8 @@ export default function SetupPage() {
 
   const wizStep1Submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!wiz.accountName || !wiz.clientId || !wiz.clientSecret) {
-      wizSet({ error: "All three fields are required." });
+    if (!wiz.accountName || !wiz.apiKey) {
+      wizSet({ error: "Account name and EEN API Key are required." });
       return;
     }
     wizSet({ isLoading: true, error: "" });
@@ -678,9 +677,8 @@ export default function SetupPage() {
         .from("accounts")
         .insert([
           {
-            name: wiz.accountName.trim(),
-            een_client_id: wiz.clientId.trim(),
-            een_client_secret: wiz.clientSecret.trim(),
+            name:        wiz.accountName.trim(),
+            een_api_key: wiz.apiKey.trim(),
           },
         ])
         .select()
@@ -858,42 +856,29 @@ export default function SetupPage() {
           </Field>
 
           <Field
-            label="Eagle Eye Client ID"
-            help="Found under Account Settings → Control → API Keys in the EEN portal"
+            label="EEN API Key"
+            help="The per-account API key from the customer's EEN portal — used to authenticate camera requests"
           >
             <input
               className={inputMonoCls}
-              placeholder="Paste Client ID…"
-              value={wiz.clientId}
-              onChange={(e) => wizSet({ clientId: e.target.value })}
-            />
-          </Field>
-
-          <Field
-            label="Eagle Eye Client Secret"
-            help="Generated alongside the Client ID — store it securely"
-          >
-            <input
-              className={inputMonoCls}
-              type="password"
-              placeholder="Paste Client Secret…"
-              value={wiz.clientSecret}
-              onChange={(e) => wizSet({ clientSecret: e.target.value })}
+              placeholder="Paste API Key…"
+              value={wiz.apiKey}
+              onChange={(e) => wizSet({ apiKey: e.target.value })}
             />
           </Field>
 
           <details className="bg-indigo-950/20 border border-indigo-500/[0.15] rounded">
             <summary className="flex items-center gap-2 px-4 py-2.5 cursor-pointer text-[11px] text-indigo-400 font-semibold uppercase tracking-widest select-none list-none">
               <Ic d={I.key} className="w-3 h-3" />
-              How to locate EEN API credentials
+              How to generate the EEN API Key
             </summary>
             <ol className="px-5 pb-4 pt-2 text-xs text-slate-400 space-y-1.5 list-decimal list-inside leading-relaxed border-t border-indigo-500/10">
               <li>Log in to your <strong className="text-slate-300">Reseller account</strong> in EEN.</li>
-              <li>Click the <strong className="text-slate-300">eye icon</strong> to view the target sub-account.</li>
+              <li>Click the <strong className="text-slate-300">eye icon</strong> to switch into the target customer sub-account.</li>
               <li>Navigate to <strong className="text-slate-300">Account Settings → Control</strong>.</li>
               <li>Click <strong className="text-slate-300">Create API Key → Generate new API key</strong>.</li>
-              <li>Name it <code className="bg-black/40 px-1 text-emerald-400">GG Monitoring - [site name]</code>.</li>
-              <li>Copy the <strong className="text-slate-300">API Key</strong> and <strong className="text-slate-300">API Secret</strong> above.</li>
+              <li>Name it <code className="bg-black/40 px-1 text-emerald-400">GateGuard - [site name]</code>.</li>
+              <li>Copy the <strong className="text-slate-300">API Key</strong> value and paste it above.</li>
             </ol>
           </details>
 
