@@ -74,10 +74,13 @@ export async function POST(request: Request) {
       tokens.endpoint ||
       null;
 
-    // 5. Save tokens (and cluster if returned) to 'accounts' table
+    // 5. Save tokens (and cluster + expiry if returned) to 'accounts' table
     const updatePayload: Record<string, string | null> = {
-      een_access_token:  tokens.access_token,
-      een_refresh_token: tokens.refresh_token,
+      een_access_token:     tokens.access_token,
+      een_refresh_token:    tokens.refresh_token,
+      een_token_expires_at: tokens.expires_in
+        ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+        : null,
     };
 
     if (cluster) {
