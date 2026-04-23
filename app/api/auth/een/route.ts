@@ -17,10 +17,10 @@ export async function POST(request: Request) {
     const accountName = Buffer.from(state, 'base64').toString('utf-8');
     console.log("🔓 Backend decoded account name:", accountName);
 
-    // 2. Look up credentials from 'accounts' table (NOT 'sites')
+    // 2. Look up account from 'accounts' table (credentials are global env vars, not per-account)
     const { data: account, error: dbError } = await supabase
       .from('accounts')
-      .select('id, een_client_id, een_client_secret')
+      .select('id')
       .eq('name', accountName)
       .single();
 
@@ -29,14 +29,19 @@ export async function POST(request: Request) {
     }
 
     // 3. Exchange the authorization code for tokens (EEN V3 OAuth2)
+    //    GateGuard OAuth app credentials live in Vercel env vars — same for all accounts.
+    const clientId     = process.env.EEN_CLIENT_ID;
+    const clientSecret = process.env.EEN_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+      throw new Error('EEN_CLIENT_ID / EEN_CLIENT_SECRET env vars not set. Add them in Vercel → Settings → Environment Variables.');
+    }
+
     const REDIRECT_URI =
       process.env.NEXT_PUBLIC_EEN_REDIRECT_URI ||
       'https://gateguard-dispatch-ui.vercel.app/callback';
 
     const tokenUrl = `https://auth.eagleeyenetworks.com/oauth2/token`;
-    const authString = Buffer.from(
-      `${account.een_client_id}:${account.een_client_secret}`
-    ).toString('base64');
+    const authString = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
     const body = new URLSearchParams({
       grant_type:   'authorization_code',
@@ -157,10 +162,15 @@ async function registerEENWebhookSubscription({
   }
 
   // Create new subscription for all camera event types we care about
+  // EEN webhook.v1 — URL is set in EEN developer portal, not in the API call.
+  // secret is base64-encoded; EEN uses it to HMAC-SHA256 sign each payload.
+  const webhookSecret = process.env.EEN_WEBHOOK_SECRET
+    ?? Buffer.from('gateguard-webhook-secret').toString('base64');
+
   const body = {
     deliveryConfig: {
-      type: 'webhook.v1',
-      url:  webhookUrl,
+      type:   'webhook.v1',
+      secret: webhookSecret,
     },
     filters: [
       {
