@@ -69,17 +69,20 @@ export async function getValidEENToken(accountId: string) {
   // 3. Token missing or expired — attempt refresh
   console.log(`[een] Refreshing token for account ${accountId}…`);
 
-  if (!site.een_client_id || !site.een_client_secret) {
-    throw new Error('Missing EEN Client ID or Secret for this account.');
+  // Client credentials: prefer per-account DB values (legacy), fall back to global env vars.
+  // New accounts no longer store these in the DB — they live in EEN_CLIENT_ID / EEN_CLIENT_SECRET.
+  const clientId     = site.een_client_id     || process.env.NEXT_PUBLIC_EEN_CLIENT_ID;
+  const clientSecret = site.een_client_secret || process.env.EEN_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    throw new Error('Missing EEN client credentials. Set NEXT_PUBLIC_EEN_CLIENT_ID and EEN_CLIENT_SECRET in Vercel env vars.');
   }
 
   if (!site.een_refresh_token) {
     throw new Error('No refresh token available. Re-run OAuth for this account in Setup.');
   }
 
-  const authHeader = Buffer.from(
-    `${site.een_client_id}:${site.een_client_secret}`
-  ).toString('base64');
+  const authHeader = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
   const params = new URLSearchParams({
     grant_type:    'refresh_token',
