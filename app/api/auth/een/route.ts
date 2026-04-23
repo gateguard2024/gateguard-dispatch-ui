@@ -30,10 +30,10 @@ export async function POST(request: Request) {
 
     // 3. Exchange the authorization code for tokens (EEN V3 OAuth2)
     //    GateGuard OAuth app credentials live in Vercel env vars — same for all accounts.
-    const clientId     = process.env.EEN_CLIENT_ID;
+    const clientId     = process.env.NEXT_PUBLIC_EEN_CLIENT_ID;
     const clientSecret = process.env.EEN_CLIENT_SECRET;
     if (!clientId || !clientSecret) {
-      throw new Error('EEN_CLIENT_ID / EEN_CLIENT_SECRET env vars not set. Add them in Vercel → Settings → Environment Variables.');
+      throw new Error('NEXT_PUBLIC_EEN_CLIENT_ID / EEN_CLIENT_SECRET env vars not set. Add them in Vercel → Settings → Environment Variables.');
     }
 
     const REDIRECT_URI =
