@@ -16,11 +16,16 @@ const isPublicRoute = createRouteMatcher([
   '/sign-in(.*)',
   '/callback(.*)',           // EEN OAuth redirect target
   '/api/auth/een(.*)',       // EEN token exchange — called from callback page
+  '/api/cron(.*)',           // Vercel cron jobs — secured by CRON_SECRET, not Clerk
+  '/api/webhooks(.*)',       // EEN/Brivo webhooks — external callers, no Clerk session
+  '/api/ai/triage(.*)',      // Called by cron — needs to be public
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
   if (!isPublicRoute(req)) {
-    await auth.protect();
+    await auth.protect({
+      unauthenticatedUrl: new URL('/sign-in', req.url).toString(),
+    });
   }
 });
 
