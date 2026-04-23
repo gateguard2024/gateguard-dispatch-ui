@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/poll-een-events",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/triage-alarms",
+      "schedule": "*/2 * * * *"
     }
   ]
 }
