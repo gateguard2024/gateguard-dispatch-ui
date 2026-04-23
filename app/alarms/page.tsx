@@ -241,7 +241,28 @@ export default function AlarmsPage() {
   // Queue state
   const [queue, setQueue]             = useState<Alarm[]>([]);
   const [activeAlarm, setActiveAlarm] = useState<Alarm | null>(null);
-  const audioRef                      = useRef<HTMLAudioElement | null>(null);
+  const audioRef                      = useRef<AudioContext | null>(null);
+
+  // Play a sharp alert tone using Web Audio API — no file needed
+  const playAlertTone = useCallback(() => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioRef.current = ctx;
+      // Two short beeps
+      [0, 0.3].forEach((startTime) => {
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = 880;
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(0.4, ctx.currentTime + startTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + startTime + 0.2);
+        osc.start(ctx.currentTime + startTime);
+        osc.stop(ctx.currentTime + startTime + 0.2);
+      });
+    } catch (_) {}
+  }, []);
   const prevCountRef                  = useRef(0);
 
   // Command panel state
@@ -327,7 +348,7 @@ export default function AlarmsPage() {
       setQueue(data as Alarm[]);
       // Audio alert when new P1 alarms arrive
       if (data.length > prevCountRef.current && data.some(a => a.priority === 'P1')) {
-        audioRef.current?.play().catch(() => {});
+        playAlertTone();
       }
       prevCountRef.current = data.length;
     }
@@ -712,8 +733,7 @@ export default function AlarmsPage() {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="flex h-full bg-[#030406] text-white overflow-hidden">
-      {/* Hidden audio for alert */}
-      <audio ref={audioRef} src="/alert.mp3" preload="auto" />
+      {/* Alert tone generated via Web Audio API — no file needed */}
 
       {/* ── LEFT: Event Queue ───────────────────────────────────────────── */}
       <aside
