@@ -45,11 +45,18 @@ export async function POST(request: Request) {
       );
     }
 
-    // Use epoch milliseconds for timestamps — confirmed via Postman testing.
-    // ISO strings cause encoding problems (%3A for colons, %2B for '+' in +00:00).
-    // Epoch ms are plain integers — no encoding issues, accepted by EEN V3.
-    const startMs = new Date(startTime).getTime();
-    const endMs   = new Date(endTime).getTime();
+    // EEN media endpoint requires ISO 8601 string — epoch ms returns 400 "wrong type".
+    // Two encoding rules (both required):
+    //   1. Colons in the time part must stay RAW — EEN rejects %3A encoding
+    //   2. The '+' in '+00:00' MUST be encoded as %2B
+    //      A raw '+' in a query string is interpreted as a space by HTTP,
+    //      so EEN would receive '...T14:30:00.000 00:00' — a parse failure.
+    // Final form sent to EEN: 2026-04-22T14:30:00.000%2B00:00
+    const encodeTs = (iso: string) =>
+      iso.replace(/Z$/, '+00:00').replace(/\+/g, '%2B');
+
+    const startIso = encodeTs(new Date(startTime).toISOString());
+    const endIso   = encodeTs(new Date(endTime).toISOString());
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -58,13 +65,14 @@ export async function POST(request: Request) {
     if (apiKey) headers['x-api-key'] = apiKey;
 
     // ── Query EEN media list ──────────────────────────────────────────────────
+    // Build URL manually — do NOT use URLSearchParams (it encodes ':' as %3A)
     const mediaUrl = [
       `https://${cluster}/api/v3.0/media`,
       `?deviceId=${encodeURIComponent(cameraId)}`,
       `&type=main`,
       `&mediaType=video`,
-      `&startTimestamp__gte=${startMs}`,
-      `&endTimestamp__lte=${endMs}`,
+      `&startTimestamp__gte=${startIso}`,
+      `&endTimestamp__lte=${endIso}`,
       `&pageSize=10`,
     ].join('');
     console.log(`[een/recorded] Querying: ${mediaUrl}`);
