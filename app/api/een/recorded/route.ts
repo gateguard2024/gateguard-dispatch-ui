@@ -98,18 +98,35 @@ export async function POST(request: Request) {
       );
     }
 
-    // Use the hlsUrl from the first clip — this is the pre-authenticated
-    // HLS manifest URL for the recorded segment
-    const hlsUrl = clips[0].hlsUrl ?? clips[0].mp4Url ?? null;
+    // Log the full first clip so we can see what field names EEN actually uses
+    const firstClip = clips[0];
+    console.log(`[een/recorded] First clip keys: ${Object.keys(firstClip).join(', ')}`);
+    console.log(`[een/recorded] First clip: ${JSON.stringify(firstClip).slice(0, 800)}`);
+
+    // Try all known EEN field names for the HLS URL
+    const hlsUrl =
+      firstClip.hlsUrl         ??  // V3 standard
+      firstClip.hlsPlaybackUrl ??  // alternate V3
+      firstClip.playbackUrl    ??  // possible alias
+      firstClip.streamUrl      ??  // possible alias
+      firstClip.mp4Url         ??  // fallback to MP4
+      firstClip.downloadUrl    ??  // last resort download
+      null;
 
     if (!hlsUrl) {
+      // Return the full clip object so we can see what fields are available
+      console.error(`[een/recorded] No URL found. Full clip: ${JSON.stringify(firstClip)}`);
       return NextResponse.json(
-        { error: 'EEN returned a clip but no HLS URL was available. The recording may still be processing.' },
+        {
+          error: 'EEN returned a clip but no playback URL was found.',
+          clipKeys: Object.keys(firstClip),
+          clip: firstClip,   // expose to client for debugging
+        },
         { status: 404 }
       );
     }
 
-    console.log(`[een/recorded] Returning HLS URL for ${clips.length} clip(s): ${hlsUrl}`);
+    console.log(`[een/recorded] Returning URL for ${clips.length} clip(s): ${hlsUrl}`);
 
     return NextResponse.json({ url: hlsUrl, token, clipCount: clips.length });
 
