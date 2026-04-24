@@ -25,12 +25,13 @@ export async function POST(request: Request) {
         doorIds.map(async (door) => {
           try {
             const detail = await brivoGet(token, apiKey, `/access-points/${door.id}`);
+            // Brivo returns activationEnabled (bool), not a status string
             return {
               id:      door.id,
               brivoId: door.id,
               name:    door.name,
               type:    door.type,
-              status:  detail.status ?? 'locked',
+              status:  detail.activationEnabled ? 'active' : 'inactive',
             };
           } catch {
             return { id: door.id, brivoId: door.id, name: door.name, type: door.type, status: 'unknown' };
@@ -44,12 +45,14 @@ export async function POST(request: Request) {
     const data = await brivoGet(token, apiKey, '/access-points', { pageSize: '50' });
     const points: any[] = data.data ?? [];
 
+    // Brivo access-point objects don't include type or status fields.
+    // activationEnabled = true means the door can be triggered via API.
     const doors = points.map((ap: any) => ({
       id:      String(ap.id),
       brivoId: String(ap.id),
       name:    ap.name ?? 'Door',
-      type:    ap.type ?? 'door',
-      status:  ap.status ?? 'locked',
+      type:    'door',
+      status:  ap.activationEnabled ? 'active' : 'inactive',
     }));
 
     return NextResponse.json({ doors });

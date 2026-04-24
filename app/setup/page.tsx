@@ -390,16 +390,26 @@ function DeleteConfirmModal({
 const DOOR_TYPES = ['gate', 'door', 'elevator', 'turnstile'] as const;
 
 function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
-  const [username, setUsername]         = useState('');
-  const [password, setPassword]         = useState('');
-  const [hasPassword, setHasPassword]   = useState(false);
-  const [resettingPw, setResettingPw]   = useState(false);
-  const [doors, setDoors]               = useState<Array<{ id: string; name: string; type: string }>>([]);
-  const [saving, setSaving]             = useState(false);
-  const [testing, setTesting]           = useState(false);
-  const [connStatus, setConnStatus]     = useState<'idle' | 'ok' | 'fail'>('idle');
-  const [connMsg, setConnMsg]           = useState('');
-  const [loaded, setLoaded]             = useState(false);
+  const [username, setUsername]       = useState('');
+  const [password, setPassword]       = useState('');
+  const [hasPassword, setHasPassword] = useState(false);
+  const [resettingPw, setResettingPw] = useState(false);
+  const [doors, setDoors]             = useState<Array<{ id: string; name: string; type: string }>>([]);
+  const [saving, setSaving]           = useState(false);
+  const [testing, setTesting]         = useState(false);
+  const [connStatus, setConnStatus]   = useState<'idle' | 'ok' | 'fail'>('idle');
+  const [connMsg, setConnMsg]         = useState('');
+  const [loaded, setLoaded]           = useState(false);
+
+  // System credentials state
+  const [sysExpanded, setSysExpanded]         = useState(false);
+  const [sysApiKey, setSysApiKey]             = useState('');
+  const [sysClientId, setSysClientId]         = useState('');
+  const [sysClientSecret, setSysClientSecret] = useState('');
+  const [sysStatus, setSysStatus]             = useState<{ has_api_key: boolean; has_client_id: boolean; has_client_secret: boolean } | null>(null);
+  const [sysSaving, setSysSaving]             = useState(false);
+
+  const sysConfigured = sysStatus?.has_api_key && sysStatus?.has_client_id && sysStatus?.has_client_secret;
 
   // Load existing config
   React.useEffect(() => {
@@ -410,6 +420,13 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
         setUsername(data.username ?? '');
         setHasPassword(data.has_password ?? false);
         setDoors(data.doors ?? []);
+        if (data.system) {
+          setSysStatus(data.system);
+          // Auto-expand if system creds not yet configured
+          if (!data.system.has_api_key || !data.system.has_client_id || !data.system.has_client_secret) {
+            setSysExpanded(true);
+          }
+        }
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
@@ -420,12 +437,36 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
     setDoors(prev => [...prev, { id: '', name: '', type: 'gate' }]);
   };
 
-  const removeDoor = (idx: number) => {
-    setDoors(prev => prev.filter((_, i) => i !== idx));
-  };
+  const removeDoor = (idx: number) => setDoors(prev => prev.filter((_, i) => i !== idx));
 
-  const updateDoor = (idx: number, field: string, value: string) => {
+  const updateDoor = (idx: number, field: string, value: string) =>
     setDoors(prev => prev.map((d, i) => i === idx ? { ...d, [field]: value } : d));
+
+  const saveSystemCreds = async () => {
+    if (!sysApiKey && !sysClientId && !sysClientSecret) return;
+    setSysSaving(true);
+    try {
+      const res = await fetch('/api/brivo/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accountId,
+          systemApiKey:       sysApiKey       || undefined,
+          systemClientId:     sysClientId     || undefined,
+          systemClientSecret: sysClientSecret || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSysStatus(prev => ({
+          has_api_key:       prev?.has_api_key       || !!sysApiKey,
+          has_client_id:     prev?.has_client_id     || !!sysClientId,
+          has_client_secret: prev?.has_client_secret || !!sysClientSecret,
+        }));
+        setSysApiKey(''); setSysClientId(''); setSysClientSecret('');
+      }
+    } finally {
+      setSysSaving(false);
+    }
   };
 
   const save = async (test = false) => {
@@ -438,19 +479,17 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
         doors: doors.filter(d => d.id.trim() && d.name.trim()),
         testConnection: test,
       };
-      // Only send password if it's a new value (not masked placeholder)
       if (!hasPassword || resettingPw) body.password = password;
 
       const res  = await fetch('/api/brivo/config', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
       const data = await res.json();
 
       if (test) {
         setConnStatus(data.connected ? 'ok' : 'fail');
         setConnMsg(data.connectionError ?? (data.connected ? 'Connected successfully' : 'Connection failed'));
+        if (data.connected) setHasPassword(true);
       } else {
         setHasPassword(true);
         setResettingPw(false);
@@ -470,7 +509,64 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
   return (
     <div className="flex flex-col gap-5 max-w-xl">
 
-      {/* ── Authentication ── */}
+      {/* ── System Credentials (GateGuard developer app — one-time setup) ── */}
+      <div>
+        <button onClick={() => setSysExpanded(v => !v)} className="flex items-center gap-2 w-full text-left">
+          <SectionDivider>
+            System Credentials
+            {sysConfigured
+              ? <span className="ml-2 text-[9px] font-semibold uppercase tracking-wide text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded">Configured</span>
+              : <span className="ml-2 text-[9px] font-semibold uppercase tracking-wide text-amber-400 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded">Required</span>
+            }
+          </SectionDivider>
+          <Ic d={sysExpanded ? I.chevD : I.chevR} className="w-3 h-3 text-slate-600 shrink-0 mb-0.5" />
+        </button>
+
+        {sysExpanded && (
+          <div className="flex flex-col gap-3 mt-3">
+            <p className="text-[10px] text-slate-600 leading-relaxed">
+              GateGuard Brivo developer app credentials — shared across all properties.
+              Find them in the <span className="text-slate-400">Brivo Developer Portal → Applications</span>.
+              Saved securely to your database once set.
+            </p>
+
+            <div className="grid grid-cols-2 gap-2 text-[10px]">
+              {[
+                { label: 'API Key',       has: sysStatus?.has_api_key },
+                { label: 'Client ID',     has: sysStatus?.has_client_id },
+                { label: 'Client Secret', has: sysStatus?.has_client_secret, full: true },
+              ].map(({ label, has, full }) => (
+                <div key={label} className={`flex items-center gap-1.5 px-2 py-1.5 rounded border ${full ? 'col-span-2' : ''} ${has ? 'border-emerald-500/20 text-emerald-500' : 'border-white/[0.06] text-slate-600'}`}>
+                  {has ? '✓' : '○'} {label}
+                </div>
+              ))}
+            </div>
+
+            <Field label="Brivo API Key">
+              <input className={inputMonoCls} value={sysApiKey} onChange={e => setSysApiKey(e.target.value)}
+                placeholder={sysStatus?.has_api_key ? '••••••••  (already set)' : 'Paste API key from Brivo portal'} />
+            </Field>
+            <Field label="Client ID">
+              <input className={inputMonoCls} value={sysClientId} onChange={e => setSysClientId(e.target.value)}
+                placeholder={sysStatus?.has_client_id ? '••••••••  (already set)' : 'OAuth app Client ID'} />
+            </Field>
+            <Field label="Client Secret">
+              <input className={inputMonoCls} type="password" value={sysClientSecret} onChange={e => setSysClientSecret(e.target.value)}
+                placeholder={sysStatus?.has_client_secret ? '••••••••  (already set)' : 'OAuth app Client Secret'} />
+            </Field>
+
+            <button
+              onClick={saveSystemCreds}
+              disabled={sysSaving || (!sysApiKey && !sysClientId && !sysClientSecret)}
+              className="self-start flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-slate-300 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] rounded transition-all disabled:opacity-40"
+            >
+              {sysSaving ? <><div className="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" /> Saving…</> : 'Save System Credentials'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ── Per-Property Authentication ── */}
       <div>
         <SectionDivider>Brivo Authentication</SectionDivider>
         <div className="flex flex-col gap-3">
@@ -483,27 +579,19 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
             {hasPassword && !resettingPw ? (
               <div className="flex items-center gap-2">
                 <input className={inputCls} value="••••••••••••" readOnly disabled />
-                <button
-                  onClick={() => { setResettingPw(true); setPassword(''); }}
-                  className="shrink-0 px-3 py-2 text-[10px] font-semibold text-amber-400 hover:text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded transition-all"
-                >
+                <button onClick={() => { setResettingPw(true); setPassword(''); }}
+                  className="shrink-0 px-3 py-2 text-[10px] font-semibold text-amber-400 hover:text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded transition-all">
                   Reset
                 </button>
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <input
-                  className={inputCls}
-                  type="password"
-                  value={password}
+                <input className={inputCls} type="password" value={password}
                   onChange={e => setPassword(e.target.value)}
-                  placeholder={resettingPw ? 'Enter new password' : 'Enter Brivo admin password'}
-                />
+                  placeholder={resettingPw ? 'Enter new password' : 'Enter Brivo admin password'} />
                 {resettingPw && (
-                  <button
-                    onClick={() => { setResettingPw(false); setPassword(''); }}
-                    className="shrink-0 px-3 py-2 text-[10px] text-slate-500 hover:text-slate-300 border border-white/[0.08] rounded transition-all"
-                  >
+                  <button onClick={() => { setResettingPw(false); setPassword(''); }}
+                    className="shrink-0 px-3 py-2 text-[10px] text-slate-500 hover:text-slate-300 border border-white/[0.08] rounded transition-all">
                     Cancel
                   </button>
                 )}
@@ -512,7 +600,6 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
             <p className="text-[10px] text-slate-700 mt-1">Password is encrypted and never displayed again after saving.</p>
           </Field>
 
-          {/* Connection status */}
           {connStatus !== 'idle' && (
             <div className={`flex items-center gap-2 px-3 py-2 rounded border text-xs ${
               connStatus === 'ok'

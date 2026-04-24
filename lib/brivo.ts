@@ -2,10 +2,11 @@
 //
 // Brivo API helper — password grant, per-account credentials.
 //
-// Auth model (mirrors EEN pattern):
-//   Global env vars (GateGuard's one registered Brivo developer app):
-//     BRIVO_AUTH_BASIC = base64(clientId:clientSecret)
-//     BRIVO_API_KEY    = developer API key
+// Auth model:
+//   App-level credentials (GateGuard's one registered Brivo developer app):
+//     Resolved in priority order:
+//       1. Vercel env vars:  BRIVO_API_KEY, BRIVO_CLIENT_ID, BRIVO_CLIENT_SECRET
+//       2. Supabase system_settings table (set via Setup → Brivo Access → System Credentials)
 //
 //   Per-account in Supabase accounts table:
 //     brivo_username      = property admin username
@@ -15,9 +16,13 @@
 //
 // Token flow:
 //   POST https://auth.brivo.com/oauth/token
-//   Authorization: Basic {BRIVO_AUTH_BASIC}
+//   Authorization: Basic {base64(clientId:clientSecret)}
 //   api-key: {BRIVO_API_KEY}
 //   Body: grant_type=password&username={brivo_username}&password={brivo_password}
+//
+// Unlock flow (admin):
+//   POST https://api.brivo.com/v1/api/access-points/{id}/activate
+//   (No body. activationEnabled must be true on the access point in Brivo portal.)
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -32,20 +37,70 @@ function makeSupabase() {
 }
 
 interface BrivoTokenResult {
-  token:    string;
-  apiKey:   string;
-  doorIds:  Array<{ id: string; name: string; type: string }>;
+  token:   string;
+  apiKey:  string;
+  doorIds: Array<{ id: string; name: string; type: string }>;
+}
+
+interface BrivoAppCreds {
+  apiKey:    string;
+  authBasic: string; // base64(clientId:clientSecret)
+}
+
+// ─── Resolve app-level credentials (env vars → Supabase fallback) ─────────────
+async function getBrivoAppCreds(): Promise<BrivoAppCreds | null> {
+  // 1. Env vars — fastest path, set in Vercel dashboard
+  const envKey    = process.env.BRIVO_API_KEY;
+  const envId     = process.env.BRIVO_CLIENT_ID;
+  const envSecret = process.env.BRIVO_CLIENT_SECRET;
+
+  if (envKey && envId && envSecret) {
+    return { apiKey: envKey, authBasic: Buffer.from(`${envId}:${envSecret}`).toString('base64') };
+  }
+
+  // Legacy: support pre-computed BRIVO_AUTH_BASIC env var
+  const envBasic = process.env.BRIVO_AUTH_BASIC;
+  if (envKey && envBasic) {
+    return { apiKey: envKey, authBasic: envBasic };
+  }
+
+  // 2. Supabase system_settings fallback — set via Setup → Brivo Access → System Credentials
+  try {
+    const supabase = makeSupabase();
+    const { data } = await supabase
+      .from('system_settings')
+      .select('key, value')
+      .in('key', ['brivo_api_key', 'brivo_client_id', 'brivo_client_secret']);
+
+    if (!data || data.length === 0) return null;
+
+    const s: Record<string, string> = {};
+    data.forEach(r => { s[r.key] = r.value; });
+
+    const apiKey       = s['brivo_api_key'];
+    const clientId     = s['brivo_client_id'];
+    const clientSecret = s['brivo_client_secret'];
+
+    if (!apiKey || !clientId || !clientSecret) return null;
+    return { apiKey, authBasic: Buffer.from(`${clientId}:${clientSecret}`).toString('base64') };
+  } catch {
+    return null;
+  }
 }
 
 // ─── Token management (per account) ──────────────────────────────────────────
 export async function getValidBrivoToken(accountId: string): Promise<BrivoTokenResult> {
-  const supabase = makeSupabase();
-  const apiKey   = process.env.BRIVO_API_KEY;
-  const authBasic = process.env.BRIVO_AUTH_BASIC;
+  const supabase  = makeSupabase();
+  const appCreds  = await getBrivoAppCreds();
 
-  if (!apiKey || !authBasic) {
-    throw new Error('BRIVO_API_KEY and BRIVO_AUTH_BASIC must be set in Vercel env vars.');
+  if (!appCreds) {
+    throw new Error(
+      'Brivo app credentials not configured. ' +
+      'Enter your API Key, Client ID, and Client Secret in Setup → Brivo Access → System Credentials.'
+    );
   }
+
+  const { apiKey, authBasic } = appCreds;
 
   // Load per-account credentials
   const { data: account, error } = await supabase
@@ -54,12 +109,10 @@ export async function getValidBrivoToken(accountId: string): Promise<BrivoTokenR
     .eq('id', accountId)
     .single();
 
-  if (error || !account) {
-    throw new Error(`Account ${accountId} not found.`);
-  }
+  if (error || !account) throw new Error(`Account ${accountId} not found.`);
 
   if (!account.brivo_username || !account.brivo_password) {
-    throw new Error('Brivo not configured for this account. Add credentials in Setup → Brivo.');
+    throw new Error('Brivo credentials not configured for this account. Add them in Setup → Brivo Access.');
   }
 
   const doorIds: Array<{ id: string; name: string; type: string }> = account.brivo_door_ids ?? [];
@@ -70,14 +123,8 @@ export async function getValidBrivoToken(accountId: string): Promise<BrivoTokenR
     return { token: account.brivo_access_token, apiKey, doorIds };
   }
 
-  // Refresh token
+  // Refresh token via Brivo password grant
   console.log(`[brivo] Refreshing token for account ${accountId}…`);
-
-  const body = new URLSearchParams({
-    grant_type: 'password',
-    username:   account.brivo_username,
-    password:   account.brivo_password,
-  });
 
   const res = await fetch(BRIVO_AUTH_URL, {
     method:  'POST',
@@ -86,7 +133,11 @@ export async function getValidBrivoToken(accountId: string): Promise<BrivoTokenR
       'api-key':      apiKey,
       'Content-Type': 'application/x-www-form-urlencoded',
     },
-    body: body.toString(),
+    body: new URLSearchParams({
+      grant_type: 'password',
+      username:   account.brivo_username,
+      password:   account.brivo_password,
+    }).toString(),
   });
 
   if (!res.ok) {
@@ -94,98 +145,105 @@ export async function getValidBrivoToken(accountId: string): Promise<BrivoTokenR
     throw new Error(`Brivo auth failed (${res.status}): ${errText}`);
   }
 
-  const tokens = await res.json();
+  const tokens    = await res.json();
   const newExpiry = new Date(Date.now() + (tokens.expires_in ?? 3600) * 1000).toISOString();
 
   await supabase
     .from('accounts')
-    .update({
-      brivo_access_token:  tokens.access_token,
-      brivo_token_expires: newExpiry,
-    })
+    .update({ brivo_access_token: tokens.access_token, brivo_token_expires: newExpiry })
     .eq('id', accountId);
 
   console.log(`[brivo] ✅ Token refreshed for account ${accountId}`);
   return { token: tokens.access_token, apiKey, doorIds };
 }
 
+// ─── System settings helpers (used by config route) ──────────────────────────
+export async function getBrivoSystemConfig(): Promise<{
+  has_api_key: boolean;
+  has_client_id: boolean;
+  has_client_secret: boolean;
+}> {
+  try {
+    const { data } = await makeSupabase()
+      .from('system_settings')
+      .select('key')
+      .in('key', ['brivo_api_key', 'brivo_client_id', 'brivo_client_secret']);
+
+    const keys = new Set((data ?? []).map((r: any) => r.key));
+    return {
+      has_api_key:       keys.has('brivo_api_key'),
+      has_client_id:     keys.has('brivo_client_id'),
+      has_client_secret: keys.has('brivo_client_secret'),
+    };
+  } catch {
+    return { has_api_key: false, has_client_id: false, has_client_secret: false };
+  }
+}
+
+export async function saveBrivoSystemConfig(fields: {
+  apiKey?: string; clientId?: string; clientSecret?: string;
+}): Promise<void> {
+  const now  = new Date().toISOString();
+  const rows = [
+    fields.apiKey       && { key: 'brivo_api_key',       value: fields.apiKey,       updated_at: now },
+    fields.clientId     && { key: 'brivo_client_id',     value: fields.clientId,     updated_at: now },
+    fields.clientSecret && { key: 'brivo_client_secret', value: fields.clientSecret, updated_at: now },
+  ].filter(Boolean) as { key: string; value: string; updated_at: string }[];
+
+  if (rows.length === 0) return;
+  const { error } = await makeSupabase()
+    .from('system_settings')
+    .upsert(rows, { onConflict: 'key' });
+  if (error) throw new Error(error.message);
+}
+
 // ─── Authenticated GET ────────────────────────────────────────────────────────
 export async function brivoGet(
-  token: string,
-  apiKey: string,
-  path: string,
-  params?: Record<string, string>
+  token: string, apiKey: string, path: string, params?: Record<string, string>
 ): Promise<any> {
   const url = new URL(`${BRIVO_API_BASE}${path}`);
   if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
 
   const res = await fetch(url.toString(), {
-    method:  'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'api-key':     apiKey,
-      Accept:        'application/json',
-    },
+    headers: { Authorization: `Bearer ${token}`, 'api-key': apiKey, Accept: 'application/json' },
   });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Brivo GET ${path} failed (${res.status}): ${errText}`);
-  }
-
-  return res.json();
-}
-
-// ─── Authenticated PUT (unlock) ───────────────────────────────────────────────
-export async function brivoPut(
-  token: string,
-  apiKey: string,
-  path: string,
-  body?: Record<string, any>
-): Promise<any> {
-  const res = await fetch(`${BRIVO_API_BASE}${path}`, {
-    method:  'PUT',
-    headers: {
-      Authorization:  `Bearer ${token}`,
-      'api-key':      apiKey,
-      'Content-Type': 'application/json',
-      Accept:         'application/json',
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Brivo PUT ${path} failed (${res.status}): ${errText}`);
-  }
-
-  if (res.status === 204) return { success: true };
+  if (!res.ok) throw new Error(`Brivo GET ${path} failed (${res.status}): ${await res.text()}`);
   return res.json();
 }
 
 // ─── Authenticated POST ───────────────────────────────────────────────────────
 export async function brivoPost(
-  token: string,
-  apiKey: string,
-  path: string,
-  body?: Record<string, any>
+  token: string, apiKey: string, path: string, body?: Record<string, any>
 ): Promise<any> {
   const res = await fetch(`${BRIVO_API_BASE}${path}`, {
     method:  'POST',
     headers: {
-      Authorization:  `Bearer ${token}`,
-      'api-key':      apiKey,
-      'Content-Type': 'application/json',
-      Accept:         'application/json',
+      Authorization: `Bearer ${token}`, 'api-key': apiKey,
+      'Content-Type': 'application/json', Accept: 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Brivo POST ${path} failed (${res.status}): ${errText}`);
-  }
+  if (!res.ok) throw new Error(`Brivo POST ${path} failed (${res.status}): ${await res.text()}`);
+  if (res.status === 204) return { success: true };
+  return res.json();
+}
 
+// ─── Authenticated PUT ────────────────────────────────────────────────────────
+export async function brivoPut(
+  token: string, apiKey: string, path: string, body?: Record<string, any>
+): Promise<any> {
+  const res = await fetch(`${BRIVO_API_BASE}${path}`, {
+    method:  'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`, 'api-key': apiKey,
+      'Content-Type': 'application/json', Accept: 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  if (!res.ok) throw new Error(`Brivo PUT ${path} failed (${res.status}): ${await res.text()}`);
   if (res.status === 204) return { success: true };
   return res.json();
 }

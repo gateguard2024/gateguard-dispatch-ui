@@ -6,9 +6,9 @@
 // POST body: { accountId, doorId, operatorId, operatorName, alarmId? }
 // Response:  { success: true, door: { id, unlockedAt } }
 
-import { NextResponse }                        from 'next/server';
-import { createClient }                        from '@supabase/supabase-js';
-import { getValidBrivoToken, brivoPut, brivoPost } from '@/lib/brivo';
+import { NextResponse }                  from 'next/server';
+import { createClient }                  from '@supabase/supabase-js';
+import { getValidBrivoToken, brivoPost } from '@/lib/brivo';
 
 export async function POST(request: Request) {
   try {
@@ -28,12 +28,10 @@ export async function POST(request: Request) {
 
     console.log(`[brivo/open] Unlocking door ${doorId} by ${operatorName}`);
 
-    // Try PUT first (standard Brivo V1), fall back to POST
-    try {
-      await brivoPut(token, apiKey, `/access-points/${doorId}/unlock`);
-    } catch {
-      await brivoPost(token, apiKey, `/access-points/${doorId}/unlock`);
-    }
+    // Brivo admin unlock = POST /access-points/{id}/activate (no body).
+    // activationEnabled must be true on the access point in Brivo portal.
+    // Note: /unlock is for digital-credential users only — not for admin use.
+    await brivoPost(token, apiKey, `/access-points/${doorId}/activate`);
 
     const unlockedAt = new Date().toISOString();
 
