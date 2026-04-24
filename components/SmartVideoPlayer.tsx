@@ -11,23 +11,25 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 
 interface SmartVideoPlayerProps {
-  accountId:     string;
-  cameraId:      string;
-  source?:       'een' | 'brivo';     // Which API to use for live stream ('een' is active)
-  streamType?:   'main' | 'preview';  // 'main' = high-res, 'preview' = low-res
-  recordedUrl?:  string;              // If set, plays this URL instead of fetching live
-  recordedToken?: string;             // EEN Bearer token — required for recorded HLS auth
-  label?:        string;              // Optional overlay label
+  accountId:        string;
+  cameraId:         string;
+  source?:          'een' | 'brivo';
+  streamType?:      'main' | 'preview';
+  recordedUrl?:     string;
+  recordedToken?:   string;
+  label?:           string;
+  disableFullscreen?: boolean;  // Set true on wall-view tiles to prevent double-click fullscreen conflict
 }
 
 export default function SmartVideoPlayer({
   accountId,
   cameraId,
-  source       = 'een',
-  streamType   = 'main',
+  source            = 'een',
+  streamType        = 'main',
   recordedUrl,
   recordedToken,
   label,
+  disableFullscreen = false,
 }: SmartVideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef     = useRef<HTMLVideoElement>(null);
@@ -53,37 +55,19 @@ export default function SmartVideoPlayer({
 
       if (recordedUrl) {
         // ── Recorded playback ─────────────────────────────────────────────
-        // EEN HLS recorded URLs require Bearer token injected per-request.
-        // Use HLS.js fetchSetup to inject auth header directly (per EEN docs).
-        if (recordedToken && Hls.isSupported()) {
-          const hls = new Hls({
-            fetchSetup: (context, init) => {
-              const headers = new Headers((init.headers as HeadersInit) || {});
-              headers.set('Authorization', `Bearer ${recordedToken}`);
-              return new Request(context.url, { ...init, headers });
-            },
-            lowLatencyMode:   false,
-            backBufferLength: 60,
-          });
-          hlsRef.current = hls;
-          hls.loadSource(recordedUrl);
-          hls.attachMedia(video);
-          hls.on(Hls.Events.MANIFEST_PARSED, () => {
-            setStatus('playing');
-            setRetryCount(0);
-            video.play().catch(() => {});
-          });
-          hls.on(Hls.Events.ERROR, (_event, errData) => {
-            if (!errData.fatal) return;
-            setErrorMsg('Recorded stream error — clip may still be processing');
-            setStatus('error');
-          });
-          return; // HLS set up directly — skip mountHls below
+        // EEN media servers block cross-origin requests (no CORS headers).
+        // We must proxy all HLS traffic through our server which:
+        //   1. Adds the Bearer token to every EEN request
+        //   2. Rewrites relative segment URLs in the manifest to also use our proxy
+        // Route: /api/een/hls?accountId={id}&url={encoded_een_url}
+        if (recordedToken) {
+          proxyUrl = `/api/een/hls?accountId=${encodeURIComponent(accountId)}&url=${encodeURIComponent(recordedUrl)}`;
+        } else {
+          // Fallback: old proxy (no token — segments may fail)
+          proxyUrl = recordedUrl.includes('?')
+            ? `/api/cameras/proxy?url=${encodeURIComponent(recordedUrl)}`
+            : recordedUrl;
         }
-        // Fallback: proxy approach (no token available)
-        proxyUrl = recordedUrl.includes('?')
-          ? `/api/cameras/proxy?url=${encodeURIComponent(recordedUrl)}`
-          : recordedUrl;
       } else {
         // ── Live stream: pick endpoint by source ──────────────────────────
         const endpoint = source === 'brivo'
@@ -190,7 +174,7 @@ export default function SmartVideoPlayer({
   return (
     <div
       ref={containerRef}
-      onDoubleClick={toggleFullscreen}
+      onDoubleClick={disableFullscreen ? undefined : toggleFullscreen}
       className="relative w-full h-full bg-black flex items-center justify-center cursor-pointer overflow-hidden group"
     >
       {/* Loading overlay */}
