@@ -288,6 +288,7 @@ export default function AlarmsPage() {
   // Video panel state
   // preAlarmUrl: undefined = fetching, null = no clip found, string = URL ready
   const [preAlarmUrl, setPreAlarmUrl]         = useState<string | null | undefined>(undefined);
+  const [preAlarmToken, setPreAlarmToken]     = useState<string | null>(null);
   const [liveOffset, setLiveOffset]           = useState<number>(0);
   const [liveOffsetUrl, setLiveOffsetUrl]     = useState<string | null>(null);
   const [fetchingClip, setFetchingClip]       = useState(false);
@@ -364,6 +365,7 @@ export default function AlarmsPage() {
     setProcedureChecked([]);
     setClearanceChecked([false, false, false]);
     setPreAlarmUrl(undefined);   // undefined = currently fetching
+    setPreAlarmToken(null);
     setLiveOffset(0);
     setLiveOffsetUrl(null);
     setExpandedPanel(null);
@@ -487,11 +489,14 @@ export default function AlarmsPage() {
         if (clipRes.ok) {
           const clipData = await clipRes.json();
           setPreAlarmUrl(clipData.url ?? null);
+          setPreAlarmToken(clipData.token ?? null);  // token needed for HLS auth
         } else {
           setPreAlarmUrl(null);
+          setPreAlarmToken(null);
         }
       } catch {
         setPreAlarmUrl(null);
+        setPreAlarmToken(null);
       }
     } else {
       setPreAlarmUrl(null);
@@ -923,6 +928,7 @@ export default function AlarmsPage() {
                       source={activeCameraSource as 'brivo' | 'een'}
                       streamType="preview"
                       recordedUrl={preAlarmUrl}
+                      recordedToken={preAlarmToken ?? undefined}
                       label=""
                     />
                   ) : activeCameraId && preAlarmUrl === undefined ? (
