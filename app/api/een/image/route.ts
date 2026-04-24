@@ -35,9 +35,9 @@ export async function GET(request: Request) {
       );
     }
 
-    // EEN V3: liveImage.jpeg is the correct endpoint for camera snapshots.
-    // The /cameras/{id}/image endpoint returns 404 for most accounts.
-    const targetUrl = `https://${cluster}/api/v3.0/media/liveImage.jpeg?deviceId=${encodeURIComponent(cameraId)}`;
+    // EEN V3 camera snapshot — try the standard cameras image endpoint.
+    // Falls back gracefully via onError in the img tag if EEN returns 404.
+    const targetUrl = `https://${cluster}/api/v3.0/cameras/${encodeURIComponent(cameraId)}/image`;
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
