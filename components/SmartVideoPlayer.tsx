@@ -105,12 +105,23 @@ export default function SmartVideoPlayer({
       // ── Mount HLS player ───────────────────────────────────────────────
       const mountHls = (url: string) => {
         if (Hls.isSupported()) {
-          const hls = new Hls({
-            xhrSetup: (xhr) => {
-              xhr.withCredentials = true;
-            },
-            lowLatencyMode:   !recordedUrl,
-            backBufferLength: recordedUrl ? 60 : 10,
+          const hls = new Hls(recordedUrl ? {
+            // Recorded: buffer generously for smooth scrubbing
+            lowLatencyMode:   false,
+            backBufferLength: 60,
+            xhrSetup: (xhr) => { xhr.withCredentials = true; },
+          } : {
+            // Live: minimise latency — start playing as soon as first segment arrives
+            lowLatencyMode:            true,
+            liveSyncDurationCount:     1,      // stay 1 segment from live edge
+            liveMaxLatencyDurationCount: 4,    // seek to live edge if >4 segments behind
+            maxLiveSyncPlaybackRate:   1.5,    // speed up to catch live edge when lagging
+            maxBufferLength:           8,      // don't over-buffer on live
+            maxMaxBufferLength:        16,
+            manifestLoadingTimeOut:    8000,
+            manifestLoadingMaxRetry:   3,
+            backBufferLength:          10,
+            xhrSetup: (xhr) => { xhr.withCredentials = true; },
           });
 
           hlsRef.current = hls;
