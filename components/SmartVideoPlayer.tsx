@@ -7,7 +7,7 @@
 // Default source is 'een'. Change default to 'brivo' when Brivo video is enabled.
 // All other behavior (HLS.js, proxy, cookie, retry) unchanged.
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, MouseEvent } from 'react';
 import Hls from 'hls.js';
 
 interface SmartVideoPlayerProps {
@@ -38,6 +38,13 @@ export default function SmartVideoPlayer({
   const [status, setStatus]         = useState<'loading' | 'playing' | 'error'>('loading');
   const [errorMsg, setErrorMsg]     = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
+
+  // Playback controls (recorded only)
+  const [isPlaying, setIsPlaying]   = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration]     = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const progressRef = useRef<HTMLDivElement>(null);
 
   const startStream = useCallback(async () => {
     if (hlsRef.current) {
@@ -160,6 +167,74 @@ export default function SmartVideoPlayer({
     };
   }, [startStream]);
 
+  // Wire up playback events for recorded video
+  useEffect(() => {
+    if (!recordedUrl) return;
+    const video = videoRef.current;
+    if (!video) return;
+
+    const onTime     = () => setCurrentTime(video.currentTime);
+    const onDuration = () => setDuration(video.duration || 0);
+    const onPlay     = () => setIsPlaying(true);
+    const onPause    = () => setIsPlaying(false);
+    const onEnded    = () => setIsPlaying(false);
+
+    video.addEventListener('timeupdate',      onTime);
+    video.addEventListener('durationchange',  onDuration);
+    video.addEventListener('loadedmetadata',  onDuration);
+    video.addEventListener('play',            onPlay);
+    video.addEventListener('pause',           onPause);
+    video.addEventListener('ended',           onEnded);
+
+    return () => {
+      video.removeEventListener('timeupdate',     onTime);
+      video.removeEventListener('durationchange', onDuration);
+      video.removeEventListener('loadedmetadata', onDuration);
+      video.removeEventListener('play',           onPlay);
+      video.removeEventListener('pause',          onPause);
+      video.removeEventListener('ended',          onEnded);
+    };
+  }, [recordedUrl, status]);
+
+  // ── Playback control handlers ─────────────────────────────────────────────
+  const togglePlay = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) { video.play().catch(() => {}); }
+    else              { video.pause(); }
+  }, []);
+
+  const skip = useCallback((seconds: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + seconds));
+  }, []);
+
+  const changeSpeed = useCallback((rate: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.playbackRate = rate;
+    setPlaybackRate(rate);
+  }, []);
+
+  const seekTo = useCallback((e: MouseEvent<HTMLDivElement>) => {
+    const bar   = progressRef.current;
+    const video = videoRef.current;
+    if (!bar || !video || !duration) return;
+    const rect  = bar.getBoundingClientRect();
+    const pct   = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    video.currentTime = pct * duration;
+  }, [duration]);
+
+  const fmtTime = (s: number): string => {
+    if (!isFinite(s) || isNaN(s)) return '0:00';
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  const SPEEDS = [1, 2, 4, 8];
+
   const toggleFullscreen = async () => {
     if (!containerRef.current) return;
     try {
@@ -230,8 +305,101 @@ export default function SmartVideoPlayer({
         autoPlay
         muted
         playsInline
-        className="w-full h-full object-contain bg-black"
+        className={`w-full object-contain bg-black ${recordedUrl ? 'h-[calc(100%-52px)]' : 'h-full'}`}
       />
+
+      {/* ── Recorded playback controls ──────────────────────────────────── */}
+      {recordedUrl && status === 'playing' && (
+        <div className="absolute bottom-0 left-0 right-0 bg-black/80 backdrop-blur-sm border-t border-white/[0.08] px-2 py-1.5 flex flex-col gap-1.5 z-20">
+
+          {/* Timeline scrubber */}
+          <div
+            ref={progressRef}
+            onClick={seekTo}
+            className="relative h-2 bg-white/10 rounded-full cursor-pointer group/bar hover:h-3 transition-all"
+          >
+            {/* Buffered / progress */}
+            <div
+              className="absolute inset-y-0 left-0 bg-indigo-500 rounded-full pointer-events-none"
+              style={{ width: duration ? `${(currentTime / duration) * 100}%` : '0%' }}
+            />
+            {/* Scrub handle */}
+            <div
+              className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full shadow pointer-events-none opacity-0 group-hover/bar:opacity-100 transition-opacity"
+              style={{ left: duration ? `calc(${(currentTime / duration) * 100}% - 6px)` : '0' }}
+            />
+          </div>
+
+          {/* Controls row */}
+          <div className="flex items-center gap-2">
+            {/* RR 10s */}
+            <button
+              onClick={() => skip(-10)}
+              className="p-1 text-slate-400 hover:text-white transition-colors"
+              title="Back 10s"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12.5 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7V7l-4-4 4-4v2.05A9.01 9.01 0 0 1 12.5 3z"/>
+                <text x="7" y="15" fontSize="6" fill="currentColor" textAnchor="middle">10</text>
+              </svg>
+            </button>
+
+            {/* Play / Pause */}
+            <button
+              onClick={togglePlay}
+              className="w-7 h-7 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 text-white transition-all"
+              title={isPlaying ? 'Pause' : 'Play'}
+            >
+              {isPlaying ? (
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+                </svg>
+              ) : (
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="5,3 19,12 5,21"/>
+                </svg>
+              )}
+            </button>
+
+            {/* FF 10s */}
+            <button
+              onClick={() => skip(10)}
+              className="p-1 text-slate-400 hover:text-white transition-colors"
+              title="Forward 10s"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M11.5 3a9 9 0 1 1-9 9h2a7 7 0 1 0 7-7V7l4-4-4-4v2.05A9.01 9.01 0 0 0 11.5 3z"/>
+                <text x="17" y="15" fontSize="6" fill="currentColor" textAnchor="middle">10</text>
+              </svg>
+            </button>
+
+            {/* Timecode */}
+            <span className="text-[10px] text-slate-400 font-mono ml-1 shrink-0">
+              {fmtTime(currentTime)} / {fmtTime(duration)}
+            </span>
+
+            {/* Spacer */}
+            <div className="flex-1" />
+
+            {/* Speed controls */}
+            <div className="flex items-center gap-0.5">
+              {SPEEDS.map(s => (
+                <button
+                  key={s}
+                  onClick={() => changeSpeed(s)}
+                  className={`px-1.5 py-0.5 text-[9px] font-bold rounded transition-all ${
+                    playbackRate === s
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.06]'
+                  }`}
+                >
+                  {s}×
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
