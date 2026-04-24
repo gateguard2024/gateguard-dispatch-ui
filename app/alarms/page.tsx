@@ -900,8 +900,8 @@ export default function AlarmsPage() {
               </div>
             </div>
 
-            {/* TOP 55%: Dual Video (or single expanded panel) */}
-            <div className="flex gap-px bg-black" style={{ height: '55%' }}>
+            {/* TOP 55%: Dual Video stacked vertically — 16:9 plays better full-width */}
+            <div className="flex flex-col gap-px bg-black" style={{ height: '55%' }}>
 
               {/* ── Pre-alarm / Recorded panel ─────────────────────────── */}
               {expandedPanel !== 'live' && (
