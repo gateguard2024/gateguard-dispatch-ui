@@ -69,24 +69,37 @@ export async function GET(request: Request) {
       const lastSlash = parsedUrl.href.lastIndexOf('/');
       const basePath  = parsedUrl.href.substring(0, lastSlash + 1);
 
+      // Helper: resolve a possibly-relative URL to absolute, then wrap in proxy
+      const toProxyUrl = (uri: string): string => {
+        let absoluteUrl: string;
+        if (uri.startsWith('http://') || uri.startsWith('https://')) {
+          absoluteUrl = uri;
+        } else if (uri.startsWith('/')) {
+          absoluteUrl = `${parsedUrl.protocol}//${parsedUrl.host}${uri}`;
+        } else {
+          absoluteUrl = `${basePath}${uri}`;
+        }
+        return `/api/een/hls?accountId=${encodeURIComponent(accountId)}&url=${encodeURIComponent(absoluteUrl)}`;
+      };
+
       const rewritten = text.split('\n').map(line => {
         const trimmed = line.trim();
+        if (!trimmed) return line;
 
-        // Skip comments and empty lines
-        if (!trimmed || trimmed.startsWith('#')) return line;
-
-        // Resolve relative URL to absolute EEN URL
-        let absoluteUrl: string;
-        if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-          absoluteUrl = trimmed;
-        } else if (trimmed.startsWith('/')) {
-          absoluteUrl = `${parsedUrl.protocol}//${parsedUrl.host}${trimmed}`;
-        } else {
-          absoluteUrl = `${basePath}${trimmed}`;
+        // Plain segment URL — non-comment line
+        if (!trimmed.startsWith('#')) {
+          return toProxyUrl(trimmed);
         }
 
-        // Rewrite to go through our proxy
-        return `/api/een/hls?accountId=${encodeURIComponent(accountId)}&url=${encodeURIComponent(absoluteUrl)}`;
+        // HLS tags containing URI="..." attributes (e.g. #EXT-X-MAP, #EXT-X-KEY)
+        // These are comment lines but contain URLs that must also be proxied
+        if (trimmed.includes('URI="')) {
+          return line.replace(/URI="([^"]+)"/g, (_match, uri) => {
+            return `URI="${toProxyUrl(uri)}"`;
+          });
+        }
+
+        return line;
       }).join('\n');
 
       return new Response(rewritten, {
