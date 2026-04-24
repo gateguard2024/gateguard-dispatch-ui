@@ -19,6 +19,7 @@ const isPublicRoute = createRouteMatcher([
   '/api/cron(.*)',           // Vercel cron jobs — secured by CRON_SECRET, not Clerk
   '/api/webhooks(.*)',       // EEN/Brivo webhooks — external callers, no Clerk session
   '/api/ai/triage(.*)',      // Called by cron — needs to be public
+  '/api/brivo(.*)',          // Brivo API routes — auth handled by Brivo token internally
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
