@@ -386,6 +386,221 @@ function DeleteConfirmModal({
   );
 }
 
+// ─── Brivo Tab Component ──────────────────────────────────────────────────────
+const DOOR_TYPES = ['gate', 'door', 'elevator', 'turnstile'] as const;
+
+function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
+  const [username, setUsername]         = useState('');
+  const [password, setPassword]         = useState('');
+  const [hasPassword, setHasPassword]   = useState(false);
+  const [resettingPw, setResettingPw]   = useState(false);
+  const [doors, setDoors]               = useState<Array<{ id: string; name: string; type: string }>>([]);
+  const [saving, setSaving]             = useState(false);
+  const [testing, setTesting]           = useState(false);
+  const [connStatus, setConnStatus]     = useState<'idle' | 'ok' | 'fail'>('idle');
+  const [connMsg, setConnMsg]           = useState('');
+  const [loaded, setLoaded]             = useState(false);
+
+  // Load existing config
+  React.useEffect(() => {
+    fetch(`/api/brivo/config?accountId=${accountId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return;
+        setUsername(data.username ?? '');
+        setHasPassword(data.has_password ?? false);
+        setDoors(data.doors ?? []);
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+  }, [accountId]);
+
+  const addDoor = () => {
+    if (doors.length >= 10) return;
+    setDoors(prev => [...prev, { id: '', name: '', type: 'gate' }]);
+  };
+
+  const removeDoor = (idx: number) => {
+    setDoors(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const updateDoor = (idx: number, field: string, value: string) => {
+    setDoors(prev => prev.map((d, i) => i === idx ? { ...d, [field]: value } : d));
+  };
+
+  const save = async (test = false) => {
+    test ? setTesting(true) : setSaving(true);
+    setConnStatus('idle');
+    try {
+      const body: any = {
+        accountId,
+        username,
+        doors: doors.filter(d => d.id.trim() && d.name.trim()),
+        testConnection: test,
+      };
+      // Only send password if it's a new value (not masked placeholder)
+      if (!hasPassword || resettingPw) body.password = password;
+
+      const res  = await fetch('/api/brivo/config', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      const data = await res.json();
+
+      if (test) {
+        setConnStatus(data.connected ? 'ok' : 'fail');
+        setConnMsg(data.connectionError ?? (data.connected ? 'Connected successfully' : 'Connection failed'));
+      } else {
+        setHasPassword(true);
+        setResettingPw(false);
+        setPassword('');
+      }
+    } finally {
+      test ? setTesting(false) : setSaving(false);
+    }
+  };
+
+  if (!loaded) return (
+    <div className="flex items-center justify-center py-8">
+      <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-5 max-w-xl">
+
+      {/* ── Authentication ── */}
+      <div>
+        <SectionDivider>Brivo Authentication</SectionDivider>
+        <div className="flex flex-col gap-3">
+          <Field label="Brivo Admin Username">
+            <input className={inputCls} value={username} onChange={e => setUsername(e.target.value)}
+              placeholder="Property Brivo admin username" />
+          </Field>
+
+          <Field label="Brivo Admin Password">
+            {hasPassword && !resettingPw ? (
+              <div className="flex items-center gap-2">
+                <input className={inputCls} value="••••••••••••" readOnly disabled />
+                <button
+                  onClick={() => { setResettingPw(true); setPassword(''); }}
+                  className="shrink-0 px-3 py-2 text-[10px] font-semibold text-amber-400 hover:text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded transition-all"
+                >
+                  Reset
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <input
+                  className={inputCls}
+                  type="password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder={resettingPw ? 'Enter new password' : 'Enter Brivo admin password'}
+                />
+                {resettingPw && (
+                  <button
+                    onClick={() => { setResettingPw(false); setPassword(''); }}
+                    className="shrink-0 px-3 py-2 text-[10px] text-slate-500 hover:text-slate-300 border border-white/[0.08] rounded transition-all"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            )}
+            <p className="text-[10px] text-slate-700 mt-1">Password is encrypted and never displayed again after saving.</p>
+          </Field>
+
+          {/* Connection status */}
+          {connStatus !== 'idle' && (
+            <div className={`flex items-center gap-2 px-3 py-2 rounded border text-xs ${
+              connStatus === 'ok'
+                ? 'bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400'
+                : 'bg-red-500/[0.08] border-red-500/20 text-red-400'
+            }`}>
+              {connStatus === 'ok' ? '✓' : '✗'} {connMsg}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => save(true)}
+              disabled={testing || !username || (!hasPassword && !password)}
+              className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-slate-300 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] rounded transition-all disabled:opacity-40"
+            >
+              {testing ? <><div className="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" /> Testing…</> : 'Test Connection'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Doors / Gates ── */}
+      <div>
+        <div className="flex items-center mb-3">
+          <SectionDivider>Doors &amp; Gates ({doors.length}/10)</SectionDivider>
+          {doors.length < 10 && (
+            <button onClick={addDoor} className="flex items-center gap-1 text-[10px] text-indigo-400 hover:text-indigo-300 ml-3 shrink-0 transition-all">
+              <Ic d={I.plus} className="w-3 h-3" /> Add Door
+            </button>
+          )}
+        </div>
+
+        {doors.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-16 border border-dashed border-white/[0.06] rounded text-[11px] text-slate-700 gap-1">
+            No doors configured — click Add Door
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {doors.map((door, idx) => (
+              <div key={idx} className="grid grid-cols-[1fr_1fr_auto_auto] gap-2 items-center px-3 py-2.5 bg-white/[0.02] border border-white/[0.05] rounded">
+                <Field label={idx === 0 ? 'Door Name' : ''}>
+                  <input
+                    className={inputCls}
+                    placeholder="e.g., Main Gate"
+                    value={door.name}
+                    onChange={e => updateDoor(idx, 'name', e.target.value)}
+                  />
+                </Field>
+                <Field label={idx === 0 ? 'Brivo Door ID' : ''}>
+                  <input
+                    className={inputMonoCls}
+                    placeholder="e.g., 12345"
+                    value={door.id}
+                    onChange={e => updateDoor(idx, 'id', e.target.value)}
+                  />
+                </Field>
+                <Field label={idx === 0 ? 'Type' : ''}>
+                  <select
+                    className={inputCls + " cursor-pointer w-28"}
+                    value={door.type}
+                    onChange={e => updateDoor(idx, 'type', e.target.value)}
+                  >
+                    {DOOR_TYPES.map(t => <option key={t} value={t} className="bg-[#0a0c11] capitalize">{t}</option>)}
+                  </select>
+                </Field>
+                <div className={idx === 0 ? 'mt-5' : ''}>
+                  <button onClick={() => removeDoor(idx)} className="p-1.5 text-slate-700 hover:text-red-400 hover:bg-red-500/10 rounded transition-all">
+                    <Ic d={I.trash} className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <p className="text-[10px] text-slate-700 mt-2">
+          Brivo Door IDs are found in the Brivo portal under Access Points.
+          These doors will appear as unlock buttons in the Alarms dispatch panel.
+        </p>
+      </div>
+
+      {/* Save */}
+      <SaveBar onSave={() => save(false)} saving={saving} label="Save Brivo Config" />
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function SetupPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -399,7 +614,7 @@ export default function SetupPage() {
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
   const [rightView, setRightView] = useState<"empty" | "wizard" | "zone-detail">("empty");
   const [detailTab, setDetailTab] = useState<
-    "overview" | "schedule" | "contacts" | "procedures" | "site-info"
+    "overview" | "schedule" | "contacts" | "procedures" | "site-info" | "brivo"
   >("overview");
 
   // Wizard state
@@ -1238,6 +1453,7 @@ export default function SetupPage() {
       { key: "contacts",   label: contacts.length ? `Contacts (${contacts.length})` : "Contacts" },
       { key: "procedures", label: "Procedures" },
       { key: "site-info",  label: "Site Info" },
+      { key: "brivo",      label: "Brivo Access" },
     ] as const;
 
     return (
@@ -1656,6 +1872,11 @@ export default function SetupPage() {
 
               <SaveBar onSave={() => saveSiteInfo(zone.id)} saving={saving} label="Save Site Info" />
             </div>
+          )}
+
+          {/* ── BRIVO ACCESS ── */}
+          {detailTab === "brivo" && (
+            <BrivoTab accountId={zone.account_id} zoneId={zone.id} />
           )}
         </div>
       </div>
