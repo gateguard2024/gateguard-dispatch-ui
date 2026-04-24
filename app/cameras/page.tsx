@@ -110,6 +110,7 @@ export default function CamerasPage() {
   // View 3 data
   const [selectedCamera, setSelectedCamera]   = useState<CameraRow | null>(null);
   const [recordedUrl, setRecordedUrl]         = useState<string | null>(null);
+  const [recordedToken, setRecordedToken]     = useState<string | null>(null);
   const [recordedLoading, setRecordedLoading] = useState(false);
   const [recordedError, setRecordedError]     = useState<string | null>(null);
   const [startTime, setStartTime]             = useState('');
@@ -265,6 +266,7 @@ export default function CamerasPage() {
       const data = await res.json();
       if (!res.ok || !data.url) throw new Error(data.error ?? 'No recording found');
       setRecordedUrl(data.url);
+      setRecordedToken(data.token ?? null);
     } catch (err: any) {
       setRecordedError(err.message);
     } finally {
@@ -491,6 +493,7 @@ export default function CamerasPage() {
                 source={selectedCamera.source}
                 streamType="main"
                 recordedUrl={recordedUrl ?? undefined}
+                recordedToken={recordedToken ?? undefined}
                 label={selectedCamera.name}
               />
             </div>
