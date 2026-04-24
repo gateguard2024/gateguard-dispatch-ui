@@ -7,6 +7,10 @@
     {
       "path": "/api/cron/triage-alarms",
       "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/cron/gate-monitor",
+      "schedule": "*/5 * * * *"
     }
   ]
 }
