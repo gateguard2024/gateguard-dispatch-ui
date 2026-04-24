@@ -28,18 +28,31 @@ type AlarmStatus = 'pending' | 'processing' | 'resolved';
 type ActionTaken = 'authorized' | 'unauthorized' | 'false_alarm' | 'police_dispatched' | 'other' | '';
 type TabName = 'cameras' | 'history' | 'scripts' | 'notes';
 
+interface TriageResult {
+  decision:        'auto_dismiss' | 'route_to_human' | 'escalate' | string;
+  priority:        string;
+  interpretation:  string;
+  suggested_steps: string[];
+  confidence:      number;
+  reasoning:       string;
+  model:           string;
+  processed_at:    string;
+}
+
 interface Alarm {
-  id:          string;
-  priority:    Priority;
-  event_type:  string;
-  event_label: string;
-  site_name:   string;
-  camera_id:   string | null;
-  zone_id:     string | null;
-  account_id:  string | null;
-  source:      'brivo' | 'een';
-  status:      AlarmStatus;
-  created_at:  string;
+  id:             string;
+  priority:       Priority;
+  event_type:     string;
+  event_label:    string;
+  site_name:      string;
+  camera_id:      string | null;
+  zone_id:        string | null;
+  account_id:     string | null;
+  source:         'brivo' | 'een';
+  status:         AlarmStatus;
+  created_at:     string;
+  triage_status?: string | null;
+  triage_result?: TriageResult | null;
   cameras?: {
     name: string;
     brivo_camera_id: string | null;
@@ -298,6 +311,8 @@ export default function AlarmsPage() {
   const [resolvedEenCamId, setResolvedEenCamId] = useState<string | null>(null);
   // camerasView: 'grid' = thumbnail grid, 'list' = compact list
   const [camerasView, setCamerasView]         = useState<'grid' | 'list'>('list');
+  // AI triage result for the active alarm
+  const [triageResult, setTriageResult]       = useState<TriageResult | null>(null);
   // Procedure suggest state
   const [suggestingSteps, setSuggestingSteps] = useState(false);
   const [stepSuggestion, setStepSuggestion]   = useState<{ title: string; steps: ProcedureStep[]; reasoning: string } | null>(null);
@@ -358,6 +373,7 @@ export default function AlarmsPage() {
   // ── Load alarm into Action Canvas ──────────────────────────────────────────
   const processAlarm = useCallback(async (alarm: Alarm) => {
     setActiveAlarm(alarm);
+    setTriageResult(alarm.triage_result ?? null);  // load AI assessment immediately
     setActiveTab('cameras');
     setNotes(`Event: ${alarm.event_label}\nSite: ${alarm.site_name}\nTime: ${fmtTime(alarm.created_at)}\n\n`);
     setActionTaken('');
@@ -366,6 +382,7 @@ export default function AlarmsPage() {
     setClearanceChecked([false, false, false]);
     setPreAlarmUrl(undefined);   // undefined = currently fetching
     setPreAlarmToken(null);
+    setTriageResult(null);
     setLiveOffset(0);
     setLiveOffsetUrl(null);
     setExpandedPanel(null);
@@ -900,13 +917,13 @@ export default function AlarmsPage() {
               </div>
             </div>
 
-            {/* TOP 55%: Dual Video stacked vertically — 16:9 plays better full-width */}
-            <div className="flex flex-col gap-px bg-black" style={{ height: '55%' }}>
+            {/* TOP: Dual Video stacked vertically — each panel gets a fixed slice */}
+            <div className="flex flex-col gap-px bg-black overflow-hidden" style={{ height: '50%' }}>
 
               {/* ── Pre-alarm / Recorded panel ─────────────────────────── */}
               {expandedPanel !== 'live' && (
                 <div
-                  className={`relative cursor-pointer ${expandedPanel === 'pre-alarm' ? 'flex-1' : 'flex-1'}`}
+                  className={`relative cursor-pointer overflow-hidden ${expandedPanel === 'pre-alarm' ? 'flex-1' : 'h-1/2'}`}
                   onDoubleClick={() => setExpandedPanel(p => p === 'pre-alarm' ? null : 'pre-alarm')}
                   title="Double-click to expand / collapse"
                 >
@@ -951,7 +968,7 @@ export default function AlarmsPage() {
               {/* ── Live feed panel ────────────────────────────────────── */}
               {expandedPanel !== 'pre-alarm' && (
                 <div
-                  className="flex-1 relative cursor-pointer"
+                  className={`relative cursor-pointer overflow-hidden ${expandedPanel === 'live' ? 'flex-1' : 'h-1/2'}`}
                   onDoubleClick={(e) => {
                     if ((e.target as HTMLElement).tagName !== 'BUTTON') {
                       setExpandedPanel(p => p === 'live' ? null : 'live');
@@ -1320,6 +1337,41 @@ export default function AlarmsPage() {
                 </button>
               ) : undefined}
             />
+
+            {/* ── Live AI triage result for this alarm ── */}
+            {triageResult && (
+              <div className={`mb-3 rounded border p-2.5 space-y-1.5 ${
+                triageResult.decision === 'escalate'       ? 'bg-red-600/10 border-red-500/30' :
+                triageResult.decision === 'route_to_human' ? 'bg-amber-600/10 border-amber-500/30' :
+                'bg-emerald-600/10 border-emerald-500/30'
+              }`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                      triageResult.decision === 'escalate'       ? 'bg-red-500/20 text-red-400' :
+                      triageResult.decision === 'route_to_human' ? 'bg-amber-500/20 text-amber-400' :
+                      'bg-emerald-500/20 text-emerald-400'
+                    }`}>
+                      {triageResult.decision === 'escalate' ? '⚠ Escalate' :
+                       triageResult.decision === 'route_to_human' ? '👤 Review' : '✓ Low Risk'}
+                    </span>
+                    <span className="text-[8px] text-slate-500 font-mono">{triageResult.confidence}% confidence</span>
+                  </div>
+                  <span className="text-[8px] text-slate-700">GG AI</span>
+                </div>
+                <p className="text-[10px] text-slate-200 leading-relaxed">{triageResult.interpretation}</p>
+                {triageResult.suggested_steps?.length > 0 && (
+                  <div className="space-y-0.5 pt-0.5 border-t border-white/[0.06]">
+                    <p className="text-[8px] text-slate-500 uppercase tracking-wider mb-1">AI Suggested Steps</p>
+                    {triageResult.suggested_steps.slice(0, 4).map((step, i) => (
+                      <p key={i} className="text-[9px] text-slate-300 flex gap-1.5">
+                        <span className="text-slate-600 shrink-0">{i + 1}.</span>{step}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* AI suggestion panel */}
             {stepSuggestion && (
