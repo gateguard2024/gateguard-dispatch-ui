@@ -186,6 +186,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       url:            hlsUrl,
+      token,                        // required by HLS.js fetchSetup for auth headers
       type:           usedType,
       clipCount:      clips.length,
       startTimestamp: clip.startTimestamp,
