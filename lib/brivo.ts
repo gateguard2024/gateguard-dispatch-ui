@@ -225,13 +225,16 @@ export async function brivoGet(
 
 // ─── Authenticated POST ───────────────────────────────────────────────────────
 export async function brivoPost(
-  token: string, apiKey: string, path: string, body?: Record<string, any>
+  token: string, apiKey: string, path: string,
+  body?: Record<string, any>,
+  extraHeaders?: Record<string, string>
 ): Promise<any> {
   const res = await fetch(`${BRIVO_API_BASE}${path}`, {
     method:  'POST',
     headers: {
       Authorization: `Bearer ${token}`, 'api-key': apiKey,
       'Content-Type': 'application/json', Accept: 'application/json',
+      ...extraHeaders,
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -239,6 +242,27 @@ export async function brivoPost(
   if (!res.ok) throw new Error(`Brivo POST ${path} failed (${res.status}): ${await res.text()}`);
   // Brivo returns 200 with a plain-text body for some endpoints (e.g. /activate)
   // and 204 No Content for others — neither is JSON, so guard before parsing.
+  if (res.status === 204) return { success: true };
+  const contentType = res.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) return { success: true };
+  return res.json();
+}
+
+// ─── Authenticated DELETE ─────────────────────────────────────────────────────
+export async function brivoDelete(
+  token: string, apiKey: string, path: string,
+  extraHeaders?: Record<string, string>
+): Promise<any> {
+  const res = await fetch(`${BRIVO_API_BASE}${path}`, {
+    method:  'DELETE',
+    headers: {
+      Authorization: `Bearer ${token}`, 'api-key': apiKey,
+      Accept: 'application/json',
+      ...extraHeaders,
+    },
+  });
+
+  if (!res.ok) throw new Error(`Brivo DELETE ${path} failed (${res.status}): ${await res.text()}`);
   if (res.status === 204) return { success: true };
   const contentType = res.headers.get('content-type') ?? '';
   if (!contentType.includes('application/json')) return { success: true };

@@ -135,6 +135,14 @@ export default function CamerasPage() {
   const [doorOpening, setDoorOpening]         = useState(false);
   const [doorOpened, setDoorOpened]           = useState(false);
   const [doorError, setDoorError]             = useState<string | null>(null);
+  // Hold open state
+  const [holdMode, setHoldMode]               = useState<'indefinite' | 'until_time'>('indefinite');
+  const [holdEndTime, setHoldEndTime]         = useState('');
+  const [holdActive, setHoldActive]           = useState(false);
+  const [holdActiveUntil, setHoldActiveUntil] = useState<string | null>(null);
+  const [holdSetting, setHoldSetting]         = useState(false);
+  const [holdReleasing, setHoldReleasing]     = useState(false);
+  const [holdError, setHoldError]             = useState<string | null>(null);
   // ── View 1: Load accounts ─────────────────────────────────────────────────
   useEffect(() => {
     loadAccounts();
@@ -248,6 +256,13 @@ export default function CamerasPage() {
     setDoorOpened(false);
     setDoorError(null);
     setLinkedDoorId(cam.brivo_door_id ?? '');
+    setHoldActive(false);
+    setHoldActiveUntil(null);
+    setHoldError(null);
+    setHoldMode('indefinite');
+    // Default hold end time: 2 hours from now
+    const twoHours = new Date(Date.now() + 2 * 60 * 60_000);
+    setHoldEndTime(twoHours.toISOString().slice(0, 16));
     setView(3);
     // Default time range: last 30 min
     const now   = new Date();
@@ -361,6 +376,61 @@ export default function CamerasPage() {
     setCameras(prev => prev.map(c =>
       c.id === selectedCamera.id ? { ...c, brivo_door_id: doorId || null } : c
     ));
+  }
+  // ── Hold door open ────────────────────────────────────────────────────────
+  async function holdOpen() {
+    if (!selectedCamera || !selectedAccount || !linkedDoorId) return;
+    setHoldSetting(true);
+    setHoldError(null);
+    try {
+      const body: any = {
+        accountId:    selectedAccount.id,
+        doorId:       linkedDoorId,
+        mode:         holdMode,
+        operatorId:   'operator-1',
+        operatorName: 'Operator',
+      };
+      if (holdMode === 'until_time') body.endTime = new Date(holdEndTime).toISOString();
+      const res  = await fetch('/api/brivo/hold', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error ?? 'Failed to set hold');
+      setHoldActive(true);
+      setHoldActiveUntil(holdMode === 'until_time' ? body.endTime : null);
+    } catch (err: any) {
+      setHoldError(err.message);
+    } finally {
+      setHoldSetting(false);
+    }
+  }
+  // ── Release hold ──────────────────────────────────────────────────────────
+  async function releaseHold() {
+    if (!selectedCamera || !selectedAccount || !linkedDoorId) return;
+    setHoldReleasing(true);
+    setHoldError(null);
+    try {
+      const res  = await fetch('/api/brivo/hold', {
+        method:  'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          accountId:    selectedAccount.id,
+          doorId:       linkedDoorId,
+          operatorId:   'operator-1',
+          operatorName: 'Operator',
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error ?? 'Failed to release hold');
+      setHoldActive(false);
+      setHoldActiveUntil(null);
+    } catch (err: any) {
+      setHoldError(err.message);
+    } finally {
+      setHoldReleasing(false);
+    }
   }
   // ─── Render ───────────────────────────────────────────────────────────────
   // ── VIEW 1: Site Tile Grid ────────────────────────────────────────────────
@@ -676,6 +746,85 @@ export default function CamerasPage() {
                     <p className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
                       ✗ {doorError}
                     </p>
+                  )}
+
+                  {/* ── Hold Open ── */}
+                  {linkedDoorId && (
+                    <div className="mt-1 pt-3 border-t border-white/[0.06] flex flex-col gap-2">
+                      <span className="text-[9px] text-slate-500 uppercase tracking-wider">Hold Open</span>
+
+                      {holdActive ? (
+                        /* Active hold — show status + release */
+                        <div className="flex flex-col gap-2">
+                          <div className="flex items-center gap-2 px-2.5 py-2 rounded bg-amber-500/10 border border-amber-500/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
+                            <span className="text-[10px] text-amber-300 leading-snug">
+                              {holdActiveUntil
+                                ? `Held open until ${new Date(holdActiveUntil).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })}`
+                                : 'Held open indefinitely'}
+                            </span>
+                          </div>
+                          <button
+                            onClick={releaseHold}
+                            disabled={holdReleasing}
+                            className="flex items-center justify-center gap-2 w-full py-2 rounded border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[11px] font-semibold transition-all disabled:opacity-40"
+                          >
+                            {holdReleasing
+                              ? <div className="w-3 h-3 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
+                              : null}
+                            {holdReleasing ? 'Releasing…' : 'Release Hold'}
+                          </button>
+                        </div>
+                      ) : (
+                        /* Hold config */
+                        <div className="flex flex-col gap-2">
+                          {/* Mode toggle */}
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {(['indefinite', 'until_time'] as const).map(m => (
+                              <button
+                                key={m}
+                                onClick={() => setHoldMode(m)}
+                                className={`py-1.5 rounded border text-[10px] font-medium transition-all ${
+                                  holdMode === m
+                                    ? 'bg-indigo-600/30 border-indigo-500/40 text-indigo-300'
+                                    : 'bg-white/[0.03] border-white/[0.06] text-slate-500 hover:text-slate-300'
+                                }`}
+                              >
+                                {m === 'indefinite' ? 'Indefinite' : 'Until Time'}
+                              </button>
+                            ))}
+                          </div>
+
+                          {/* End time picker */}
+                          {holdMode === 'until_time' && (
+                            <input
+                              type="datetime-local"
+                              value={holdEndTime}
+                              onChange={e => setHoldEndTime(e.target.value)}
+                              className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2.5 py-1.5 text-[11px] text-slate-300 focus:outline-none focus:border-indigo-500/50 [color-scheme:dark]"
+                            />
+                          )}
+
+                          <button
+                            onClick={holdOpen}
+                            disabled={holdSetting || (holdMode === 'until_time' && !holdEndTime)}
+                            className="flex items-center justify-center gap-2 w-full py-2 rounded border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-[11px] font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {holdSetting
+                              ? <div className="w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                              : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="w-3.5 h-3.5"><path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" /></svg>
+                            }
+                            {holdSetting ? 'Setting Hold…' : 'Hold Open'}
+                          </button>
+                        </div>
+                      )}
+
+                      {holdError && (
+                        <p className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
+                          ✗ {holdError}
+                        </p>
+                      )}
+                    </div>
                   )}
                 </>
               )}
