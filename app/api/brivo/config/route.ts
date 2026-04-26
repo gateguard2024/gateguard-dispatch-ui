@@ -73,8 +73,7 @@ export async function POST(request: Request) {
       testConnection,
       // System credentials — only sent when operator updates them in Setup UI
       systemApiKey,
-      systemClientId,
-      systemClientSecret,
+      systemAuthBasic,
     } = body;
 
     if (!accountId) {
@@ -86,11 +85,10 @@ export async function POST(request: Request) {
     }
 
     // Save system credentials if provided
-    if (systemApiKey || systemClientId || systemClientSecret) {
+    if (systemApiKey || systemAuthBasic) {
       await saveBrivoSystemConfig({
-        apiKey:       systemApiKey       || undefined,
-        clientId:     systemClientId     || undefined,
-        clientSecret: systemClientSecret || undefined,
+        apiKey:    systemApiKey    || undefined,
+        authBasic: systemAuthBasic || undefined,
       });
     }
 

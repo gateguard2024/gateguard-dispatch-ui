@@ -403,13 +403,12 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
 
   // System credentials state
   const [sysExpanded, setSysExpanded]         = useState(false);
-  const [sysApiKey, setSysApiKey]             = useState('');
-  const [sysClientId, setSysClientId]         = useState('');
-  const [sysClientSecret, setSysClientSecret] = useState('');
-  const [sysStatus, setSysStatus]             = useState<{ has_api_key: boolean; has_client_id: boolean; has_client_secret: boolean } | null>(null);
-  const [sysSaving, setSysSaving]             = useState(false);
+  const [sysApiKey, setSysApiKey]         = useState('');
+  const [sysAuthBasic, setSysAuthBasic]   = useState('');
+  const [sysStatus, setSysStatus]         = useState<{ has_api_key: boolean; has_auth_basic: boolean } | null>(null);
+  const [sysSaving, setSysSaving]         = useState(false);
 
-  const sysConfigured = sysStatus?.has_api_key && sysStatus?.has_client_id && sysStatus?.has_client_secret;
+  const sysConfigured = sysStatus?.has_api_key && sysStatus?.has_auth_basic;
 
   // Load existing config
   React.useEffect(() => {
@@ -423,7 +422,7 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
         if (data.system) {
           setSysStatus(data.system);
           // Auto-expand if system creds not yet configured
-          if (!data.system.has_api_key || !data.system.has_client_id || !data.system.has_client_secret) {
+          if (!data.system.has_api_key || !data.system.has_auth_basic) {
             setSysExpanded(true);
           }
         }
@@ -443,26 +442,24 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
     setDoors(prev => prev.map((d, i) => i === idx ? { ...d, [field]: value } : d));
 
   const saveSystemCreds = async () => {
-    if (!sysApiKey && !sysClientId && !sysClientSecret) return;
+    if (!sysApiKey && !sysAuthBasic) return;
     setSysSaving(true);
     try {
       const res = await fetch('/api/brivo/config', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           accountId,
-          systemApiKey:       sysApiKey       || undefined,
-          systemClientId:     sysClientId     || undefined,
-          systemClientSecret: sysClientSecret || undefined,
+          systemApiKey:    sysApiKey    || undefined,
+          systemAuthBasic: sysAuthBasic || undefined,
         }),
       });
       const data = await res.json();
       if (data.success) {
         setSysStatus(prev => ({
-          has_api_key:       prev?.has_api_key       || !!sysApiKey,
-          has_client_id:     prev?.has_client_id     || !!sysClientId,
-          has_client_secret: prev?.has_client_secret || !!sysClientSecret,
+          has_api_key:    prev?.has_api_key    || !!sysApiKey,
+          has_auth_basic: prev?.has_auth_basic || !!sysAuthBasic,
         }));
-        setSysApiKey(''); setSysClientId(''); setSysClientSecret('');
+        setSysApiKey(''); setSysAuthBasic('');
       }
     } finally {
       setSysSaving(false);
@@ -532,9 +529,8 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
 
             <div className="grid grid-cols-2 gap-2 text-[10px]">
               {[
-                { label: 'API Key',       has: sysStatus?.has_api_key },
-                { label: 'Client ID',     has: sysStatus?.has_client_id },
-                { label: 'Client Secret', has: sysStatus?.has_client_secret, full: true },
+                { label: 'API Key',    has: sysStatus?.has_api_key,    full: false },
+                { label: 'Auth Basic', has: sysStatus?.has_auth_basic, full: false },
               ].map(({ label, has, full }) => (
                 <div key={label} className={`flex items-center gap-1.5 px-2 py-1.5 rounded border ${full ? 'col-span-2' : ''} ${has ? 'border-emerald-500/20 text-emerald-500' : 'border-white/[0.06] text-slate-600'}`}>
                   {has ? '✓' : '○'} {label}
@@ -544,20 +540,16 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
 
             <Field label="Brivo API Key">
               <input className={inputMonoCls} value={sysApiKey} onChange={e => setSysApiKey(e.target.value)}
-                placeholder={sysStatus?.has_api_key ? '••••••••  (already set)' : 'Paste API key from Brivo portal'} />
+                placeholder={sysStatus?.has_api_key ? '••••••••  (already set)' : 'BRIVO_API_KEY from Brivo portal'} />
             </Field>
-            <Field label="Client ID">
-              <input className={inputMonoCls} value={sysClientId} onChange={e => setSysClientId(e.target.value)}
-                placeholder={sysStatus?.has_client_id ? '••••••••  (already set)' : 'OAuth app Client ID'} />
-            </Field>
-            <Field label="Client Secret">
-              <input className={inputMonoCls} type="password" value={sysClientSecret} onChange={e => setSysClientSecret(e.target.value)}
-                placeholder={sysStatus?.has_client_secret ? '••••••••  (already set)' : 'OAuth app Client Secret'} />
+            <Field label="Auth Basic">
+              <input className={inputMonoCls} type="password" value={sysAuthBasic} onChange={e => setSysAuthBasic(e.target.value)}
+                placeholder={sysStatus?.has_auth_basic ? '••••••••  (already set)' : 'BRIVO_AUTH_BASIC — base64(clientId:clientSecret)'} />
             </Field>
 
             <button
               onClick={saveSystemCreds}
-              disabled={sysSaving || (!sysApiKey && !sysClientId && !sysClientSecret)}
+              disabled={sysSaving || (!sysApiKey && !sysAuthBasic)}
               className="self-start flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-slate-300 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] rounded transition-all disabled:opacity-40"
             >
               {sysSaving ? <><div className="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" /> Saving…</> : 'Save System Credentials'}

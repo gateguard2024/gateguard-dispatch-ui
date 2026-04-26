@@ -70,18 +70,25 @@ async function getBrivoAppCreds(): Promise<BrivoAppCreds | null> {
     const { data } = await supabase
       .from('system_settings')
       .select('key, value')
-      .in('key', ['brivo_api_key', 'brivo_client_id', 'brivo_client_secret']);
+      .in('key', ['brivo_api_key', 'brivo_auth_basic', 'brivo_client_id', 'brivo_client_secret']);
 
     if (!data || data.length === 0) return null;
 
     const s: Record<string, string> = {};
     data.forEach(r => { s[r.key] = r.value; });
 
-    const apiKey       = s['brivo_api_key'];
+    const apiKey = s['brivo_api_key'];
+    if (!apiKey) return null;
+
+    // Prefer pre-computed brivo_auth_basic (mirrors working app pattern)
+    if (s['brivo_auth_basic']) {
+      return { apiKey, authBasic: s['brivo_auth_basic'] };
+    }
+
+    // Fall back to computing from client_id + client_secret
     const clientId     = s['brivo_client_id'];
     const clientSecret = s['brivo_client_secret'];
-
-    if (!apiKey || !clientId || !clientSecret) return null;
+    if (!clientId || !clientSecret) return null;
     return { apiKey, authBasic: Buffer.from(`${clientId}:${clientSecret}`).toString('base64') };
   } catch {
     return null;
@@ -159,35 +166,32 @@ export async function getValidBrivoToken(accountId: string): Promise<BrivoTokenR
 
 // ─── System settings helpers (used by config route) ──────────────────────────
 export async function getBrivoSystemConfig(): Promise<{
-  has_api_key: boolean;
-  has_client_id: boolean;
-  has_client_secret: boolean;
+  has_api_key:    boolean;
+  has_auth_basic: boolean;
 }> {
   try {
     const { data } = await makeSupabase()
       .from('system_settings')
       .select('key')
-      .in('key', ['brivo_api_key', 'brivo_client_id', 'brivo_client_secret']);
+      .in('key', ['brivo_api_key', 'brivo_auth_basic']);
 
     const keys = new Set((data ?? []).map((r: any) => r.key));
     return {
-      has_api_key:       keys.has('brivo_api_key'),
-      has_client_id:     keys.has('brivo_client_id'),
-      has_client_secret: keys.has('brivo_client_secret'),
+      has_api_key:    keys.has('brivo_api_key'),
+      has_auth_basic: keys.has('brivo_auth_basic'),
     };
   } catch {
-    return { has_api_key: false, has_client_id: false, has_client_secret: false };
+    return { has_api_key: false, has_auth_basic: false };
   }
 }
 
 export async function saveBrivoSystemConfig(fields: {
-  apiKey?: string; clientId?: string; clientSecret?: string;
+  apiKey?: string; authBasic?: string;
 }): Promise<void> {
   const now  = new Date().toISOString();
   const rows = [
-    fields.apiKey       && { key: 'brivo_api_key',       value: fields.apiKey,       updated_at: now },
-    fields.clientId     && { key: 'brivo_client_id',     value: fields.clientId,     updated_at: now },
-    fields.clientSecret && { key: 'brivo_client_secret', value: fields.clientSecret, updated_at: now },
+    fields.apiKey    && { key: 'brivo_api_key',    value: fields.apiKey,    updated_at: now },
+    fields.authBasic && { key: 'brivo_auth_basic', value: fields.authBasic, updated_at: now },
   ].filter(Boolean) as { key: string; value: string; updated_at: string }[];
 
   if (rows.length === 0) return;
