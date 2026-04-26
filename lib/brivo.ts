@@ -132,6 +132,11 @@ export async function getValidBrivoToken(accountId: string): Promise<BrivoTokenR
 
   // Refresh token via Brivo password grant
   console.log(`[brivo] Refreshing token for account ${accountId}…`);
+  console.log(`[brivo] DEBUG api-key present:      ${!!apiKey} (len=${apiKey?.length})`);
+  console.log(`[brivo] DEBUG auth-basic present:   ${!!authBasic} (len=${authBasic?.length})`);
+  console.log(`[brivo] DEBUG username present:      ${!!account.brivo_username}`);
+  console.log(`[brivo] DEBUG password present:      ${!!account.brivo_password}`);
+  console.log(`[brivo] DEBUG auth-basic prefix:     ${authBasic?.substring(0, 8)}…`);
 
   const res = await fetch(BRIVO_AUTH_URL, {
     method:  'POST',
@@ -146,6 +151,8 @@ export async function getValidBrivoToken(accountId: string): Promise<BrivoTokenR
       password:   account.brivo_password,
     }).toString(),
   });
+
+  console.log(`[brivo] DEBUG auth response status: ${res.status}`);
 
   if (!res.ok) {
     const errText = await res.text();
