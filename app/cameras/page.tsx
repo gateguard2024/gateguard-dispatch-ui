@@ -165,10 +165,24 @@ export default function CamerasPage() {
       // Two flat queries instead of a nested join — more reliable across
       // Supabase deployments where FK schema cache may not resolve chains.
 
-      const { data: accts, error: acctErr } = await supabase
+      // Try with primary camera columns first (requires migration 001m).
+      // If those columns don't exist yet, fall back to base columns so the
+      // page still renders while the migration is pending.
+      let accts: any[] | null = null;
+      let acctErr: any = null;
+
+      ({ data: accts, error: acctErr } = await supabase
         .from('accounts')
         .select('id, name, primary_camera_id, primary_camera_esn')
-        .order('name');
+        .order('name'));
+
+      if (acctErr) {
+        console.warn('[cameras] primary camera columns missing — falling back (run migration 001m):', acctErr.message);
+        ({ data: accts, error: acctErr } = await supabase
+          .from('accounts')
+          .select('id, name')
+          .order('name'));
+      }
 
       if (acctErr) { console.error('[cameras] accounts query error:', acctErr); return; }
       if (!accts || accts.length === 0) return;
@@ -545,24 +559,28 @@ export default function CamerasPage() {
                   onClick={() => openAccount(account)}
                   className="group relative flex flex-col rounded border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.12] transition-all text-left overflow-hidden"
                 >
-                  {/* Thumbnail — primary camera (user-selected) or first EEN cam / static snap */}
+                  {/* Thumbnail — live preview stream of primary/first EEN camera */}
                   <div className="aspect-video bg-black relative overflow-hidden">
                     {(() => {
-                      const esnToUse  = account.primaryCameraEsn  ?? account.firstEenCamId;
+                      const esnToUse  = account.primaryCameraEsn ?? account.firstEenCamId;
                       const snapToUse = account.primaryCameraSnap ?? account.firstSnap;
                       if (esnToUse) return (
-                        <img
-                          src={`/api/een/image?accountId=${account.id}&cameraId=${esnToUse}`}
-                          alt={account.name}
-                          className="w-full h-full object-cover opacity-70 group-hover:opacity-90 transition-opacity"
-                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-                        />
+                        /* pointer-events-none keeps the tile button clickable */
+                        <div className="absolute inset-0 pointer-events-none">
+                          <SmartVideoPlayer
+                            accountId={account.id}
+                            cameraId={esnToUse}
+                            source="een"
+                            streamType="preview"
+                            disableFullscreen
+                          />
+                        </div>
                       );
                       if (snapToUse) return (
                         <img
                           src={snapToUse}
                           alt={account.name}
-                          className="w-full h-full object-cover opacity-60 group-hover:opacity-80 transition-opacity"
+                          className="w-full h-full object-cover opacity-60"
                         />
                       );
                       return (
@@ -571,22 +589,23 @@ export default function CamerasPage() {
                         </div>
                       );
                     })()}
+                    {/* Primary camera label */}
                     {account.primaryCameraId && (
-                      <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-black/60 backdrop-blur-sm border border-white/10 rounded px-1.5 py-0.5">
-                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-2.5 h-2.5 text-indigo-400"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
-                        <span className="text-[8px] text-indigo-300">Primary</span>
+                      <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-indigo-600/80 backdrop-blur-sm rounded px-1.5 py-0.5 pointer-events-none">
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-2.5 h-2.5 text-white"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+                        <span className="text-[8px] text-white font-semibold">Primary</span>
                       </div>
                     )}
-                    {/* Status dot */}
-                    <div className="absolute top-2 right-2 flex items-center gap-1 bg-black/60 backdrop-blur-sm border border-white/10 rounded px-2 py-0.5">
-                      <span className={`w-1.5 h-1.5 rounded-full ${account.onlineCount > 0 ? 'bg-emerald-500' : 'bg-slate-600'}`} />
-                      <span className="text-[9px] text-white/70">
-                        {account.onlineCount}/{account.cameraCount}
+                    {/* Camera count badge */}
+                    <div className="absolute top-2 right-2 flex items-center gap-1 bg-black/70 backdrop-blur-sm border border-white/10 rounded px-2 py-0.5 pointer-events-none">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="text-[9px] text-white/80 font-medium">
+                        {account.cameraCount} cam{account.cameraCount !== 1 ? 's' : ''}
                       </span>
                     </div>
                     {/* Hover overlay */}
-                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/40">
-                      <span className="text-[10px] font-semibold text-white uppercase tracking-wider border border-white/30 rounded px-3 py-1">
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/50 pointer-events-none">
+                      <span className="text-[10px] font-semibold text-white uppercase tracking-wider border border-white/40 rounded px-3 py-1 bg-black/40">
                         View Cameras →
                       </span>
                     </div>
@@ -651,13 +670,16 @@ export default function CamerasPage() {
                     className="group relative aspect-video rounded border border-white/[0.06] bg-black overflow-hidden cursor-pointer hover:border-white/20 transition-all"
                     onDoubleClick={(e) => { e.stopPropagation(); openCamera(cam); }}
                   >
-                    <SmartVideoPlayer
-                      accountId={selectedAccount.id}
-                      cameraId={key}
-                      source={cam.source}
-                      streamType="preview"
-                      disableFullscreen
-                    />
+                    {/* pointer-events-none so hover actions and double-click on the tile work */}
+                    <div className="absolute inset-0 pointer-events-none">
+                      <SmartVideoPlayer
+                        accountId={selectedAccount.id}
+                        cameraId={key}
+                        source={cam.source}
+                        streamType="preview"
+                        disableFullscreen
+                      />
+                    </div>
                     {/* Label */}
                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 pointer-events-none">
                       <p className="text-[9px] font-semibold text-white truncate">{cam.name}</p>
