@@ -97,31 +97,31 @@ async function getBrivoAppCreds(): Promise<BrivoAppCreds | null> {
 
 // ─── Token management (per account) ──────────────────────────────────────────
 export async function getValidBrivoToken(accountId: string): Promise<BrivoTokenResult> {
-  const supabase  = makeSupabase();
-  const appCreds  = await getBrivoAppCreds();
+  const supabase = makeSupabase();
 
-  if (!appCreds) {
-    throw new Error(
-      'Brivo app credentials not configured. ' +
-      'Enter your API Key, Client ID, and Client Secret in Setup → Brivo Access → System Credentials.'
-    );
-  }
-
-  const { apiKey, authBasic } = appCreds;
-
-  // Load per-account credentials
+  // Load all brivo fields from accounts row in one query
   const { data: account, error } = await supabase
     .from('accounts')
-    .select('brivo_username, brivo_password, brivo_access_token, brivo_token_expires, brivo_door_ids')
+    .select('brivo_username, brivo_password, brivo_access_token, brivo_token_expires, brivo_door_ids, brivo_api_key, brivo_auth_basic')
     .eq('id', accountId)
     .single();
 
   if (error || !account) throw new Error(`Account ${accountId} not found.`);
 
   if (!account.brivo_username || !account.brivo_password) {
-    throw new Error('Brivo credentials not configured for this account. Add them in Setup → Brivo Access.');
+    throw new Error('Brivo credentials not configured for this account. Add username + password in Setup → Brivo Access.');
   }
 
+  // Resolve API key: accounts row → env var → system_settings
+  const appCreds = account.brivo_api_key && account.brivo_auth_basic
+    ? { apiKey: account.brivo_api_key, authBasic: account.brivo_auth_basic }
+    : await getBrivoAppCreds();
+
+  if (!appCreds) {
+    throw new Error('Brivo app credentials not configured. Enter API Key and Auth Basic in Setup → Brivo Access → System Credentials.');
+  }
+
+  const { apiKey, authBasic } = appCreds;
   const doorIds: Array<{ id: string; name: string; type: string }> = account.brivo_door_ids ?? [];
 
   // Return cached token if still valid (60s buffer)

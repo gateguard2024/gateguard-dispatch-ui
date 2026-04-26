@@ -43,7 +43,7 @@ export async function GET(request: Request) {
   const supabase = makeSupabase();
   const { data, error } = await supabase
     .from('accounts')
-    .select('brivo_username, brivo_password, brivo_door_ids')
+    .select('brivo_username, brivo_password, brivo_door_ids, brivo_api_key, brivo_auth_basic')
     .eq('id', accountId)
     .single();
 
@@ -51,13 +51,14 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Account not found' }, { status: 404 });
   }
 
-  const systemConfig = await getBrivoSystemConfig();
-
   return NextResponse.json({
-    username:     data.brivo_username ?? '',
+    username:     data.brivo_username  ?? '',
     has_password: !!data.brivo_password,
-    doors:        data.brivo_door_ids ?? [],
-    system:       systemConfig, // { has_api_key, has_client_id, has_client_secret }
+    doors:        data.brivo_door_ids  ?? [],
+    system: {
+      has_api_key:    !!data.brivo_api_key,
+      has_auth_basic: !!data.brivo_auth_basic,
+    },
   });
 }
 
@@ -96,12 +97,14 @@ export async function POST(request: Request) {
 
     // Build per-account update payload — only touch fields that were sent
     const update: Record<string, any> = {};
-    if (username !== undefined) update.brivo_username = username || null;
-    if (password !== undefined && password !== '') update.brivo_password = password;
-    if (doors    !== undefined) update.brivo_door_ids = doors;
+    if (username          !== undefined) update.brivo_username   = username || null;
+    if (password          !== undefined && password !== '') update.brivo_password   = password;
+    if (doors             !== undefined) update.brivo_door_ids   = doors;
+    if (systemApiKey      !== undefined && systemApiKey)      update.brivo_api_key    = systemApiKey;
+    if (systemAuthBasic   !== undefined && systemAuthBasic)   update.brivo_auth_basic = systemAuthBasic;
 
-    // Clear cached token when credentials change
-    if (username !== undefined || password !== undefined) {
+    // Clear cached token when any credential changes
+    if (username !== undefined || password !== undefined || systemApiKey !== undefined || systemAuthBasic !== undefined) {
       update.brivo_access_token  = null;
       update.brivo_token_expires = null;
     }
