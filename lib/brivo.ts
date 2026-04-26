@@ -237,7 +237,11 @@ export async function brivoPost(
   });
 
   if (!res.ok) throw new Error(`Brivo POST ${path} failed (${res.status}): ${await res.text()}`);
+  // Brivo returns 200 with a plain-text body for some endpoints (e.g. /activate)
+  // and 204 No Content for others — neither is JSON, so guard before parsing.
   if (res.status === 204) return { success: true };
+  const contentType = res.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) return { success: true };
   return res.json();
 }
 
