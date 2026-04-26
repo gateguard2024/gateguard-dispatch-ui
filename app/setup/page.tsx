@@ -407,6 +407,7 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
   const [sysAuthBasic, setSysAuthBasic]   = useState('');
   const [sysStatus, setSysStatus]         = useState<{ has_api_key: boolean; has_auth_basic: boolean } | null>(null);
   const [sysSaving, setSysSaving]         = useState(false);
+  const [sysSaveError, setSysSaveError]   = useState('');
 
   const sysConfigured = sysStatus?.has_api_key && sysStatus?.has_auth_basic;
 
@@ -444,6 +445,7 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
   const saveSystemCreds = async () => {
     if (!sysApiKey && !sysAuthBasic) return;
     setSysSaving(true);
+    setSysSaveError('');
     try {
       const res = await fetch('/api/brivo/config', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -460,7 +462,11 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
           has_auth_basic: prev?.has_auth_basic || !!sysAuthBasic,
         }));
         setSysApiKey(''); setSysAuthBasic('');
+      } else {
+        setSysSaveError(data.error ?? `Server error ${res.status}`);
       }
+    } catch (e: any) {
+      setSysSaveError(e.message ?? 'Network error');
     } finally {
       setSysSaving(false);
     }
@@ -554,6 +560,12 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
             >
               {sysSaving ? <><div className="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" /> Saving…</> : 'Save System Credentials'}
             </button>
+
+            {sysSaveError && (
+              <p className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
+                ✗ {sysSaveError}
+              </p>
+            )}
           </div>
         )}
       </div>
