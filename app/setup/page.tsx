@@ -68,6 +68,7 @@ const I = {
   user:     "M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z",
   list:     "M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z",
   info:     "M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z",
+  cog:      "M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 010 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 010-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28zM15 12a3 3 0 11-6 0 3 3 0 016 0z",
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -93,10 +94,17 @@ interface Zone {
 }
 
 interface Camera {
-  id: string;
-  zone_id: string;
-  name: string;
-  is_monitored: boolean;
+  id:               string;
+  zone_id:          string;
+  name:             string;
+  source?:          string;
+  een_camera_id?:   string | null;
+  is_monitored:     boolean;
+  monitored_events: string[] | null;
+  schedule_override: {
+    enabled:         boolean;
+    weekly_schedule: Record<string, any>;
+  } | null;
 }
 
 interface Contact {
@@ -118,6 +126,50 @@ interface DeleteTarget {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
+
+// EEN event types available for per-camera monitoring selection
+const EEN_EVENT_GROUPS = [
+  {
+    label: 'P1 — Active Threats',
+    color: 'text-red-400',
+    types: [
+      { id: 'een.objectIntrusionEvent.v1',       label: 'Intrusion'          },
+      { id: 'een.tamperDetectionEvent.v1',        label: 'Camera Tamper'      },
+      { id: 'een.fireDetectionEvent.v1',          label: 'Fire'               },
+      { id: 'een.personTailgateEvent.v1',         label: 'Tailgate'           },
+      { id: 'een.fightDetectionEvent.v1',         label: 'Fight'              },
+      { id: 'een.violenceDetectionEvent.v1',      label: 'Violence'           },
+      { id: 'een.gunDetectionEvent.v1',           label: 'Gun Detected'       },
+      { id: 'een.gunShotAudioDetectionEvent.v1',  label: 'Gunshot Audio'      },
+      { id: 'een.handsUpDetectionEvent.v1',       label: 'Hands Up'           },
+      { id: 'een.panicButtonEvent.v1',            label: 'Panic Button'       },
+    ],
+  },
+  {
+    label: 'P2 — Security Events',
+    color: 'text-amber-400',
+    types: [
+      { id: 'een.personDetectionEvent.v1',          label: 'Person'           },
+      { id: 'een.vehicleDetectionEvent.v1',          label: 'Vehicle'          },
+      { id: 'een.loiterDetectionEvent.v1',           label: 'Loitering'        },
+      { id: 'een.objectLineCrossEvent.v1',           label: 'Line Crossing'    },
+      { id: 'een.crowdFormationDetectionEvent.v1',   label: 'Crowd Formation'  },
+      { id: 'een.faceDetectionEvent.v1',             label: 'Face Detected'    },
+      { id: 'een.animalDetectionEvent.v1',           label: 'Animal'           },
+      { id: 'een.fallDetectionEvent.v1',             label: 'Fall Detected'    },
+      { id: 'een.lprPlateReadEvent.v1',              label: 'License Plate'    },
+      { id: 'een.objectRemovalEvent.v1',             label: 'Object Removal'   },
+    ],
+  },
+  {
+    label: 'P3 — Motion',
+    color: 'text-slate-400',
+    types: [
+      { id: 'een.motionDetectionEvent.v1',           label: 'Motion'           },
+      { id: 'een.motionInRegionDetectionEvent.v1',   label: 'Motion in Region' },
+    ],
+  },
+];
 type Day = typeof DAYS[number];
 
 const DAY_LABELS: Record<Day, string> = {
@@ -692,6 +744,130 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
   );
 }
 
+// ─── Camera Config Panel ──────────────────────────────────────────────────────
+// Rendered inline below a camera row when the gear icon is clicked.
+// Must be a real component (not an IIFE) so React hooks work correctly.
+interface CameraConfigPanelProps {
+  cam:         Camera;
+  allTypeIds:  string[];
+  isSaving:    boolean;
+  onSave:      (newTypes: string[], scheduleOverride: any) => Promise<void>;
+}
+
+function CameraConfigPanel({ cam, allTypeIds, isSaving, onSave }: CameraConfigPanelProps) {
+  const initTypes = cam.monitored_events ?? allTypeIds;
+  const [localTypes, setLocalTypes]     = useState<string[]>(initTypes);
+  const [schedOverride, setSchedOverride] = useState<{ enabled: boolean; weekly_schedule: Record<string, any> }>(
+    cam.schedule_override ?? { enabled: false, weekly_schedule: {} }
+  );
+
+  const toggleType = (typeId: string) =>
+    setLocalTypes(prev => prev.includes(typeId) ? prev.filter(t => t !== typeId) : [...prev, typeId]);
+  const selectAll = () => setLocalTypes(allTypeIds);
+  const clearAll  = () => setLocalTypes([]);
+
+  return (
+    <div className="px-4 py-4 bg-white/[0.01] border-t border-white/[0.04] flex flex-col gap-4">
+
+      {/* Event types */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Alarm Triggers</span>
+          <div className="flex gap-2">
+            <button onClick={selectAll} className="text-[10px] text-indigo-400 hover:text-indigo-300">All</button>
+            <button onClick={clearAll}  className="text-[10px] text-slate-600 hover:text-slate-400">None</button>
+          </div>
+        </div>
+        <div className="flex flex-col gap-3">
+          {EEN_EVENT_GROUPS.map(group => (
+            <div key={group.label}>
+              <p className={`text-[9px] font-semibold uppercase tracking-wider mb-1.5 ${group.color}`}>{group.label}</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                {group.types.map(type => (
+                  <label key={type.id} className="flex items-center gap-2 cursor-pointer group/cb">
+                    <input
+                      type="checkbox"
+                      checked={localTypes.includes(type.id)}
+                      onChange={() => toggleType(type.id)}
+                      className="w-3 h-3 rounded accent-indigo-500"
+                    />
+                    <span className="text-[11px] text-slate-400 group-hover/cb:text-slate-200 transition-colors">{type.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Schedule override */}
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Schedule Override</span>
+          <Toggle
+            checked={schedOverride.enabled}
+            onChange={() => setSchedOverride(p => ({ ...p, enabled: !p.enabled }))}
+          />
+        </div>
+        {schedOverride.enabled && (
+          <p className="text-[10px] text-slate-600 leading-relaxed mb-2">
+            When enabled, this camera uses its own schedule instead of the zone schedule.
+            Configure per-day shifts below — same format as the zone Schedule tab.
+          </p>
+        )}
+        {schedOverride.enabled && (
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {DAYS.map(day => {
+              const ds = schedOverride.weekly_schedule?.[day] ?? { operating: false, shift1: { start: '22:00', end: '06:00' } };
+              return (
+                <div key={day} className="flex items-center gap-2 px-2 py-1.5 rounded bg-white/[0.02] border border-white/[0.05]">
+                  <input
+                    type="checkbox"
+                    checked={!!ds.operating}
+                    onChange={e => setSchedOverride(p => ({
+                      ...p,
+                      weekly_schedule: { ...p.weekly_schedule, [day]: { ...ds, operating: e.target.checked } }
+                    }))}
+                    className="w-3 h-3 accent-indigo-500"
+                  />
+                  <span className="text-[10px] text-slate-500 uppercase w-8 shrink-0">{day.slice(0, 3)}</span>
+                  {ds.operating && (
+                    <>
+                      <input
+                        type="time"
+                        value={ds.shift1?.start ?? '22:00'}
+                        onChange={e => setSchedOverride(p => ({ ...p, weekly_schedule: { ...p.weekly_schedule, [day]: { ...ds, shift1: { ...ds.shift1, start: e.target.value } } } }))}
+                        className="w-16 bg-white/[0.04] border border-white/[0.08] rounded px-1.5 py-0.5 text-[10px] text-slate-300 [color-scheme:dark]"
+                      />
+                      <span className="text-[9px] text-slate-700">–</span>
+                      <input
+                        type="time"
+                        value={ds.shift1?.end ?? '06:00'}
+                        onChange={e => setSchedOverride(p => ({ ...p, weekly_schedule: { ...p.weekly_schedule, [day]: { ...ds, shift1: { ...ds.shift1, end: e.target.value } } } }))}
+                        className="w-16 bg-white/[0.04] border border-white/[0.08] rounded px-1.5 py-0.5 text-[10px] text-slate-300 [color-scheme:dark]"
+                      />
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Save button */}
+      <button
+        onClick={() => onSave(localTypes, schedOverride.enabled ? schedOverride : null)}
+        disabled={isSaving}
+        className="self-start flex items-center gap-2 px-4 py-2 rounded bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 text-indigo-300 text-[11px] font-semibold transition-all disabled:opacity-40"
+      >
+        {isSaving ? <div className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" /> : null}
+        {isSaving ? 'Saving…' : 'Save Camera Settings'}
+      </button>
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function SetupPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -703,6 +879,8 @@ export default function SetupPage() {
   // Panel state
   const [expandedAccountId, setExpandedAccountId] = useState<string | null>(null);
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
+  const [expandedCamId, setExpandedCamId]   = useState<string | null>(null);
+  const [camConfigSaving, setCamConfigSaving] = useState<string | null>(null); // cameraId being saved
   const [rightView, setRightView] = useState<"empty" | "wizard" | "zone-detail">("empty");
   const [detailTab, setDetailTab] = useState<
     "overview" | "schedule" | "contacts" | "procedures" | "site-info" | "brivo"
@@ -1656,27 +1834,82 @@ export default function SetupPage() {
                   </div>
                 ) : (
                   <div className="border border-white/[0.05] rounded overflow-hidden">
-                    {cams.map((cam, idx) => (
-                      <div
-                        key={cam.id}
-                        className={`flex items-center gap-2 px-3 py-2.5 hover:bg-white/[0.03] transition-all group ${
-                          idx < cams.length - 1 ? "border-b border-white/[0.04]" : ""
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5 flex-1 min-w-0">
-                          <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${cam.is_monitored ? "bg-emerald-400" : "bg-slate-700"}`} />
-                          <span className="text-sm text-slate-300 truncate">{cam.name}</span>
+                    {cams.map((cam, idx) => {
+                      const isExpanded = expandedCamId === cam.id;
+                      const allTypeIds = EEN_EVENT_GROUPS.flatMap(g => g.types.map(t => t.id));
+                      const isSaving = camConfigSaving === cam.id;
+
+                      const saveCamConfig = async (newTypes: string[], scheduleOverride: any) => {
+                        setCamConfigSaving(cam.id);
+                        // Save monitored_events + schedule_override to camera row
+                        const monitoredEvents = newTypes.length === allTypeIds.length ? null : newTypes;
+                        await supabase.from("cameras").update({
+                          monitored_events:  monitoredEvents,
+                          schedule_override: scheduleOverride,
+                        }).eq("id", cam.id);
+                        // Sync to EEN subscription filter
+                        if (cam.source === 'een' || cam.een_camera_id) {
+                          const zone = zones.find(z => z.id === cam.zone_id);
+                          if (zone) {
+                            await fetch('/api/een/camera-filters', {
+                              method:  'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body:    JSON.stringify({ accountId: zone.account_id, cameraId: cam.id, monitoredEvents }),
+                            });
+                          }
+                        }
+                        // Refresh camera list
+                        await loadZoneCameras(cam.zone_id);
+                        setCamConfigSaving(null);
+                      };
+
+                      return (
+                        <div key={cam.id} className={idx < cams.length - 1 ? "border-b border-white/[0.04]" : ""}>
+                          {/* Camera row */}
+                          <div className="flex items-center gap-2 px-3 py-2.5 hover:bg-white/[0.03] transition-all group">
+                            <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                              <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${cam.is_monitored ? "bg-emerald-400" : "bg-slate-700"}`} />
+                              <span className="text-sm text-slate-300 truncate">{cam.name}</span>
+                              {cam.monitored_events && (
+                                <span className="text-[9px] text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 rounded px-1.5 py-0.5 shrink-0">
+                                  {cam.monitored_events.length} events
+                                </span>
+                              )}
+                              {cam.schedule_override?.enabled && (
+                                <span className="text-[9px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 shrink-0">
+                                  Custom schedule
+                                </span>
+                              )}
+                            </div>
+                            <button
+                              onClick={() => setExpandedCamId(isExpanded ? null : cam.id)}
+                              title="Camera monitoring settings"
+                              className={`p-1 transition-all shrink-0 ${isExpanded ? 'text-indigo-400' : 'text-slate-700 opacity-0 group-hover:opacity-100 hover:text-slate-400'}`}
+                            >
+                              <Ic d={I.cog} className="w-3.5 h-3.5" />
+                            </button>
+                            <Toggle checked={cam.is_monitored} onChange={() => toggleCamera(cam)} />
+                            <button
+                              onClick={() => deleteCamera(cam.id, cam.zone_id)}
+                              title="Remove camera (re-syncable from EEN)"
+                              className="opacity-0 group-hover:opacity-100 p-1 text-slate-700 hover:text-red-400 transition-all shrink-0"
+                            >
+                              <Ic d={I.trash} className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          {/* Inline config panel */}
+                          {isExpanded && (
+                            <CameraConfigPanel
+                              cam={cam}
+                              allTypeIds={allTypeIds}
+                              isSaving={isSaving}
+                              onSave={saveCamConfig}
+                            />
+                          )}
                         </div>
-                        <Toggle checked={cam.is_monitored} onChange={() => toggleCamera(cam)} />
-                        <button
-                          onClick={() => deleteCamera(cam.id, cam.zone_id)}
-                          title="Remove camera (re-syncable from EEN)"
-                          className="opacity-0 group-hover:opacity-100 p-1 text-slate-700 hover:text-red-400 transition-all shrink-0"
-                        >
-                          <Ic d={I.trash} className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

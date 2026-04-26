@@ -287,6 +287,15 @@ export default function AlarmsPage() {
   const [doorOpeningId, setDoorOpeningId]   = useState<string | null>(null);
   const [doorOpenedId, setDoorOpenedId]     = useState<string | null>(null);
 
+  // Hold open state
+  const [holdExpandedId, setHoldExpandedId]   = useState<string | null>(null); // brivoId of door showing hold config
+  const [holdMode, setHoldMode]               = useState<'indefinite' | 'until_time'>('indefinite');
+  const [holdEndTime, setHoldEndTime]         = useState('');
+  const [holdActiveIds, setHoldActiveIds]     = useState<Record<string, string | null>>({}); // brivoId → ISO until time (null = indefinite)
+  const [holdSettingId, setHoldSettingId]     = useState<string | null>(null);
+  const [holdReleasingId, setHoldReleasingId] = useState<string | null>(null);
+  const [holdError, setHoldError]             = useState<string | null>(null);
+
   // Checklist state
   const [procedureChecked, setProcedureChecked]   = useState<boolean[]>([]);
   const [clearanceChecked, setClearanceChecked]   = useState([false, false, false]);
@@ -387,6 +396,12 @@ export default function AlarmsPage() {
     setLiveOffsetUrl(null);
     setExpandedPanel(null);
     setResolvedEenCamId(null);
+    setHoldExpandedId(null);
+    setHoldActiveIds({});
+    setHoldError(null);
+    // Default hold end time: 2 hours from now
+    const twoHours = new Date(Date.now() + 2 * 60 * 60_000);
+    setHoldEndTime(twoHours.toISOString().slice(0, 16));
 
     const accountId = alarm.account_id ?? alarm.zones?.account_id;
     const zoneId    = alarm.zone_id;
@@ -663,6 +678,68 @@ export default function AlarmsPage() {
       setTimeout(() => setDoorOpenedId(null), 5000);
     } catch {}
     finally { setDoorOpeningId(null); }
+  }, [activeAlarm]);
+
+  // ── Hold door open ─────────────────────────────────────────────────────────
+  const holdDoor = useCallback(async (door: Door) => {
+    if (!activeAlarm) return;
+    const accountId = activeAlarm.account_id ?? activeAlarm.zones?.account_id;
+    setHoldSettingId(door.brivoId);
+    setHoldError(null);
+    try {
+      const body: any = {
+        accountId,
+        doorId:       door.brivoId,
+        mode:         holdMode,
+        operatorId:   'operator-1',
+        operatorName: 'Operator',
+        alarmId:      activeAlarm.id,
+      };
+      if (holdMode === 'until_time') body.endTime = new Date(holdEndTime).toISOString();
+      const res  = await fetch('/api/brivo/hold', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error ?? 'Failed to set hold');
+      setHoldActiveIds(prev => ({
+        ...prev,
+        [door.brivoId]: holdMode === 'until_time' ? new Date(holdEndTime).toISOString() : null,
+      }));
+      setHoldExpandedId(null);
+    } catch (err: any) {
+      setHoldError(err.message);
+    } finally {
+      setHoldSettingId(null);
+    }
+  }, [activeAlarm, holdMode, holdEndTime]);
+
+  // ── Release door hold ──────────────────────────────────────────────────────
+  const releaseHold = useCallback(async (door: Door) => {
+    if (!activeAlarm) return;
+    const accountId = activeAlarm.account_id ?? activeAlarm.zones?.account_id;
+    setHoldReleasingId(door.brivoId);
+    setHoldError(null);
+    try {
+      const res  = await fetch('/api/brivo/hold', {
+        method:  'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          accountId,
+          doorId:       door.brivoId,
+          operatorId:   'operator-1',
+          operatorName: 'Operator',
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error ?? 'Failed to release hold');
+      setHoldActiveIds(prev => { const n = { ...prev }; delete n[door.brivoId]; return n; });
+    } catch (err: any) {
+      setHoldError(err.message);
+    } finally {
+      setHoldReleasingId(null);
+    }
   }, [activeAlarm]);
 
   // ── Resolve alarm ──────────────────────────────────────────────────────────
@@ -1278,40 +1355,126 @@ export default function AlarmsPage() {
             ) : (
               <div className="space-y-1.5">
                 {doors.map((door) => {
-                  const isOpening = doorOpeningId === door.brivoId;
-                  const isOpen    = doorOpenedId   === door.brivoId;
+                  const isOpening    = doorOpeningId    === door.brivoId;
+                  const isOpen       = doorOpenedId     === door.brivoId;
+                  const isHoldActive = door.brivoId in holdActiveIds;
+                  const holdUntil    = holdActiveIds[door.brivoId];
+                  const isSetting    = holdSettingId    === door.brivoId;
+                  const isReleasing  = holdReleasingId  === door.brivoId;
+                  const holdExpanded = holdExpandedId   === door.brivoId;
+
                   return (
                     <div
                       key={door.id}
-                      className={`flex items-center justify-between px-2.5 py-2 rounded border transition-all
-                        ${isOpen
-                          ? 'border-emerald-500/40 bg-emerald-500/10'
-                          : 'border-white/[0.06] bg-white/[0.02]'
-                        }
-                      `}
+                      className={`rounded border transition-all ${
+                        isHoldActive
+                          ? 'border-amber-500/30 bg-amber-500/[0.05]'
+                          : isOpen
+                            ? 'border-emerald-500/40 bg-emerald-500/10'
+                            : 'border-white/[0.06] bg-white/[0.02]'
+                      }`}
                     >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className={`w-3.5 h-3.5 shrink-0 ${isOpen ? 'text-emerald-400' : 'text-slate-500'}`}>
-                          {isOpen ? <Ic.Unlock /> : <Ic.Lock />}
+                      {/* Main door row */}
+                      <div className="flex items-center justify-between px-2.5 py-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className={`w-3.5 h-3.5 shrink-0 ${isHoldActive ? 'text-amber-400' : isOpen ? 'text-emerald-400' : 'text-slate-500'}`}>
+                            {isOpen ? <Ic.Unlock /> : <Ic.Lock />}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-semibold text-white truncate">{door.name}</p>
+                            <p className="text-[9px] text-slate-500 capitalize">
+                              {isHoldActive
+                                ? holdUntil
+                                  ? `Held until ${new Date(holdUntil).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })}`
+                                  : 'Held open indefinitely'
+                                : door.type}
+                            </p>
+                          </div>
                         </div>
-                        <div className="min-w-0">
-                          <p className="text-[10px] font-semibold text-white truncate">{door.name}</p>
-                          <p className="text-[9px] text-slate-500 capitalize">{door.type}</p>
+                        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                          {/* Open button */}
+                          <button
+                            onClick={() => openDoor(door)}
+                            disabled={isOpening || isOpen}
+                            className={`px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all
+                              ${isOpen
+                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 cursor-default'
+                                : isOpening
+                                  ? 'bg-white/[0.05] text-slate-500 border border-white/[0.06] cursor-wait'
+                                  : 'bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30'
+                              }`}
+                          >
+                            {isOpen ? '✓' : isOpening ? '...' : 'Open'}
+                          </button>
+                          {/* Hold toggle / release button */}
+                          {isHoldActive ? (
+                            <button
+                              onClick={() => releaseHold(door)}
+                              disabled={isReleasing}
+                              title="Release hold"
+                              className="px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider border border-amber-500/30 bg-amber-500/10 hover:bg-red-500/20 hover:border-red-500/30 text-amber-400 hover:text-red-400 transition-all disabled:opacity-40"
+                            >
+                              {isReleasing ? '...' : 'Release'}
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => setHoldExpandedId(holdExpanded ? null : door.brivoId)}
+                              title="Hold open"
+                              className={`px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider border transition-all ${
+                                holdExpanded
+                                  ? 'bg-amber-600/20 border-amber-500/30 text-amber-300'
+                                  : 'bg-white/[0.03] border-white/[0.06] text-slate-600 hover:text-amber-300 hover:border-amber-500/30'
+                              }`}
+                            >
+                              Hold
+                            </button>
+                          )}
                         </div>
                       </div>
-                      <button
-                        onClick={() => openDoor(door)}
-                        disabled={isOpening || isOpen}
-                        className={`shrink-0 ml-2 px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all
-                          ${isOpen
-                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 cursor-default'
-                            : isOpening
-                              ? 'bg-white/[0.05] text-slate-500 border border-white/[0.06] cursor-wait'
-                              : 'bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30'
-                          }`}
-                      >
-                        {isOpen ? 'Open' : isOpening ? '...' : 'Open'}
-                      </button>
+
+                      {/* Hold config panel — expands inline */}
+                      {holdExpanded && !isHoldActive && (
+                        <div className="px-2.5 pb-2.5 flex flex-col gap-2 border-t border-white/[0.04] pt-2">
+                          {/* Mode toggle */}
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {(['indefinite', 'until_time'] as const).map(m => (
+                              <button
+                                key={m}
+                                onClick={() => setHoldMode(m)}
+                                className={`py-1 rounded border text-[9px] font-medium transition-all ${
+                                  holdMode === m
+                                    ? 'bg-indigo-600/30 border-indigo-500/40 text-indigo-300'
+                                    : 'bg-white/[0.03] border-white/[0.06] text-slate-500 hover:text-slate-300'
+                                }`}
+                              >
+                                {m === 'indefinite' ? 'Indefinite' : 'Until Time'}
+                              </button>
+                            ))}
+                          </div>
+                          {/* End time picker */}
+                          {holdMode === 'until_time' && (
+                            <input
+                              type="datetime-local"
+                              value={holdEndTime}
+                              onChange={e => setHoldEndTime(e.target.value)}
+                              className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2 py-1 text-[10px] text-slate-300 focus:outline-none focus:border-indigo-500/50 [color-scheme:dark]"
+                            />
+                          )}
+                          <button
+                            onClick={() => holdDoor(door)}
+                            disabled={isSetting || (holdMode === 'until_time' && !holdEndTime)}
+                            className="flex items-center justify-center gap-1.5 w-full py-1.5 rounded border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-[10px] font-semibold transition-all disabled:opacity-40"
+                          >
+                            {isSetting
+                              ? <div className="w-2.5 h-2.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                              : null}
+                            {isSetting ? 'Setting Hold…' : 'Hold Open'}
+                          </button>
+                          {holdError && (
+                            <p className="text-[9px] text-red-400">✗ {holdError}</p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}

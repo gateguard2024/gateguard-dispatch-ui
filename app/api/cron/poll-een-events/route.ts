@@ -14,9 +14,10 @@
 //   3. Skip event types we don't care about (device status, etc.)
 //   4. Upsert into `alarms` table — idempotent on een_event_id to prevent duplicates
 
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import { getValidEENToken } from '@/lib/een';
+import { NextResponse }                  from 'next/server';
+import { createClient }                  from '@supabase/supabase-js';
+import { getValidEENToken }              from '@/lib/een';
+import { isCameraWithinMonitoringHours } from '@/lib/schedule';
 
 // ─── Priority + label maps (matches webhook receiver) ────────────────────────
 // PRIORITY GUIDE:
@@ -139,7 +140,7 @@ async function pollAccount(supabase: any, accountId: string): Promise<number> {
 
   const { data: cameras } = await supabase
     .from('cameras')
-    .select('id, name, zone_id, account_id, een_camera_id')
+    .select('id, name, zone_id, account_id, een_camera_id, monitored_events, schedule_override')
     .eq('account_id', accountId)
     .eq('is_monitored', true);
 
@@ -160,11 +161,16 @@ async function pollAccount(supabase: any, accountId: string): Promise<number> {
       try {
         const actor = `camera:${cam.een_camera_id}`;
 
+        // Use camera's monitored_events if set, otherwise all subscribed types
+        const allowedTypes: string[] = cam.monitored_events ?? SUBSCRIBED_TYPES;
+        const queryTypes = allowedTypes.filter(t => SUBSCRIBED_TYPES.includes(t));
+        if (queryTypes.length === 0) return; // camera has no valid event types configured
+
         // Use listRecentByType — returns most recent event per type, no timestamps needed
         const eventUrl = [
           `https://${cluster}/api/v3.0/events:listRecentByType`,
           `?actor=${encodeURIComponent(actor)}`,
-          `&type__in=${SUBSCRIBED_TYPES.map(encodeURIComponent).join('&type__in=')}`,
+          `&type__in=${queryTypes.map(encodeURIComponent).join('&type__in=')}`,
         ].join('');
 
         const res = await fetch(eventUrl, { method: 'GET', headers });
@@ -187,6 +193,14 @@ async function pollAccount(supabase: any, accountId: string): Promise<number> {
 
           const priority = PRIORITY_MAP[event.type] ?? 'P3';
           const label    = LABEL_MAP[event.type]    ?? event.type;
+
+          // Enforce monitoring schedule
+          const zone = await getZone(supabase, cam.zone_id);
+          const eventMs = new Date(event.startTimestamp).getTime();
+          if (zone && !isCameraWithinMonitoringHours(cam, zone, eventMs)) {
+            console.log(`[poll-een-events] Outside monitoring hours — skipped ${label} @ camera ${cam.een_camera_id}`);
+            continue;
+          }
 
           const { error } = await supabase
             .from('alarms')
@@ -220,15 +234,27 @@ async function pollAccount(supabase: any, accountId: string): Promise<number> {
   return alarmsCreated;
 }
 
-// Simple site name cache to avoid repeated DB queries
+// Simple caches to avoid repeated DB queries within a cron run
 const siteNameCache = new Map<string, string>();
+const zoneCache     = new Map<string, any>();
+
+async function getZone(supabase: any, zoneId: string): Promise<any | null> {
+  if (zoneCache.has(zoneId)) return zoneCache.get(zoneId);
+  const { data } = await supabase
+    .from('zones')
+    .select('id, name, timezone, weekly_schedule, schedule_start, schedule_end')
+    .eq('id', zoneId)
+    .maybeSingle();
+  if (data) zoneCache.set(zoneId, data);
+  return data ?? null;
+}
 
 async function getSiteName(supabase: any, zoneId: string, accountId: string): Promise<string> {
   const key = `${accountId}:${zoneId}`;
   if (siteNameCache.has(key)) return siteNameCache.get(key)!;
 
-  const [{ data: zone }, { data: account }] = await Promise.all([
-    supabase.from('zones').select('name').eq('id', zoneId).maybeSingle(),
+  const [zone, { data: account }] = await Promise.all([
+    getZone(supabase, zoneId),
     supabase.from('accounts').select('name').eq('id', accountId).maybeSingle(),
   ]);
 

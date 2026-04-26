@@ -22,8 +22,9 @@
 //   P3 — motion
 //   P4 — device status / system events
 
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { NextResponse }               from 'next/server';
+import { createClient }               from '@supabase/supabase-js';
+import { isCameraWithinMonitoringHours } from '@/lib/schedule';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Priority = 'P1' | 'P2' | 'P3' | 'P4';
@@ -166,7 +167,7 @@ async function processEvent(supabase: any, event: EENEvent) {
   // Look up camera + zone + account from Supabase using ESN
   const { data: camera, error: camErr } = await supabase
     .from('cameras')
-    .select('id, name, zone_id, account_id')
+    .select('id, name, zone_id, account_id, monitored_events, schedule_override')
     .eq('een_camera_id', esn)
     .maybeSingle();
 
@@ -175,12 +176,27 @@ async function processEvent(supabase: any, event: EENEvent) {
     return;
   }
 
-  // Look up zone name + account name for display
+  // Check per-camera event type filter (monitored_events)
+  // null = all types allowed; array = only listed types create alarms
+  const allowedTypes: string[] | null = camera.monitored_events ?? null;
+  if (allowedTypes !== null && !allowedTypes.includes(event.type)) {
+    console.log(`[webhooks/eagleeye] Event type ${event.type} not in monitored_events for camera ${esn} — skipped`);
+    return;
+  }
+
+  // Look up zone for schedule check + display name
   const { data: zone } = await supabase
     .from('zones')
-    .select('name')
+    .select('name, timezone, weekly_schedule, schedule_start, schedule_end')
     .eq('id', camera.zone_id)
     .maybeSingle();
+
+  // Enforce monitoring schedule — skip alarm if outside active hours
+  const eventMs = event.startTimestamp ? new Date(event.startTimestamp).getTime() : Date.now();
+  if (zone && !isCameraWithinMonitoringHours(camera, zone, eventMs)) {
+    console.log(`[webhooks/eagleeye] Event outside monitoring hours for camera ${esn} — skipped`);
+    return;
+  }
 
   const { data: account } = await supabase
     .from('accounts')

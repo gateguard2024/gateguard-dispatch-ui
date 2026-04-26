@@ -14,14 +14,17 @@ const supabase = createClient(
 );
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Account {
-  id:            string;
-  name:          string;
-  address?:      string;
-  cameraCount:   number;
-  onlineCount:   number;
-  hasAlert:      boolean;
-  firstSnap:     string | null;   // static snapshot_url (Brivo cameras)
-  firstEenCamId: string | null;   // ESN for live snapshot proxy (EEN cameras)
+  id:               string;
+  name:             string;
+  address?:         string;
+  cameraCount:      number;
+  onlineCount:      number;
+  hasAlert:         boolean;
+  firstSnap:        string | null;
+  firstEenCamId:    string | null;
+  primaryCameraId:  string | null;   // user-selected primary camera
+  primaryCameraEsn: string | null;   // ESN of primary camera for live thumbnail
+  primaryCameraSnap: string | null;  // static snap fallback for primary camera
 }
 interface CameraRow {
   id:              string;
@@ -135,6 +138,15 @@ export default function CamerasPage() {
   const [doorOpening, setDoorOpening]         = useState(false);
   const [doorOpened, setDoorOpened]           = useState(false);
   const [doorError, setDoorError]             = useState<string | null>(null);
+  // Primary camera state
+  const [settingPrimary, setSettingPrimary]   = useState<string | null>(null); // cameraId being set
+  // Raise alarm state
+  const [raiseAlarmOpen, setRaiseAlarmOpen]   = useState(false);
+  const [alarmPriority, setAlarmPriority]     = useState<'P1' | 'P2' | 'P3'>('P2');
+  const [alarmReason, setAlarmReason]         = useState('');
+  const [alarmNotes, setAlarmNotes]           = useState('');
+  const [alarmRaising, setAlarmRaising]       = useState(false);
+  const [alarmRaised, setAlarmRaised]         = useState(false);
   // Hold open state
   const [holdMode, setHoldMode]               = useState<'indefinite' | 'until_time'>('indefinite');
   const [holdEndTime, setHoldEndTime]         = useState('');
@@ -155,7 +167,7 @@ export default function CamerasPage() {
 
       const { data: accts, error: acctErr } = await supabase
         .from('accounts')
-        .select('id, name')
+        .select('id, name, primary_camera_id, primary_camera_esn')
         .order('name');
 
       if (acctErr) { console.error('[cameras] accounts query error:', acctErr); return; }
@@ -200,18 +212,25 @@ export default function CamerasPage() {
         const allCams     = camsByAccount[a.id] ?? [];
         const online      = allCams.filter((c: any) => c.is_monitored).length;
         const snap        = allCams.find((c: any) => c.snapshot_url)?.snapshot_url ?? null;
-        // Pick first monitored EEN camera for live snapshot thumbnail
+        // Pick first monitored EEN camera as fallback thumbnail
         const firstEenCam = allCams.find((c: any) => c.source === 'een' && c.een_camera_id && c.is_monitored)
                          ?? allCams.find((c: any) => c.source === 'een' && c.een_camera_id);
+        // Resolve primary camera (user-selected) for thumbnail
+        const primaryCam  = a.primary_camera_id
+          ? allCams.find((c: any) => c.id === a.primary_camera_id) ?? null
+          : null;
         return {
-          id:            a.id,
-          name:          a.name,
-          address:       undefined,
-          cameraCount:   allCams.length,
-          onlineCount:   online,
-          hasAlert:      false,
-          firstSnap:     snap,
-          firstEenCamId: firstEenCam?.een_camera_id ?? null,
+          id:                a.id,
+          name:              a.name,
+          address:           undefined,
+          cameraCount:       allCams.length,
+          onlineCount:       online,
+          hasAlert:          false,
+          firstSnap:         snap,
+          firstEenCamId:     firstEenCam?.een_camera_id ?? null,
+          primaryCameraId:   a.primary_camera_id   ?? null,
+          primaryCameraEsn:  a.primary_camera_esn  ?? primaryCam?.een_camera_id ?? null,
+          primaryCameraSnap: primaryCam?.snapshot_url ?? null,
         };
       });
 
@@ -260,6 +279,10 @@ export default function CamerasPage() {
     setHoldActiveUntil(null);
     setHoldError(null);
     setHoldMode('indefinite');
+    setRaiseAlarmOpen(false);
+    setAlarmRaised(false);
+    setAlarmReason('');
+    setAlarmNotes('');
     // Default hold end time: 2 hours from now
     const twoHours = new Date(Date.now() + 2 * 60 * 60_000);
     setHoldEndTime(twoHours.toISOString().slice(0, 16));
@@ -406,6 +429,64 @@ export default function CamerasPage() {
       setHoldSetting(false);
     }
   }
+  // ── Set primary camera for site tile ─────────────────────────────────────
+  async function setPrimaryCamera(cam: CameraRow) {
+    if (!selectedAccount) return;
+    setSettingPrimary(cam.id);
+    await supabase
+      .from('accounts')
+      .update({
+        primary_camera_id:  cam.id,
+        primary_camera_esn: cam.een_camera_id ?? null,
+      })
+      .eq('id', selectedAccount.id);
+    // Update local accounts list so tile updates immediately when going back
+    setAccounts(prev => prev.map(a =>
+      a.id === selectedAccount.id
+        ? { ...a, primaryCameraId: cam.id, primaryCameraEsn: cam.een_camera_id ?? null, primaryCameraSnap: cam.snapshot_url ?? null }
+        : a
+    ));
+    setSettingPrimary(null);
+  }
+  // ── Raise manual alarm from camera view ──────────────────────────────────
+  async function raiseAlarm() {
+    if (!selectedCamera || !selectedAccount || !alarmReason) return;
+    setAlarmRaising(true);
+    try {
+      const { error } = await supabase.from('alarms').insert({
+        priority:    alarmPriority,
+        event_type:  'manual.operatorRaisedEvent.v1',
+        event_label: alarmReason,
+        site_name:   selectedAccount.name,
+        camera_id:   selectedCamera.id,
+        zone_id:     selectedCamera.zone_id,
+        account_id:  selectedAccount.id,
+        source:      'manual',
+        status:      'pending',
+        created_at:  new Date().toISOString(),
+      });
+      if (error) throw new Error(error.message);
+      // Audit log
+      await supabase.from('audit_logs').insert({
+        camera_id:   selectedCamera.id,
+        zone_id:     selectedCamera.zone_id,
+        account_id:  selectedAccount.id,
+        operator_id: 'operator-1',
+        action:      'manual_alarm_raised',
+        details:     JSON.stringify({ priority: alarmPriority, reason: alarmReason, notes: alarmNotes }),
+        created_at:  new Date().toISOString(),
+      });
+      setAlarmRaised(true);
+      setRaiseAlarmOpen(false);
+      setAlarmReason('');
+      setAlarmNotes('');
+      setTimeout(() => setAlarmRaised(false), 6000);
+    } catch (err: any) {
+      console.error('[raiseAlarm]', err.message);
+    } finally {
+      setAlarmRaising(false);
+    }
+  }
   // ── Release hold ──────────────────────────────────────────────────────────
   async function releaseHold() {
     if (!selectedCamera || !selectedAccount || !linkedDoorId) return;
@@ -464,24 +545,36 @@ export default function CamerasPage() {
                   onClick={() => openAccount(account)}
                   className="group relative flex flex-col rounded border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.12] transition-all text-left overflow-hidden"
                 >
-                  {/* Thumbnail — EEN live snapshot or static snap */}
+                  {/* Thumbnail — primary camera (user-selected) or first EEN cam / static snap */}
                   <div className="aspect-video bg-black relative overflow-hidden">
-                    {account.firstEenCamId ? (
-                      <img
-                        src={`/api/een/image?accountId=${account.id}&cameraId=${account.firstEenCamId}`}
-                        alt={account.name}
-                        className="w-full h-full object-cover opacity-70 group-hover:opacity-90 transition-opacity"
-                        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-                      />
-                    ) : account.firstSnap ? (
-                      <img
-                        src={account.firstSnap}
-                        alt={account.name}
-                        className="w-full h-full object-cover opacity-60 group-hover:opacity-80 transition-opacity"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <div className="w-8 h-8 text-slate-700"><Ic.Building /></div>
+                    {(() => {
+                      const esnToUse  = account.primaryCameraEsn  ?? account.firstEenCamId;
+                      const snapToUse = account.primaryCameraSnap ?? account.firstSnap;
+                      if (esnToUse) return (
+                        <img
+                          src={`/api/een/image?accountId=${account.id}&cameraId=${esnToUse}`}
+                          alt={account.name}
+                          className="w-full h-full object-cover opacity-70 group-hover:opacity-90 transition-opacity"
+                          onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                        />
+                      );
+                      if (snapToUse) return (
+                        <img
+                          src={snapToUse}
+                          alt={account.name}
+                          className="w-full h-full object-cover opacity-60 group-hover:opacity-80 transition-opacity"
+                        />
+                      );
+                      return (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <div className="w-8 h-8 text-slate-700"><Ic.Building /></div>
+                        </div>
+                      );
+                    })()}
+                    {account.primaryCameraId && (
+                      <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-black/60 backdrop-blur-sm border border-white/10 rounded px-1.5 py-0.5">
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-2.5 h-2.5 text-indigo-400"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+                        <span className="text-[8px] text-indigo-300">Primary</span>
                       </div>
                     )}
                     {/* Status dot */}
@@ -573,8 +666,32 @@ export default function CamerasPage() {
                     <div className="absolute top-1.5 left-1.5 pointer-events-none">
                       <span className={`block w-1.5 h-1.5 rounded-full ${cam.is_monitored ? 'bg-emerald-500' : 'bg-slate-600'}`} />
                     </div>
+                    {/* Primary badge */}
+                    {selectedAccount?.primaryCameraId === cam.id && (
+                      <div className="absolute top-1.5 left-1.5 pointer-events-none">
+                        <div className="flex items-center gap-1 bg-indigo-600/80 backdrop-blur-sm rounded px-1.5 py-0.5">
+                          <svg viewBox="0 0 24 24" fill="currentColor" className="w-2.5 h-2.5 text-white"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+                          <span className="text-[8px] text-white font-semibold">Primary</span>
+                        </div>
+                      </div>
+                    )}
                     {/* Hover actions */}
                     <div className="absolute top-1.5 right-1.5 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setPrimaryCamera(cam); }}
+                        title="Set as site thumbnail"
+                        disabled={settingPrimary === cam.id}
+                        className={`w-6 h-6 flex items-center justify-center rounded bg-black/70 border transition-colors ${
+                          selectedAccount?.primaryCameraId === cam.id
+                            ? 'border-indigo-500/60 text-indigo-400'
+                            : 'border-white/20 text-slate-400 hover:text-indigo-400 hover:border-indigo-500/40'
+                        }`}
+                      >
+                        {settingPrimary === cam.id
+                          ? <div className="w-2.5 h-2.5 border border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                          : <svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+                        }
+                      </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); openCamera(cam); }}
                         title="View footage"
@@ -692,8 +809,105 @@ export default function CamerasPage() {
               )}
             </div>
           </div>
-          {/* RIGHT: Door access + Camera notes */}
+          {/* RIGHT: Raise alarm + Door access + Camera notes */}
           <div className="w-[280px] shrink-0 flex flex-col">
+
+            {/* ── Raise Alarm ── */}
+            <div className="px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
+              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Raise Alarm</span>
+              {alarmRaised && (
+                <span className="text-[9px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">✓ Alarm raised</span>
+              )}
+            </div>
+            <div className="px-4 py-3 border-b border-white/[0.06] flex flex-col gap-2.5">
+              {!raiseAlarmOpen ? (
+                <button
+                  onClick={() => setRaiseAlarmOpen(true)}
+                  className="flex items-center justify-center gap-2 w-full py-2 rounded border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-[11px] font-semibold transition-all"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-3.5 h-3.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                  </svg>
+                  Raise Alarm
+                </button>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {/* Priority */}
+                  <div className="grid grid-cols-3 gap-1">
+                    {(['P1','P2','P3'] as const).map(p => (
+                      <button
+                        key={p}
+                        onClick={() => setAlarmPriority(p)}
+                        className={`py-1.5 rounded border text-[10px] font-semibold transition-all ${
+                          alarmPriority === p
+                            ? p === 'P1' ? 'bg-red-600/30 border-red-500/50 text-red-300'
+                              : p === 'P2' ? 'bg-amber-600/30 border-amber-500/50 text-amber-300'
+                              : 'bg-slate-600/30 border-slate-500/50 text-slate-300'
+                            : 'bg-white/[0.03] border-white/[0.06] text-slate-600 hover:text-slate-400'
+                        }`}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Reason */}
+                  <select
+                    value={alarmReason}
+                    onChange={e => setAlarmReason(e.target.value)}
+                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2.5 py-1.5 text-[11px] text-slate-300 focus:outline-none focus:border-red-500/50 [color-scheme:dark]"
+                  >
+                    <option value="">— Select reason —</option>
+                    <optgroup label="P1 — Threats">
+                      <option value="Intrusion Detected">Intrusion Detected</option>
+                      <option value="Suspicious Person">Suspicious Person</option>
+                      <option value="Fight / Altercation">Fight / Altercation</option>
+                      <option value="Weapon Observed">Weapon Observed</option>
+                      <option value="Fire / Smoke">Fire / Smoke</option>
+                      <option value="Vandalism in Progress">Vandalism in Progress</option>
+                    </optgroup>
+                    <optgroup label="P2 — Security">
+                      <option value="Loitering">Loitering</option>
+                      <option value="Unauthorized Access">Unauthorized Access</option>
+                      <option value="Gate Left Open">Gate Left Open</option>
+                      <option value="Vehicle Blocking">Vehicle Blocking</option>
+                      <option value="Package / Object Left">Package / Object Left</option>
+                    </optgroup>
+                    <optgroup label="P3 — General">
+                      <option value="Motion Detected">Motion Detected</option>
+                      <option value="Noise Complaint">Noise Complaint</option>
+                      <option value="Welfare Check">Welfare Check</option>
+                      <option value="Other">Other</option>
+                    </optgroup>
+                  </select>
+                  {/* Notes */}
+                  <textarea
+                    value={alarmNotes}
+                    onChange={e => setAlarmNotes(e.target.value)}
+                    placeholder="Optional notes..."
+                    rows={2}
+                    className="w-full bg-white/[0.03] border border-white/[0.06] rounded px-2.5 py-1.5 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-red-500/40"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={raiseAlarm}
+                      disabled={alarmRaising || !alarmReason}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded border border-red-500/40 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-[11px] font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {alarmRaising
+                        ? <div className="w-3 h-3 border-2 border-red-400 border-t-transparent rounded-full animate-spin" />
+                        : null}
+                      {alarmRaising ? 'Raising…' : 'Confirm Alarm'}
+                    </button>
+                    <button
+                      onClick={() => setRaiseAlarmOpen(false)}
+                      className="px-3 py-2 rounded border border-white/[0.08] text-slate-500 text-[11px] hover:text-slate-300 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* ── Door Access ── */}
             <div className="px-4 py-3 border-b border-white/[0.06]">
