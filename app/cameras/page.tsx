@@ -32,6 +32,12 @@ interface CameraRow {
   is_monitored:    boolean;
   snapshot_url:    string | null;
   zone_id:         string;
+  brivo_door_id:   string | null;
+}
+interface BrivoDoor {
+  id:   string;
+  name: string;
+  type: string;
 }
 interface Zone {
   id:         string;
@@ -85,6 +91,11 @@ const Ic = {
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
     </svg>
   ),
+  Unlock: () => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="w-full h-full">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 10.5V6.75a4.5 4.5 0 1 1 9 0v3.75M3.75 21.75h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H3.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
+    </svg>
+  ),
 };
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function camKey(cam: CameraRow): string {
@@ -118,6 +129,12 @@ export default function CamerasPage() {
   const [cameraNote, setCameraNote]           = useState('');
   const [notesSaving, setNotesSaving]         = useState(false);
   const [pastNotes, setPastNotes]             = useState<CameraNoteRow[]>([]);
+  // Door access state
+  const [availableDoors, setAvailableDoors]   = useState<BrivoDoor[]>([]);
+  const [linkedDoorId, setLinkedDoorId]       = useState('');
+  const [doorOpening, setDoorOpening]         = useState(false);
+  const [doorOpened, setDoorOpened]           = useState(false);
+  const [doorError, setDoorError]             = useState<string | null>(null);
   // ── View 1: Load accounts ─────────────────────────────────────────────────
   useEffect(() => {
     loadAccounts();
@@ -216,7 +233,7 @@ export default function CamerasPage() {
     }
     const { data: cams } = await supabase
       .from('cameras')
-      .select('id, name, source, brivo_camera_id, een_camera_id, is_monitored, snapshot_url, zone_id')
+      .select('id, name, source, brivo_camera_id, een_camera_id, is_monitored, snapshot_url, zone_id, brivo_door_id')
       .in('zone_id', zoneIds)
       .order('name');
     setCameras((cams as CameraRow[]) ?? []);
@@ -228,22 +245,33 @@ export default function CamerasPage() {
     setRecordedUrl(null);
     setRecordedError(null);
     setCameraNote('');
+    setDoorOpened(false);
+    setDoorError(null);
+    setLinkedDoorId(cam.brivo_door_id ?? '');
     setView(3);
     // Default time range: last 30 min
     const now   = new Date();
     const minus  = new Date(now.getTime() - 30 * 60_000);
     setEndTime(now.toISOString().slice(0, 16));
     setStartTime(minus.toISOString().slice(0, 16));
-    // Load past notes
-    const { data: notes } = await supabase
-      .from('audit_logs')
-      .select('id, details, created_at')
-      .eq('camera_id', cam.id)
-      .eq('action', 'camera_note')
-      .order('created_at', { ascending: false })
-      .limit(5);
+    // Load past notes and account doors in parallel
+    const [{ data: notes }, { data: acct }] = await Promise.all([
+      supabase
+        .from('audit_logs')
+        .select('id, details, created_at')
+        .eq('camera_id', cam.id)
+        .eq('action', 'camera_note')
+        .order('created_at', { ascending: false })
+        .limit(5),
+      supabase
+        .from('accounts')
+        .select('brivo_door_ids')
+        .eq('id', (selectedAccount as Account).id)
+        .single(),
+    ]);
     setPastNotes(notes ?? []);
-  }, []);
+    setAvailableDoors((acct as any)?.brivo_door_ids ?? []);
+  }, [selectedAccount]);
   // ── Fetch recorded clip ───────────────────────────────────────────────────
   async function loadRecorded() {
     if (!selectedCamera || !selectedAccount) return;
@@ -292,6 +320,47 @@ export default function CamerasPage() {
     }, ...prev].slice(0, 5));
     setCameraNote('');
     setNotesSaving(false);
+  }
+  // ── Open Brivo door associated with this camera ───────────────────────────
+  async function openDoor() {
+    if (!selectedCamera || !selectedAccount || !linkedDoorId) return;
+    setDoorOpening(true);
+    setDoorError(null);
+    try {
+      const res = await fetch('/api/brivo/open', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          accountId:    selectedAccount.id,
+          doorId:       linkedDoorId,
+          operatorId:   'operator-1',
+          operatorName: 'Operator',
+        }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error ?? 'Failed to open door');
+      setDoorOpened(true);
+      setTimeout(() => setDoorOpened(false), 5000);
+    } catch (err: any) {
+      setDoorError(err.message);
+    } finally {
+      setDoorOpening(false);
+    }
+  }
+  // ── Link a door to this camera (auto-save on dropdown change) ─────────────
+  async function linkDoor(doorId: string) {
+    if (!selectedCamera) return;
+    setLinkedDoorId(doorId);
+    setDoorOpened(false);
+    setDoorError(null);
+    await supabase
+      .from('cameras')
+      .update({ brivo_door_id: doorId || null })
+      .eq('id', selectedCamera.id);
+    // Keep local cameras list in sync
+    setCameras(prev => prev.map(c =>
+      c.id === selectedCamera.id ? { ...c, brivo_door_id: doorId || null } : c
+    ));
   }
   // ─── Render ───────────────────────────────────────────────────────────────
   // ── VIEW 1: Site Tile Grid ────────────────────────────────────────────────
@@ -553,8 +622,66 @@ export default function CamerasPage() {
               )}
             </div>
           </div>
-          {/* RIGHT: Camera notes */}
+          {/* RIGHT: Door access + Camera notes */}
           <div className="w-[280px] shrink-0 flex flex-col">
+
+            {/* ── Door Access ── */}
+            <div className="px-4 py-3 border-b border-white/[0.06]">
+              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Door Access</span>
+            </div>
+            <div className="px-4 py-4 border-b border-white/[0.06] flex flex-col gap-2.5">
+              {availableDoors.length === 0 ? (
+                <p className="text-[10px] text-slate-600 leading-relaxed">
+                  No doors configured for this site. Add them in Setup → Brivo.
+                </p>
+              ) : (
+                <>
+                  <label className="text-[9px] text-slate-500 uppercase tracking-wider">Linked Door</label>
+                  <select
+                    value={linkedDoorId}
+                    onChange={e => linkDoor(e.target.value)}
+                    className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2.5 py-1.5 text-[11px] text-slate-300 focus:outline-none focus:border-indigo-500/50 [color-scheme:dark]"
+                  >
+                    <option value="">— No door linked —</option>
+                    {availableDoors.map(door => (
+                      <option key={door.id} value={door.id}>{door.name}</option>
+                    ))}
+                  </select>
+
+                  {linkedDoorId && (
+                    <button
+                      onClick={openDoor}
+                      disabled={doorOpening}
+                      className={`flex items-center justify-center gap-2 w-full py-2 rounded border text-[11px] font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                        doorOpened
+                          ? 'bg-emerald-600/20 border-emerald-500/30 text-emerald-400'
+                          : 'bg-indigo-600/20 hover:bg-indigo-600/40 border-indigo-500/30 text-indigo-300'
+                      }`}
+                    >
+                      {doorOpening ? (
+                        <div className="w-3.5 h-3.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <div className="w-3.5 h-3.5"><Ic.Unlock /></div>
+                      )}
+                      {doorOpening
+                        ? 'Opening…'
+                        : doorOpened
+                          ? `✓ ${availableDoors.find(d => d.id === linkedDoorId)?.name ?? 'Door'} Opened`
+                          : `Open ${availableDoors.find(d => d.id === linkedDoorId)?.name ?? 'Door'}`
+                      }
+                    </button>
+                  )}
+
+                  {doorError && (
+                    <p className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">
+                      ✗ {doorError}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* ── Camera Notes ── */}
             <div className="px-4 py-3 border-b border-white/[0.06]">
               <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Camera Notes</span>
             </div>
