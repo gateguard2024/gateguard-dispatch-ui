@@ -20,8 +20,6 @@ import { createClient } from '@supabase/supabase-js';
 import {
   getValidBrivoToken,
   brivoGet,
-  getBrivoSystemConfig,
-  saveBrivoSystemConfig,
 } from '@/lib/brivo';
 
 function makeSupabase() {
@@ -108,14 +106,6 @@ export async function POST(request: Request) {
 
     if (doors !== undefined && (!Array.isArray(doors) || doors.length > 10)) {
       return NextResponse.json({ error: 'doors must be an array of up to 10 items' }, { status: 400 });
-    }
-
-    // Save system credentials if provided
-    if (systemApiKey || systemAuthBasic) {
-      await saveBrivoSystemConfig({
-        apiKey:    systemApiKey    || undefined,
-        authBasic: systemAuthBasic || undefined,
-      });
     }
 
     const supabase = makeSupabase();
