@@ -35,6 +35,7 @@ function makeSupabase() {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const accountId = searchParams.get('accountId');
+  const debug     = searchParams.get('debug') === '1';
 
   if (!accountId) {
     return NextResponse.json({ error: 'Missing accountId' }, { status: 400 });
@@ -48,16 +49,40 @@ export async function GET(request: Request) {
     .single();
 
   if (error || !data) {
-    return NextResponse.json({ error: 'Account not found' }, { status: 404 });
+    return NextResponse.json({ error: `Account not found: ${error?.message}` }, { status: 404 });
   }
 
-  return NextResponse.json({
+  const base = {
     username:     data.brivo_username  ?? '',
     has_password: !!data.brivo_password,
     doors:        data.brivo_door_ids  ?? [],
     system: {
       has_api_key:    !!data.brivo_api_key,
       has_auth_basic: !!data.brivo_auth_basic,
+    },
+  };
+
+  if (!debug) return NextResponse.json(base);
+
+  // ?debug=1 — returns credential source diagnostics (no values, just presence)
+  const { getBrivoSystemConfig } = await import('@/lib/brivo');
+  const sysConfig = await getBrivoSystemConfig();
+  return NextResponse.json({
+    ...base,
+    _debug: {
+      accounts_row: {
+        has_api_key:    !!data.brivo_api_key,
+        has_auth_basic: !!data.brivo_auth_basic,
+        has_username:   !!data.brivo_username,
+        has_password:   !!data.brivo_password,
+      },
+      system_settings: sysConfig,
+      env_vars: {
+        BRIVO_API_KEY:        !!process.env.BRIVO_API_KEY,
+        BRIVO_CLIENT_ID:      !!process.env.BRIVO_CLIENT_ID,
+        BRIVO_CLIENT_SECRET:  !!process.env.BRIVO_CLIENT_SECRET,
+        BRIVO_AUTH_BASIC:     !!process.env.BRIVO_AUTH_BASIC,
+      },
     },
   });
 }
