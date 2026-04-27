@@ -6,6 +6,7 @@
 //   View 2 — Camera Wall     (grid of live tiles for selected site)
 //   View 3 — Single Camera   (full player + timeline scrubber + notes)
 import React, { useState, useEffect, useCallback } from 'react';
+import { useUser } from '@clerk/nextjs';
 import { createClient } from '@supabase/supabase-js';
 import SmartVideoPlayer from '@/components/SmartVideoPlayer';
 const supabase = createClient(
@@ -112,6 +113,11 @@ function fmtTime(iso: string): string {
 }
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function CamerasPage() {
+  // Clerk identity — used for audit logs and camera notes
+  const { user } = useUser();
+  const operatorId   = user?.id ?? 'unknown';
+  const operatorName = user?.fullName ?? user?.firstName ?? 'Operator';
+
   // View state: 1 = tile grid, 2 = camera wall, 3 = single camera
   const [view, setView] = useState<1 | 2 | 3>(1);
   // View 1 data
@@ -360,7 +366,7 @@ export default function CamerasPage() {
     await supabase.from('audit_logs').insert({
       camera_id:   selectedCamera.id,
       zone_id:     selectedCamera.zone_id,
-      operator_id: 'operator-1',
+      operator_id: operatorId,
       action:      'camera_note',
       details:     cameraNote.trim(),
       created_at:  new Date().toISOString(),
@@ -385,8 +391,8 @@ export default function CamerasPage() {
         body:    JSON.stringify({
           accountId:    selectedAccount.id,
           doorId:       linkedDoorId,
-          operatorId:   'operator-1',
-          operatorName: 'Operator',
+          operatorId,
+          operatorName: operatorName,
         }),
       });
       const data = await res.json();
@@ -485,7 +491,7 @@ export default function CamerasPage() {
         camera_id:   selectedCamera.id,
         zone_id:     selectedCamera.zone_id,
         account_id:  selectedAccount.id,
-        operator_id: 'operator-1',
+        operator_id: operatorId,
         action:      'manual_alarm_raised',
         details:     JSON.stringify({ priority: alarmPriority, reason: alarmReason, notes: alarmNotes }),
         created_at:  new Date().toISOString(),
@@ -513,8 +519,8 @@ export default function CamerasPage() {
         body:    JSON.stringify({
           accountId:    selectedAccount.id,
           doorId:       linkedDoorId,
-          operatorId:   'operator-1',
-          operatorName: 'Operator',
+          operatorId,
+          operatorName: operatorName,
         }),
       });
       const data = await res.json();

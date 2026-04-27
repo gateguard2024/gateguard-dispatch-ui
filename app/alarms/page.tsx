@@ -13,6 +13,7 @@ import React, {
   useRef,
   useCallback,
 } from 'react';
+import { useUser } from '@clerk/nextjs';
 import { createClient } from '@supabase/supabase-js';
 import SmartVideoPlayer from '@/components/SmartVideoPlayer';
 
@@ -252,6 +253,11 @@ function ScriptCard({ label, color, text }: { label: string; color: string; text
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function AlarmsPage() {
+  // Clerk identity — used for audit logs and incident reports
+  const { user } = useUser();
+  const operatorId   = user?.id ?? 'unknown';
+  const operatorName = user?.fullName ?? user?.firstName ?? 'Operator';
+
   // Queue state
   const [queue, setQueue]             = useState<Alarm[]>([]);
   const [activeAlarm, setActiveAlarm] = useState<Alarm | null>(null);
@@ -616,7 +622,7 @@ export default function AlarmsPage() {
       account_id:  accountId,
       alarm_id:    alarm.id,
       zone_id:     alarm.zone_id,
-      operator_id: 'operator-1',
+      operator_id: operatorId,
       action:      'alarm_dismissed',
       details:     JSON.stringify({ reason }),
       created_at:  new Date().toISOString(),
@@ -691,7 +697,7 @@ export default function AlarmsPage() {
         body:    JSON.stringify({
           accountId,
           doorId:     door.brivoId,
-          operatorId: 'operator-1',
+          operatorId,
           alarmId:    activeAlarm.id,
         }),
       });
@@ -712,8 +718,8 @@ export default function AlarmsPage() {
         accountId,
         doorId:       door.brivoId,
         mode:         holdMode,
-        operatorId:   'operator-1',
-        operatorName: 'Operator',
+        operatorId,
+        operatorName: operatorName,
         alarmId:      activeAlarm.id,
       };
       if (holdMode === 'until_time') body.endTime = new Date(holdEndTime).toISOString();
@@ -783,7 +789,7 @@ export default function AlarmsPage() {
         account_id:  accountId,
         alarm_id:    activeAlarm.id,
         zone_id:     activeAlarm.zone_id,
-        operator_id: 'operator-1',
+        operator_id: operatorId,
         action:      'alarm_resolved',
         details:     JSON.stringify({ actionTaken, notes }),
         created_at:  new Date().toISOString(),
@@ -794,8 +800,8 @@ export default function AlarmsPage() {
         alarm_id:      activeAlarm.id,
         zone_id:       activeAlarm.zone_id,
         camera_id:     activeAlarm.camera_id,
-        operator_id:   'operator-1',
-        operator_name: 'Operator',
+        operator_id:   operatorId,
+        operator_name: operatorName,
         action_taken:  actionTaken,
         notes,
         report_type:   'incident',

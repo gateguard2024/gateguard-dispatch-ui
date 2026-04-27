@@ -1,32 +1,52 @@
 // middleware.ts
 //
-// Clerk authentication middleware — protects all routes except:
-//   /sign-in      — Clerk sign-in page
-//   /callback     — EEN OAuth return URL (must be accessible before login)
-//   /api/auth/een — EEN token exchange (server-side, called from callback)
-//   Static assets — _next, images, favicon, logo
+// Clerk authentication + role-based access middleware
 //
-// Role-based page access is enforced in layout.tsx (nav visibility)
-// and in individual pages/API routes for write operations.
+// Public routes (no login required):
+//   /sign-in      — Clerk sign-in page
+//   /callback     — EEN OAuth return URL
+//   /api/auth/een — EEN token exchange
+//   /api/cron     — Vercel cron jobs (secured by CRON_SECRET)
+//   /api/webhooks — EEN/Brivo webhooks (external callers)
+//   /api/ai/triage — Called by cron
+//   /api/brivo    — Brivo API routes
+//
+// Role-based route access:
+//   agent      → /dashboard, /alarms, /cameras, /reports  (no Setup)
+//   supervisor → all agent routes + /setup (view only, enforced in setup page)
+//   admin      → all routes including /setup (full write)
 
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 import { NextResponse } from 'next/server';
 
 const isPublicRoute = createRouteMatcher([
   '/sign-in(.*)',
-  '/callback(.*)',           // EEN OAuth redirect target
-  '/api/auth/een(.*)',       // EEN token exchange — called from callback page
-  '/api/cron(.*)',           // Vercel cron jobs — secured by CRON_SECRET, not Clerk
-  '/api/webhooks(.*)',       // EEN/Brivo webhooks — external callers, no Clerk session
-  '/api/ai/triage(.*)',      // Called by cron — needs to be public
-  '/api/brivo(.*)',          // Brivo API routes — auth handled by Brivo token internally
+  '/callback(.*)',
+  '/api/auth/een(.*)',
+  '/api/cron(.*)',
+  '/api/webhooks(.*)',
+  '/api/ai/triage(.*)',
+  '/api/brivo(.*)',
 ]);
 
+// /setup requires admin or supervisor — agents are bounced to /alarms
+const isSetupRoute = createRouteMatcher(['/setup(.*)']);
+
 export default clerkMiddleware(async (auth, req) => {
-  if (!isPublicRoute(req)) {
-    await auth.protect({
-      unauthenticatedUrl: new URL('/sign-in', req.url).toString(),
-    });
+  // 1. Always allow public routes through
+  if (isPublicRoute(req)) return NextResponse.next();
+
+  // 2. Require authentication for everything else
+  const session = await auth.protect({
+    unauthenticatedUrl: new URL('/sign-in', req.url).toString(),
+  });
+
+  // 3. Role guard: agents cannot access /setup
+  if (isSetupRoute(req)) {
+    const role = (session.sessionClaims?.metadata as any)?.role ?? 'agent';
+    if (role !== 'admin' && role !== 'supervisor') {
+      return NextResponse.redirect(new URL('/alarms', req.url));
+    }
   }
 });
 
