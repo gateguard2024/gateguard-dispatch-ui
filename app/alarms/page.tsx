@@ -1024,13 +1024,13 @@ export default function AlarmsPage() {
               </div>
             </div>
 
-            {/* TOP: Dual Video — Live primary (top 60%), Pre-alarm secondary (bottom 40%) */}
-            <div className="flex flex-col gap-px bg-black overflow-hidden" style={{ height: '52%' }}>
+            {/* TOP: Dual Video — Live primary (top 55%), Pre-alarm secondary (bottom 45%) */}
+            <div className="flex flex-col gap-px bg-black overflow-hidden" style={{ height: '65%' }}>
 
               {/* ── Live feed panel — PRIMARY ───────────────────────────── */}
               {expandedPanel !== 'pre-alarm' && (
                 <div
-                  className={`relative cursor-pointer overflow-hidden ${expandedPanel === 'live' ? 'flex-1' : 'h-[60%]'}`}
+                  className={`relative cursor-pointer overflow-hidden ${expandedPanel === 'live' ? 'flex-1' : 'h-[55%]'}`}
                   onDoubleClick={(e) => {
                     if ((e.target as HTMLElement).tagName !== 'BUTTON') {
                       setExpandedPanel(p => p === 'live' ? null : 'live');
@@ -1103,7 +1103,7 @@ export default function AlarmsPage() {
               {/* ── Pre-alarm / Recorded panel — SECONDARY ─────────────── */}
               {expandedPanel !== 'live' && (
                 <div
-                  className={`relative cursor-pointer overflow-hidden ${expandedPanel === 'pre-alarm' ? 'flex-1' : 'h-[40%]'}`}
+                  className={`relative cursor-pointer overflow-hidden ${expandedPanel === 'pre-alarm' ? 'flex-1' : 'h-[45%]'}`}
                   onDoubleClick={() => setExpandedPanel(p => p === 'pre-alarm' ? null : 'pre-alarm')}
                   title="Double-click to expand / collapse"
                 >

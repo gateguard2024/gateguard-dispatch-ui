@@ -114,8 +114,6 @@ export default function PatrolPage() {
   const [loading, setLoading]     = useState(true);
   const [tableError, setTableError] = useState(false);
 
-  // Per-site active camera index
-  const [camIdx, setCamIdx] = useState<Record<string, number>>({});
 
   // ── Patrol session state ───────────────────────────────────────────────────
   const [patrolActive, setPatrolActive]     = useState(false);
@@ -155,10 +153,6 @@ export default function PatrolPage() {
         });
 
         setSites(siteList);
-        // Default each site to camera 0
-        const idx: Record<string, number> = {};
-        siteList.forEach(s => { idx[s.id] = 0; });
-        setCamIdx(idx);
       } finally {
         setLoading(false);
       }
@@ -262,9 +256,19 @@ export default function PatrolPage() {
 
   const currentSite   = sites[currentSiteIdx];
   const currentResult = results[currentSiteIdx];
-  const activeCam     = currentSite ? currentSite.cameras[camIdx[currentSite.id] ?? 0] ?? null : null;
   const issueCount    = results.filter(r => r.status === 'issue').length;
   const allSitesDone  = results.length > 0 && results.every(r => r.status !== 'pending');
+
+  // Expanded camera modal (double-click → main stream)
+  const [expandedCam, setExpandedCam] = useState<{ accountId: string; cameraId: string; name: string } | null>(null);
+
+  // Grid columns based on camera count
+  function gridCols(n: number) {
+    if (n <= 1) return 'grid-cols-1';
+    if (n <= 4) return 'grid-cols-2';
+    if (n <= 9) return 'grid-cols-3';
+    return 'grid-cols-4';
+  }
 
   // ─── RENDER ───────────────────────────────────────────────────────────────
   return (
@@ -548,51 +552,91 @@ export default function PatrolPage() {
 
             <div className="flex flex-1 min-h-0 overflow-hidden">
 
-              {/* ── Camera feed + camera switcher ── */}
-              <div className="flex-1 flex flex-col bg-black relative overflow-hidden">
+              {/* ── Camera grid (substream) ── */}
+              <div className="flex-1 flex flex-col bg-black overflow-hidden relative">
 
-                {/* Camera tabs */}
-                {currentSite.cameras.length > 1 && (
-                  <div className="flex gap-1 px-3 py-1.5 bg-black/60 border-b border-white/[0.06] shrink-0 overflow-x-auto">
-                    {currentSite.cameras.map((cam, ci) => (
-                      <button
+                {currentSite.cameras.length === 0 ? (
+                  <div className="flex-1 flex flex-col items-center justify-center gap-2">
+                    <p className="text-[11px] text-slate-600">No cameras found for this site</p>
+                    <p className="text-[9px] text-slate-700">Configure cameras in Setup → zone → cameras</p>
+                  </div>
+                ) : (
+                  <div className={`flex-1 grid ${gridCols(currentSite.cameras.length)} gap-0.5 p-0.5 overflow-hidden`}>
+                    {currentSite.cameras.map(cam => (
+                      <div
                         key={cam.id}
-                        onClick={() => setCamIdx(prev => ({ ...prev, [currentSite.id]: ci }))}
-                        className={`px-2.5 py-1 rounded text-[9px] font-medium whitespace-nowrap transition-all shrink-0 ${
-                          (camIdx[currentSite.id] ?? 0) === ci
-                            ? 'bg-indigo-600 text-white'
-                            : 'bg-white/[0.06] text-slate-400 hover:bg-white/[0.1]'
-                        }`}
+                        className="group relative bg-black overflow-hidden cursor-pointer"
+                        onDoubleClick={() => setExpandedCam({
+                          accountId: currentSite.id,
+                          cameraId:  cam.een_camera_id,
+                          name:      cam.name,
+                        })}
+                        title="Double-click to expand (main stream)"
                       >
-                        {cam.name}
-                      </button>
+                        {/* Substream tile — pointer-events-none so double-click on tile registers */}
+                        <div className="absolute inset-0 pointer-events-none">
+                          <SmartVideoPlayer
+                            accountId={currentSite.id}
+                            cameraId={cam.een_camera_id}
+                            source="een"
+                            streamType="preview"
+                            disableFullscreen
+                          />
+                        </div>
+                        {/* Camera name label */}
+                        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 pointer-events-none">
+                          <p className="text-[9px] font-semibold text-white truncate">{cam.name}</p>
+                        </div>
+                        {/* Double-click hint on hover */}
+                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                          <div className="bg-black/60 backdrop-blur-sm rounded px-2 py-1 border border-white/10">
+                            <p className="text-[8px] text-slate-300">Double-click for main stream</p>
+                          </div>
+                        </div>
+                      </div>
                     ))}
                   </div>
                 )}
 
-                {/* Video or no-camera state */}
-                <div className="flex-1 relative overflow-hidden">
-                  {activeCam ? (
-                    <SmartVideoPlayer
-                      accountId={currentSite.id}
-                      cameraId={activeCam.een_camera_id}
-                      source="een"
-                      streamType="main"
-                      label={currentSite.name}
-                    />
-                  ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center gap-2">
-                      <p className="text-[11px] text-slate-600">No cameras found for this site</p>
-                      <p className="text-[9px] text-slate-700">Ensure cameras are configured in Setup → zone → cameras</p>
-                    </div>
-                  )}
-                  {/* Site overlay */}
-                  <div className="absolute top-3 left-3 bg-black/70 border border-white/10 rounded px-2 py-1 pointer-events-none">
-                    <p className="text-[10px] font-bold text-white">{currentSite.name}</p>
-                    {activeCam && <p className="text-[8px] text-slate-400">{activeCam.name}</p>}
-                  </div>
+                {/* Site label overlay */}
+                <div className="absolute top-2 left-2 bg-black/70 border border-white/10 rounded px-2 py-1 pointer-events-none">
+                  <p className="text-[10px] font-bold text-white">{currentSite.name}</p>
+                  <p className="text-[8px] text-slate-500">{currentSite.cameras.length} camera{currentSite.cameras.length !== 1 ? 's' : ''} · substream</p>
                 </div>
               </div>
+
+              {/* ── Expanded camera modal (main stream) ── */}
+              {expandedCam && (
+                <div
+                  className="absolute inset-0 z-50 bg-black/90 flex flex-col"
+                  onClick={() => setExpandedCam(null)}
+                >
+                  <div className="flex items-center justify-between px-4 py-2 border-b border-white/[0.08] shrink-0" onClick={e => e.stopPropagation()}>
+                    <div>
+                      <p className="text-[11px] font-bold text-white">{expandedCam.name}</p>
+                      <p className="text-[9px] text-slate-500">Main stream · click outside to close</p>
+                    </div>
+                    <button
+                      onClick={() => setExpandedCam(null)}
+                      className="w-7 h-7 flex items-center justify-center rounded border border-white/10 bg-white/[0.04] hover:bg-white/[0.1] text-slate-400 hover:text-white transition-all"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div className="flex-1 min-h-0" onClick={e => e.stopPropagation()}>
+                    <SmartVideoPlayer
+                      accountId={expandedCam.accountId}
+                      cameraId={expandedCam.cameraId}
+                      source="een"
+                      streamType="main"
+                      label={expandedCam.name}
+                      disableFullscreen
+                    />
+                  </div>
+                </div>
+              )}
 
               {/* ── Checklist panel ── */}
               <div className="w-[300px] shrink-0 border-l border-white/[0.06] flex flex-col overflow-hidden">
