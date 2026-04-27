@@ -16,7 +16,7 @@
 //   supervisor → all agent routes + /setup (view only, enforced in setup page)
 //   admin      → all routes including /setup (full write)
 
-import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
+import { clerkMiddleware, createRouteMatcher, clerkClient } from '@clerk/nextjs/server';
 import { NextResponse } from 'next/server';
 
 const isPublicRoute = createRouteMatcher([
@@ -42,15 +42,16 @@ export default clerkMiddleware(async (auth, req) => {
   });
 
   // 3. Role guard: agents cannot access /setup
-  // Clerk v6: publicMetadata appears as `metadata` in the default JWT template.
-  // Some custom JWT templates surface it as `publicMetadata` instead — check both.
+  // We fetch the user directly from Clerk's API (not JWT claims) so this works
+  // regardless of JWT template configuration or token staleness.
   if (isSetupRoute(req)) {
-    const claims = session.sessionClaims as any;
-    const role: string =
-      claims?.metadata?.role ??
-      claims?.publicMetadata?.role ??
-      claims?.public_metadata?.role ??
-      'agent';
+    const userId = session.userId;
+    if (!userId) return NextResponse.redirect(new URL('/sign-in', req.url));
+
+    const client = await clerkClient();
+    const user = await client.users.getUser(userId);
+    const role = (user.publicMetadata?.role as string) ?? 'agent';
+
     if (role !== 'admin' && role !== 'supervisor') {
       return NextResponse.redirect(new URL('/alarms', req.url));
     }
