@@ -1079,7 +1079,7 @@ export default function AlarmsPage() {
                         accountId={activeAccountId}
                         cameraId={activeCameraId}
                         source={activeCameraSource as 'brivo' | 'een'}
-                        streamType="main"
+                        streamType="preview"
                         recordedUrl={liveOffsetUrl}
                         label=""
                       />
@@ -1088,7 +1088,7 @@ export default function AlarmsPage() {
                         accountId={activeAccountId}
                         cameraId={activeCameraId}
                         source={activeCameraSource as 'brivo' | 'een'}
-                        streamType="main"
+                        streamType="preview"
                         label=""
                       />
                     )
