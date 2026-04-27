@@ -26,7 +26,7 @@ const supabase = createClient(
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Priority = 'P1' | 'P2' | 'P3' | 'P4';
 type AlarmStatus = 'pending' | 'processing' | 'resolved';
-type ActionTaken = 'authorized' | 'unauthorized' | 'false_alarm' | 'police_dispatched' | 'other' | '';
+type ActionTaken = 'authorized' | 'unauthorized' | 'false_alarm' | 'police_dispatched' | 'emergency_services_on_site' | 'property_violation' | 'other' | '';
 type TabName = 'cameras' | 'history' | 'scripts' | 'notes';
 
 interface TriageResult {
@@ -118,12 +118,14 @@ const CLEARANCE_STEPS = [
 ];
 
 const ACTION_OPTIONS: { value: ActionTaken; label: string }[] = [
-  { value: '',                 label: 'Select action taken...' },
-  { value: 'authorized',       label: 'Access Authorized' },
-  { value: 'unauthorized',     label: 'Unauthorized Activity' },
-  { value: 'false_alarm',      label: 'False Alarm' },
-  { value: 'police_dispatched',label: 'Police Dispatched' },
-  { value: 'other',            label: 'Other' },
+  { value: '',                          label: 'Select action taken...' },
+  { value: 'authorized',                label: 'Access Authorized' },
+  { value: 'unauthorized',              label: 'Unauthorized Activity' },
+  { value: 'false_alarm',               label: 'False Alarm' },
+  { value: 'police_dispatched',         label: 'Police Dispatched' },
+  { value: 'emergency_services_on_site',label: 'Emergency Services On Site' },
+  { value: 'property_violation',        label: 'Property Violation (Dumping / Loitering)' },
+  { value: 'other',                     label: 'Other' },
 ];
 
 // ─── SVG Icons ────────────────────────────────────────────────────────────────
