@@ -16,7 +16,7 @@
 //   supervisor → all agent routes + /setup (view only, enforced in setup page)
 //   admin      → all routes including /setup (full write)
 
-import { clerkMiddleware, createRouteMatcher, clerkClient } from '@clerk/nextjs/server';
+import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 import { NextResponse } from 'next/server';
 
 const isPublicRoute = createRouteMatcher([
@@ -29,33 +29,17 @@ const isPublicRoute = createRouteMatcher([
   '/api/brivo(.*)',
 ]);
 
-// /setup requires admin or supervisor — agents are bounced to /alarms
-const isSetupRoute = createRouteMatcher(['/setup(.*)']);
-
 export default clerkMiddleware(async (auth, req) => {
-  // 1. Always allow public routes through
+  // Allow public routes through without auth
   if (isPublicRoute(req)) return NextResponse.next();
 
-  // 2. Require authentication for everything else
-  const session = await auth.protect({
+  // Require authentication for everything else — unauthenticated users go to sign-in
+  await auth.protect({
     unauthenticatedUrl: new URL('/sign-in', req.url).toString(),
   });
 
-  // 3. Role guard: agents cannot access /setup
-  // We fetch the user directly from Clerk's API (not JWT claims) so this works
-  // regardless of JWT template configuration or token staleness.
-  if (isSetupRoute(req)) {
-    const userId = session.userId;
-    if (!userId) return NextResponse.redirect(new URL('/sign-in', req.url));
-
-    const client = await clerkClient();
-    const user = await client.users.getUser(userId);
-    const role = (user.publicMetadata?.role as string) ?? 'agent';
-
-    if (role !== 'admin' && role !== 'supervisor') {
-      return NextResponse.redirect(new URL('/alarms', req.url));
-    }
-  }
+  // Role-based access for /setup is enforced inside the setup page itself
+  // using currentUser() — see the redirect at the top of app/setup/page.tsx
 });
 
 export const config = {
