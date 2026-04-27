@@ -15,7 +15,8 @@ import React, {
 } from 'react';
 import { useUser } from '@clerk/nextjs';
 import { createClient } from '@supabase/supabase-js';
-import SmartVideoPlayer from '@/components/SmartVideoPlayer';
+import SmartVideoPlayer  from '@/components/SmartVideoPlayer';
+import CommunicationHub  from '@/components/CommunicationHub';
 
 // ─── Supabase client ─────────────────────────────────────────────────────────
 const supabase = createClient(
@@ -263,8 +264,9 @@ function ScriptCard({ label, color, text }: { label: string; color: string; text
 export default function AlarmsPage() {
   // Clerk identity — used for audit logs and incident reports
   const { user } = useUser();
-  const operatorId   = user?.id ?? 'unknown';
-  const operatorName = user?.fullName ?? user?.firstName ?? 'Operator';
+  const operatorId    = user?.id ?? 'unknown';
+  const operatorName  = user?.fullName ?? user?.firstName ?? 'Operator';
+  const operatorEmail = user?.primaryEmailAddress?.emailAddress ?? operatorId;
 
   // Queue state
   const [queue, setQueue]             = useState<Alarm[]>([]);
@@ -1686,7 +1688,23 @@ export default function AlarmsPage() {
             )}
           </section>
 
-          {/* ── 4. Clearance Protocol ── */}
+          {/* ── 4. Communications (Dial / Email / Log) ── */}
+          <section>
+            <SectionHeader icon={<Ic.Phone />} label="Communications" />
+            <div className="rounded border border-white/[0.06] overflow-hidden" style={{ height: '340px' }}>
+              <CommunicationHub
+                incidentId={activeAlarm?.id ?? null}
+                patrolId={null}
+                zoneId={activeAlarm?.zone_id ?? null}
+                contacts={contacts}
+                agentEmail={operatorEmail}
+                agentName={operatorName}
+                isLocked={!activeAlarm}
+              />
+            </div>
+          </section>
+
+          {/* ── 5. Clearance Protocol ── */}
           <section>
             <SectionHeader icon={<Ic.Shield />} label="Clearance Protocol" />
             <div className="space-y-1">
