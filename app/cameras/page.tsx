@@ -776,7 +776,7 @@ export default function CamerasPage() {
                 accountId={selectedAccount.id}
                 cameraId={key}
                 source={selectedCamera.source}
-                streamType="main"
+                streamType="preview"
                 recordedUrl={recordedUrl ?? undefined}
                 recordedToken={recordedToken ?? undefined}
                 label={selectedCamera.name}
