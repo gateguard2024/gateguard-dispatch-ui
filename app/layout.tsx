@@ -12,6 +12,7 @@ import "./globals.css";
 import Link from "next/link";
 import { ClerkProvider, UserButton } from "@clerk/nextjs";
 import { currentUser } from "@clerk/nextjs/server";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -145,6 +146,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             {children}
           </main>
 
+          <SpeedInsights />
         </body>
       </html>
     </ClerkProvider>
