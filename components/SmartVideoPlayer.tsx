@@ -304,12 +304,14 @@ export default function SmartVideoPlayer({
         </div>
       )}
 
-      {/* Fullscreen hint */}
-      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
-        <div className="bg-black/60 border border-white/10 px-2 py-0.5 rounded text-[9px] text-white/60">
-          Double-click for fullscreen
+      {/* Fullscreen hint — upper left, only when fullscreen is enabled */}
+      {!disableFullscreen && (
+        <div className="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
+          <div className="bg-black/60 border border-white/10 px-2 py-0.5 rounded text-[9px] text-white/60">
+            Double-click for fullscreen
+          </div>
         </div>
-      </div>
+      )}
 
       <video
         ref={videoRef}

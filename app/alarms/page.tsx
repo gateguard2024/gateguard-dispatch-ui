@@ -234,17 +234,18 @@ function ScriptCard({ label, color, text }: { label: string; color: string; text
     });
   };
   return (
-    <div className={`rounded border ${color} p-2.5`}>
-      <div className="flex items-center justify-between mb-1.5">
+    <div className={`rounded border ${color} p-3`}>
+      <div className="flex items-center justify-between mb-2.5">
         <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">{label}</span>
         <button
           onClick={copy}
-          className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] text-slate-400 hover:text-white transition-all"
+          className="px-2 py-0.5 rounded text-[8px] font-medium bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-slate-500 hover:text-slate-300 transition-all"
         >
           {copied ? '✓ Copied' : 'Copy'}
         </button>
       </div>
-      <p className="text-[10px] text-slate-300 leading-relaxed">{text}</p>
+      {/* Teleprompter-style: large, easy-to-read white text for live use */}
+      <p className="text-[13px] text-white leading-relaxed font-medium tracking-wide">{text}</p>
     </div>
   );
 }
@@ -469,8 +470,7 @@ export default function AlarmsPage() {
         .from('cameras')
         .select('id, name, brivo_camera_id, een_camera_id, source')
         .eq('zone_id', zoneId)
-        .eq('is_monitored', true)
-        .limit(12);
+        .limit(24);
       setSiteCameras(cams ?? []);
     }
 
@@ -488,7 +488,7 @@ export default function AlarmsPage() {
 
     // Resolve EEN camera ESN — try join first, then direct lookup
     let eenCamId = alarm.cameras?.een_camera_id ?? null;
-    const accountId2 = alarm.account_id;
+    const accountId2 = alarm.account_id ?? alarm.zones?.account_id ?? null;
 
     if (!eenCamId && alarm.camera_id) {
       const { data: camRow } = await supabase
@@ -541,7 +541,28 @@ export default function AlarmsPage() {
       .eq('id', alarm.id);
   }, []);
 
-  // ── Suggest procedure steps via AI ───────────────────────────────────────
+  // ── Auto-trigger AI suggest when a new alarm is loaded ───────────────────
+  useEffect(() => {
+    if (!activeAlarm?.zone_id) return;
+    setSuggestingSteps(true);
+    setStepSuggestion(null);
+    fetch('/api/procedures/suggest', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        zoneId:    activeAlarm.zone_id,
+        eventType: activeAlarm.event_type,
+        save:      false,
+      }),
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data) setStepSuggestion(data.suggested ?? null); })
+      .catch(() => {})
+      .finally(() => setSuggestingSteps(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAlarm?.id]);   // fire once per alarm, not on every re-render
+
+  // ── Suggest procedure steps via AI (manual re-run) ────────────────────────
   const suggestSteps = useCallback(async () => {
     if (!activeAlarm) return;
     setSuggestingSteps(true);
@@ -819,7 +840,8 @@ export default function AlarmsPage() {
   }
 
   // ── Derived ────────────────────────────────────────────────────────────────
-  const allClearanceChecked = clearanceChecked.every(Boolean);
+  // Only the first clearance step (visual verification) is required to resolve
+  const allClearanceChecked = clearanceChecked[0] === true;
   const canResolve = allClearanceChecked && actionTaken !== '';
 
   const activeCameraEntry = siteCameras.find(c =>
@@ -994,58 +1016,13 @@ export default function AlarmsPage() {
               </div>
             </div>
 
-            {/* TOP: Dual Video stacked vertically — each panel gets a fixed slice */}
-            <div className="flex flex-col gap-px bg-black overflow-hidden" style={{ height: '50%' }}>
+            {/* TOP: Dual Video — Live primary (top 60%), Pre-alarm secondary (bottom 40%) */}
+            <div className="flex flex-col gap-px bg-black overflow-hidden" style={{ height: '52%' }}>
 
-              {/* ── Pre-alarm / Recorded panel ─────────────────────────── */}
-              {expandedPanel !== 'live' && (
-                <div
-                  className={`relative cursor-pointer overflow-hidden ${expandedPanel === 'pre-alarm' ? 'flex-1' : 'h-1/2'}`}
-                  onDoubleClick={() => setExpandedPanel(p => p === 'pre-alarm' ? null : 'pre-alarm')}
-                  title="Double-click to expand / collapse"
-                >
-                  {/* Label */}
-                  <div className="absolute top-2 left-2 z-10 bg-amber-600/80 border border-amber-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-white uppercase tracking-wider pointer-events-none">
-                    Pre-Alarm Clip
-                  </div>
-                  {/* Expand/collapse indicator */}
-                  <div className="absolute top-2 right-2 z-10 pointer-events-none">
-                    <span className="text-[8px] text-white/25 bg-black/40 px-1 py-0.5 rounded">
-                      {expandedPanel === 'pre-alarm' ? '⊡ dbl-click collapse' : '⤢ dbl-click expand'}
-                    </span>
-                  </div>
-
-                  {activeCameraId && typeof preAlarmUrl === 'string' ? (
-                    <SmartVideoPlayer
-                      accountId={activeAccountId}
-                      cameraId={activeCameraId}
-                      source={activeCameraSource as 'brivo' | 'een'}
-                      streamType="preview"
-                      recordedUrl={preAlarmUrl}
-                      recordedToken={preAlarmToken ?? undefined}
-                      label=""
-                    />
-                  ) : activeCameraId && preAlarmUrl === undefined ? (
-                    <div className="w-full h-full flex flex-col items-center justify-center bg-black gap-2">
-                      <div className="w-4 h-4 border-2 border-amber-600 border-t-transparent rounded-full animate-spin" />
-                      <p className="text-[9px] text-amber-700">Fetching clip...</p>
-                    </div>
-                  ) : activeCameraId ? (
-                    <div className="w-full h-full flex items-center justify-center bg-black">
-                      <p className="text-[10px] text-slate-600">No pre-alarm clip available</p>
-                    </div>
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-black">
-                      <p className="text-[10px] text-slate-600">No camera assigned</p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ── Live feed panel ────────────────────────────────────── */}
+              {/* ── Live feed panel — PRIMARY ───────────────────────────── */}
               {expandedPanel !== 'pre-alarm' && (
                 <div
-                  className={`relative cursor-pointer overflow-hidden ${expandedPanel === 'live' ? 'flex-1' : 'h-1/2'}`}
+                  className={`relative cursor-pointer overflow-hidden ${expandedPanel === 'live' ? 'flex-1' : 'h-[60%]'}`}
                   onDoubleClick={(e) => {
                     if ((e.target as HTMLElement).tagName !== 'BUTTON') {
                       setExpandedPanel(p => p === 'live' ? null : 'live');
@@ -1110,6 +1087,51 @@ export default function AlarmsPage() {
                   ) : (
                     <div className="w-full h-full flex items-center justify-center bg-black">
                       <p className="text-[10px] text-slate-600">No live feed available</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── Pre-alarm / Recorded panel — SECONDARY ─────────────── */}
+              {expandedPanel !== 'live' && (
+                <div
+                  className={`relative cursor-pointer overflow-hidden ${expandedPanel === 'pre-alarm' ? 'flex-1' : 'h-[40%]'}`}
+                  onDoubleClick={() => setExpandedPanel(p => p === 'pre-alarm' ? null : 'pre-alarm')}
+                  title="Double-click to expand / collapse"
+                >
+                  {/* Label */}
+                  <div className="absolute top-2 left-2 z-10 bg-amber-600/80 border border-amber-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-white uppercase tracking-wider pointer-events-none">
+                    Pre-Alarm Clip
+                  </div>
+                  {/* Expand/collapse indicator */}
+                  <div className="absolute top-2 right-2 z-10 pointer-events-none">
+                    <span className="text-[8px] text-white/25 bg-black/40 px-1 py-0.5 rounded">
+                      {expandedPanel === 'pre-alarm' ? '⊡ dbl-click collapse' : '⤢ dbl-click expand'}
+                    </span>
+                  </div>
+
+                  {activeCameraId && typeof preAlarmUrl === 'string' ? (
+                    <SmartVideoPlayer
+                      accountId={activeAccountId}
+                      cameraId={activeCameraId}
+                      source={activeCameraSource as 'brivo' | 'een'}
+                      streamType="preview"
+                      recordedUrl={preAlarmUrl}
+                      recordedToken={preAlarmToken ?? undefined}
+                      label=""
+                    />
+                  ) : activeCameraId && preAlarmUrl === undefined ? (
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-black gap-2">
+                      <div className="w-4 h-4 border-2 border-amber-600 border-t-transparent rounded-full animate-spin" />
+                      <p className="text-[9px] text-amber-700">Fetching clip...</p>
+                    </div>
+                  ) : activeCameraId ? (
+                    <div className="w-full h-full flex items-center justify-center bg-black">
+                      <p className="text-[10px] text-slate-600">No pre-alarm clip available</p>
+                    </div>
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-black">
+                      <p className="text-[10px] text-slate-600">No camera assigned</p>
                     </div>
                   )}
                 </div>
@@ -1696,13 +1718,23 @@ export default function AlarmsPage() {
                 ))}
               </select>
 
+              {/* Resolution notes — police called, courtesy officer notified, etc. */}
+              <textarea
+                value={notes}
+                onChange={e => setNotes(e.target.value)}
+                disabled={!activeAlarm}
+                placeholder="Resolution notes... e.g. called police (ref# 12345), notified courtesy officer, gate secured at 22:14"
+                rows={3}
+                className="w-full bg-white/[0.02] border border-white/[0.06] rounded px-2.5 py-2 text-[10px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500/50 disabled:opacity-30 disabled:cursor-not-allowed"
+              />
+
               {resolveError && (
                 <p className="text-[9px] text-red-400 px-1">{resolveError}</p>
               )}
 
               {!allClearanceChecked && activeAlarm && (
                 <p className="text-[9px] text-slate-400 px-1">
-                  Complete all clearance protocol steps to enable resolve
+                  ✓ Visual verification required before resolving
                 </p>
               )}
 
