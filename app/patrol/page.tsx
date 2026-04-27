@@ -24,10 +24,23 @@ interface SiteCamera {
   zone_id:       string;
 }
 
+interface SiteContact {
+  id:       string;
+  name:     string;
+  role:     string;
+  phone:    string | null;
+  email:    string | null;
+  priority: number;
+}
+
 interface Site {
-  id:      string;   // accounts.id — used as accountId for SmartVideoPlayer
-  name:    string;
-  cameras: SiteCamera[];
+  id:               string;   // accounts.id — used as accountId for SmartVideoPlayer
+  name:             string;
+  zone_id:          string | null;
+  cameras:          SiteCamera[];
+  site_info:        Record<string, any> | null;
+  weekly_schedule:  Record<string, any> | null;
+  contacts:         SiteContact[];
 }
 
 interface SiteChecklist {
@@ -140,16 +153,42 @@ export default function PatrolPage() {
       try {
         const { data: accts, error } = await supabase
           .from('accounts')
-          .select('id, name, zones(id, cameras(id, name, een_camera_id, zone_id))')
+          .select('id, name, zones(id, site_info, weekly_schedule, cameras(id, name, een_camera_id, zone_id))')
           .order('name');
 
         if (error) { setLoading(false); return; }
 
+        // Load all contacts in one query, then group by zone_id
+        const zoneIds: string[] = (accts ?? [])
+          .flatMap((a: any) => (a.zones ?? []).map((z: any) => z.id))
+          .filter(Boolean);
+        let contactsByZone: Record<string, SiteContact[]> = {};
+        if (zoneIds.length > 0) {
+          const { data: allContacts } = await supabase
+            .from('contacts')
+            .select('*')
+            .in('zone_id', zoneIds)
+            .order('priority');
+          (allContacts ?? []).forEach((c: any) => {
+            if (!contactsByZone[c.zone_id]) contactsByZone[c.zone_id] = [];
+            contactsByZone[c.zone_id].push(c);
+          });
+        }
+
         const siteList: Site[] = (accts ?? []).map((a: any) => {
+          const firstZone = (a.zones ?? [])[0] ?? null;
           const cameras: SiteCamera[] = (a.zones ?? [])
             .flatMap((z: any) => (z.cameras ?? []).filter((c: any) => c.een_camera_id))
             .map((c: any) => ({ id: c.id, name: c.name, een_camera_id: c.een_camera_id, zone_id: c.zone_id }));
-          return { id: a.id, name: a.name, cameras };
+          return {
+            id:              a.id,
+            name:            a.name,
+            zone_id:         firstZone?.id ?? null,
+            cameras,
+            site_info:       firstZone?.site_info ?? null,
+            weekly_schedule: firstZone?.weekly_schedule ?? null,
+            contacts:        firstZone?.id ? (contactsByZone[firstZone.id] ?? []) : [],
+          };
         });
 
         setSites(siteList);
@@ -261,6 +300,9 @@ export default function PatrolPage() {
 
   // Expanded camera modal (double-click → main stream)
   const [expandedCam, setExpandedCam] = useState<{ accountId: string; cameraId: string; name: string } | null>(null);
+
+  // Right panel tab
+  const [rightTab, setRightTab] = useState<'checklist' | 'site-brief' | 'contacts'>('checklist');
 
   // Grid columns based on camera count
   function gridCols(n: number) {
@@ -638,93 +680,218 @@ export default function PatrolPage() {
                 </div>
               )}
 
-              {/* ── Checklist panel ── */}
+              {/* ── Right panel (tabbed) ── */}
               <div className="w-[300px] shrink-0 border-l border-white/[0.06] flex flex-col overflow-hidden">
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
 
-                  {/* Checklist */}
-                  <div>
-                    <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-[0.1em] mb-2">Site Checklist</p>
-                    <div className="space-y-1">
-                      {(Object.keys(CHECKLIST_LABELS) as (keyof SiteChecklist)[]).map(key => (
-                        <label
-                          key={key}
-                          onClick={() => toggleCheck(key)}
-                          className={`flex items-start gap-2.5 px-2.5 py-2 rounded cursor-pointer transition-all border ${
-                            currentResult.checklist[key]
-                              ? 'border-emerald-500/30 bg-emerald-500/[0.06]'
-                              : 'border-white/[0.04] bg-white/[0.02] hover:bg-white/[0.04]'
-                          }`}
-                        >
-                          <div className={`shrink-0 mt-0.5 w-4 h-4 rounded border flex items-center justify-center transition-all ${
-                            currentResult.checklist[key] ? 'bg-emerald-600 border-emerald-600' : 'border-white/20'
-                          }`}>
-                            {currentResult.checklist[key] && (
-                              <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="m4.5 12.75 6 6 9-13.5" />
-                              </svg>
-                            )}
-                          </div>
-                          <span className={`text-[10px] leading-snug ${
-                            currentResult.checklist[key] ? 'text-emerald-400/80 line-through' : 'text-slate-300'
-                          }`}>
-                            {CHECKLIST_LABELS[key]}
-                          </span>
-                        </label>
-                      ))}
+                {/* Tab bar */}
+                <div className="flex border-b border-white/[0.06] shrink-0">
+                  {([
+                    { key: 'checklist',  label: 'Checklist' },
+                    { key: 'site-brief', label: 'Site Brief' },
+                    { key: 'contacts',   label: `Contacts${currentSite.contacts.length ? ` (${currentSite.contacts.length})` : ''}` },
+                  ] as const).map(tab => (
+                    <button
+                      key={tab.key}
+                      onClick={() => setRightTab(tab.key)}
+                      className={`flex-1 py-2 text-[9px] font-semibold uppercase tracking-wider transition-all ${
+                        rightTab === tab.key
+                          ? 'text-indigo-300 border-b-2 border-indigo-500 -mb-px'
+                          : 'text-slate-600 hover:text-slate-400'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* ── CHECKLIST TAB ── */}
+                {rightTab === 'checklist' && (
+                  <>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                      <div>
+                        <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-[0.1em] mb-2">Site Checklist</p>
+                        <div className="space-y-1">
+                          {(Object.keys(CHECKLIST_LABELS) as (keyof SiteChecklist)[]).map(key => (
+                            <label
+                              key={key}
+                              onClick={() => toggleCheck(key)}
+                              className={`flex items-start gap-2.5 px-2.5 py-2 rounded cursor-pointer transition-all border ${
+                                currentResult.checklist[key]
+                                  ? 'border-emerald-500/30 bg-emerald-500/[0.06]'
+                                  : 'border-white/[0.04] bg-white/[0.02] hover:bg-white/[0.04]'
+                              }`}
+                            >
+                              <div className={`shrink-0 mt-0.5 w-4 h-4 rounded border flex items-center justify-center transition-all ${
+                                currentResult.checklist[key] ? 'bg-emerald-600 border-emerald-600' : 'border-white/20'
+                              }`}>
+                                {currentResult.checklist[key] && (
+                                  <svg className="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="m4.5 12.75 6 6 9-13.5" />
+                                  </svg>
+                                )}
+                              </div>
+                              <span className={`text-[10px] leading-snug ${
+                                currentResult.checklist[key] ? 'text-emerald-400/80 line-through' : 'text-slate-300'
+                              }`}>
+                                {CHECKLIST_LABELS[key]}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-[0.1em] mb-1.5">Observations</p>
+                        <textarea
+                          value={currentResult.notes}
+                          onChange={e => setNotes(e.target.value)}
+                          placeholder="Gate issues, persons, vehicles, unusual activity…"
+                          rows={4}
+                          className="w-full bg-white/[0.02] border border-white/[0.06] rounded px-2.5 py-2 text-[10px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500/50"
+                        />
+                      </div>
+                      {submitError && (
+                        <p className="text-[9px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">✗ {submitError}</p>
+                      )}
                     </div>
+                    <div className="p-3 border-t border-white/[0.06] space-y-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <button onClick={() => markSite('clear')} className="py-2.5 rounded border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-[10px] font-bold uppercase tracking-wider transition-all">
+                          ✓ All Clear
+                        </button>
+                        <button onClick={() => markSite('issue')} className="py-2.5 rounded border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-300 text-[10px] font-bold uppercase tracking-wider transition-all">
+                          ! Issue Found
+                        </button>
+                      </div>
+                      {allSitesDone && (
+                        <button onClick={submitPatrol} disabled={submitting} className="w-full py-2.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold uppercase tracking-wider transition-all disabled:opacity-40">
+                          {submitting ? 'Saving…' : 'Submit Patrol Report'}
+                        </button>
+                      )}
+                      {!allSitesDone && currentResult.status !== 'pending' && (
+                        <p className="text-[9px] text-slate-600 text-center">
+                          {results.filter(r => r.status === 'pending').length} site{results.filter(r => r.status === 'pending').length !== 1 ? 's' : ''} remaining
+                        </p>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {/* ── SITE BRIEF TAB ── */}
+                {rightTab === 'site-brief' && (
+                  <div className="flex-1 overflow-y-auto p-4 space-y-4 text-[10px]">
+                    {(() => {
+                      const si = currentSite.site_info ?? {};
+                      return (
+                        <>
+                          {/* Property info */}
+                          {(si.property || si.customer_name || si.service_address) && (
+                            <div>
+                              <p className="text-[9px] font-semibold text-slate-500 uppercase tracking-[0.1em] mb-1.5">Property</p>
+                              <div className="bg-white/[0.02] border border-white/[0.05] rounded p-2.5 space-y-1">
+                                {si.property && <p className="font-semibold text-white">{si.property}</p>}
+                                {si.customer_name && <p className="text-slate-400">{si.customer_name}</p>}
+                                {si.service_address && <p className="text-slate-500">{si.service_address}</p>}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Hours */}
+                          {(si.office_hours || si.pool_hours) && (
+                            <div>
+                              <p className="text-[9px] font-semibold text-slate-500 uppercase tracking-[0.1em] mb-1.5">Hours</p>
+                              <div className="bg-white/[0.02] border border-white/[0.05] rounded p-2.5 space-y-1.5">
+                                {si.office_hours && (
+                                  <div className="flex gap-2">
+                                    <span className="text-slate-600 shrink-0 w-12">Office</span>
+                                    <span className="text-slate-300">{si.office_hours}</span>
+                                  </div>
+                                )}
+                                {si.pool_hours && (
+                                  <div className="flex gap-2">
+                                    <span className="text-slate-600 shrink-0 w-12">Pool</span>
+                                    <span className="text-slate-300">{si.pool_hours}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Courtesy officer status */}
+                          <div className={`flex items-center gap-2.5 px-3 py-2 rounded border ${
+                            si.courtesy_officer_on_site
+                              ? 'border-amber-500/30 bg-amber-500/10'
+                              : 'border-white/[0.05] bg-white/[0.02]'
+                          }`}>
+                            <div className={`w-2 h-2 rounded-full shrink-0 ${si.courtesy_officer_on_site ? 'bg-amber-400' : 'bg-slate-700'}`} />
+                            <span className={si.courtesy_officer_on_site ? 'text-amber-300 font-semibold' : 'text-slate-600'}>
+                              {si.courtesy_officer_on_site ? 'Courtesy Officer On Site' : 'No Courtesy Officer'}
+                            </span>
+                          </div>
+
+                          {/* Procedures */}
+                          {si.procedures && (
+                            <div>
+                              <p className="text-[9px] font-semibold text-slate-500 uppercase tracking-[0.1em] mb-1.5">Response Procedures</p>
+                              <div className="bg-white/[0.02] border border-white/[0.05] rounded p-2.5">
+                                <p className="text-slate-300 leading-relaxed whitespace-pre-line">{si.procedures}</p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Special notes */}
+                          {si.special_notes && (
+                            <div>
+                              <p className="text-[9px] font-semibold text-slate-500 uppercase tracking-[0.1em] mb-1.5">Site Notes</p>
+                              <div className="bg-indigo-500/[0.06] border border-indigo-500/20 rounded p-2.5">
+                                <p className="text-slate-300 leading-relaxed whitespace-pre-line">{si.special_notes}</p>
+                              </div>
+                            </div>
+                          )}
+
+                          {!si.property && !si.procedures && !si.special_notes && !si.office_hours && !si.pool_hours && (
+                            <p className="text-slate-700 text-center py-6 text-[10px]">No site info configured — add details in Setup → Site Info</p>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
+                )}
 
-                  {/* Notes */}
-                  <div>
-                    <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-[0.1em] mb-1.5">Observations</p>
-                    <textarea
-                      value={currentResult.notes}
-                      onChange={e => setNotes(e.target.value)}
-                      placeholder="Gate issues, persons, vehicles, unusual activity…"
-                      rows={4}
-                      className="w-full bg-white/[0.02] border border-white/[0.06] rounded px-2.5 py-2 text-[10px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500/50"
-                    />
+                {/* ── CONTACTS TAB ── */}
+                {rightTab === 'contacts' && (
+                  <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                    {currentSite.contacts.some(c => c.role === 'Courtesy Officer') && (
+                      <div className="flex items-center gap-2 px-2.5 py-1.5 rounded border border-amber-500/30 bg-amber-500/10 mb-3">
+                        <div className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                        <span className="text-[9px] font-bold text-amber-300 uppercase tracking-wider">Courtesy Officer On Site</span>
+                      </div>
+                    )}
+                    {currentSite.contacts.length === 0 ? (
+                      <p className="text-[10px] text-slate-700 text-center py-6">No contacts configured for this site</p>
+                    ) : (
+                      currentSite.contacts.map(c => (
+                        <div key={c.id} className="flex items-center justify-between px-2.5 py-2 rounded border border-white/[0.06] bg-white/[0.02]">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-0.5">{c.role}</p>
+                            <p className="text-[11px] font-semibold text-white truncate">{c.name}</p>
+                            {c.phone && <p className="text-[9px] text-slate-500 font-mono mt-0.5">{c.phone}</p>}
+                            {c.email && <p className="text-[9px] text-slate-600 truncate">{c.email}</p>}
+                          </div>
+                          {c.phone && (
+                            <a
+                              href={`tel:${c.phone}`}
+                              className="shrink-0 ml-2 w-8 h-8 flex items-center justify-center rounded border border-white/[0.08] bg-white/[0.03] hover:bg-emerald-500/20 hover:border-emerald-500/40 text-slate-400 hover:text-emerald-300 transition-all"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
+                              </svg>
+                            </a>
+                          )}
+                        </div>
+                      ))
+                    )}
                   </div>
-
-                  {submitError && (
-                    <p className="text-[9px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1.5">✗ {submitError}</p>
-                  )}
-                </div>
-
-                {/* Action buttons */}
-                <div className="p-3 border-t border-white/[0.06] space-y-2">
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      onClick={() => markSite('clear')}
-                      className="py-2.5 rounded border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-[10px] font-bold uppercase tracking-wider transition-all"
-                    >
-                      ✓ All Clear
-                    </button>
-                    <button
-                      onClick={() => markSite('issue')}
-                      className="py-2.5 rounded border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-300 text-[10px] font-bold uppercase tracking-wider transition-all"
-                    >
-                      ! Issue Found
-                    </button>
-                  </div>
-
-                  {allSitesDone && (
-                    <button
-                      onClick={submitPatrol}
-                      disabled={submitting}
-                      className="w-full py-2.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold uppercase tracking-wider transition-all disabled:opacity-40"
-                    >
-                      {submitting ? 'Saving…' : 'Submit Patrol Report'}
-                    </button>
-                  )}
-
-                  {!allSitesDone && currentResult.status !== 'pending' && (
-                    <p className="text-[9px] text-slate-600 text-center">
-                      {results.filter(r => r.status === 'pending').length} site{results.filter(r => r.status === 'pending').length !== 1 ? 's' : ''} remaining — click any site in the sidebar
-                    </p>
-                  )}
-                </div>
+                )}
               </div>
             </div>
           </>

@@ -104,11 +104,17 @@ const PRIORITY_CONFIG: Record<Priority, { label: string; color: string; ring: st
 };
 
 const ROLE_COLORS: Record<string, string> = {
-  police:           'bg-blue-500/20 text-blue-300 border-blue-500/30',
-  fire:             'bg-red-500/20 text-red-300 border-red-500/30',
-  property_manager: 'bg-violet-500/20 text-violet-300 border-violet-500/30',
-  courtesy_officer: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
-  custom:           'bg-slate-500/20 text-slate-300 border-slate-500/30',
+  'Emergency Contact':               'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
+  'Reporting Contact':               'bg-slate-500/20 text-slate-300 border-slate-500/30',
+  'Property Manager':                'bg-violet-500/20 text-violet-300 border-violet-500/30',
+  'Property Staff':                  'bg-violet-500/10 text-violet-400 border-violet-500/20',
+  'Courtesy Officer':                'bg-amber-500/20 text-amber-300 border-amber-500/30',
+  'Authorized After-Hours Employee': 'bg-teal-500/20 text-teal-300 border-teal-500/30',
+  'Police Department':               'bg-blue-500/20 text-blue-300 border-blue-500/30',
+  'Fire Department':                 'bg-red-500/20 text-red-300 border-red-500/30',
+  'EMS':                             'bg-red-500/20 text-red-300 border-red-500/30',
+  'Janitorial Company':              'bg-zinc-500/20 text-zinc-300 border-zinc-500/30',
+  custom:                            'bg-slate-500/20 text-slate-300 border-slate-500/30',
 };
 
 const CLEARANCE_STEPS = [
@@ -1636,7 +1642,14 @@ export default function AlarmsPage() {
 
           {/* ── 3. Emergency Contacts ── */}
           <section>
-            <SectionHeader icon={<Ic.Users />} label="Emergency Contacts" />
+            <div className="flex items-center justify-between mb-1">
+              <SectionHeader icon={<Ic.Users />} label="Emergency Contacts" />
+              {contacts.some(c => c.role === 'Courtesy Officer') && (
+                <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border bg-amber-500/20 text-amber-300 border-amber-500/30 shrink-0">
+                  Courtesy Officer On Site
+                </span>
+              )}
+            </div>
             {contacts.length === 0 ? (
               <p className="text-[10px] text-slate-500 text-center py-3">
                 {activeAlarm ? 'No contacts configured for this site' : 'Awaiting alarm'}

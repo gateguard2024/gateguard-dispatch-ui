@@ -194,6 +194,9 @@ const HOLIDAYS = [
 const CONTACT_ROLES = [
   "Emergency Contact",
   "Reporting Contact",
+  "Property Manager",
+  "Property Staff",
+  "Courtesy Officer",
   "Authorized After-Hours Employee",
   "Police Department",
   "Fire Department",
@@ -228,11 +231,15 @@ const defaultSiteInfo = () => ({
   service_address: "",
   phone: "",
   email: "",
+  office_hours: "",
+  pool_hours: "",
   guard_on_site: false,
   guard_company: "",
   guard_phone: "",
+  courtesy_officer_on_site: false,
   camera_directory: "",
   expected_activity: "",
+  procedures: "",
   special_notes: "",
 });
 
@@ -899,6 +906,7 @@ export default function SetupPage() {
 
   // Contact editing
   const [editContact, setEditContact] = useState<Contact | null>(null);
+  const [contactSaveError, setContactSaveError] = useState<string | null>(null);
 
   // Deletion modal
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
@@ -1001,13 +1009,21 @@ export default function SetupPage() {
 
   // ── Contact CRUD ──────────────────────────────────────────────────────────
   const saveContact = async (contact: Contact) => {
+    setContactSaveError(null);
+    let error: any = null;
     if (contact.id) {
       const { id, zone_id, ...updates } = contact;
-      await supabase.from("contacts").update(updates).eq("id", id);
+      const res = await supabase.from("contacts").update(updates).eq("id", id);
+      error = res.error;
     } else {
-      await supabase.from("contacts").insert([contact]);
+      const res = await supabase.from("contacts").insert([contact]);
+      error = res.error;
     }
-    loadZoneContacts(contact.zone_id);
+    if (error) {
+      setContactSaveError(error.message ?? "Failed to save contact. Check Supabase RLS policies allow INSERT/UPDATE on contacts.");
+      return;
+    }
+    await loadZoneContacts(contact.zone_id);
     setEditContact(null);
   };
 
@@ -2058,8 +2074,13 @@ export default function SetupPage() {
                       <input className={inputCls} type="email" placeholder="name@company.com" value={editContact.email} onChange={(e) => setEditContact((c) => c && { ...c, email: e.target.value })} />
                     </Field>
                   </div>
+                  {contactSaveError && (
+                    <p className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-1.5">
+                      ✗ {contactSaveError}
+                    </p>
+                  )}
                   <div className="flex justify-end gap-2 pt-1">
-                    <button type="button" onClick={() => setEditContact(null)} className="text-xs text-slate-500 hover:text-slate-300 px-3 py-1.5 transition-all">Cancel</button>
+                    <button type="button" onClick={() => { setEditContact(null); setContactSaveError(null); }} className="text-xs text-slate-500 hover:text-slate-300 px-3 py-1.5 transition-all">Cancel</button>
                     <button type="button" onClick={() => editContact && saveContact(editContact)} className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium px-4 py-1.5 rounded transition-all">
                       {editContact.id ? "Save Changes" : "Add Contact"}
                     </button>
@@ -2116,15 +2137,21 @@ export default function SetupPage() {
           {/* ── PROCEDURES ── */}
           {detailTab === "procedures" && (
             <div className="flex flex-col gap-4 max-w-xl">
-              <SectionDivider>Custom Response Procedures</SectionDivider>
+              <SectionDivider>Response Procedures &amp; SOPs</SectionDivider>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Define event-specific SOPs for operators responding to alarms at this zone.
-                Procedures appear in the Dispatch Station during active alarm handling.
+                Define step-by-step procedures operators follow when responding to incidents at this site.
+                These appear in the Site Brief during active patrols and alarm handling.
               </p>
-              <div className="flex flex-col items-center justify-center h-28 border border-dashed border-white/[0.06] rounded text-[11px] text-slate-700 gap-2">
-                <Ic d={I.list} className="w-5 h-5 text-slate-700" />
-                Procedure editor — available in the next platform release
-              </div>
+              <Field label="General Response Procedures" help="Numbered steps operators should follow for any incident at this site">
+                <textarea
+                  className={inputCls + " resize-none"}
+                  rows={10}
+                  placeholder={"1. Verify incident on camera before taking action\n2. Attempt to contact Property Manager\n3. If pool violation after hours — call Courtesy Officer if on site\n4. Document all observations in patrol notes\n5. Generate incident report for any unresolved issues"}
+                  value={siteInfo.procedures ?? ""}
+                  onChange={(e) => setSiteInfo((p) => ({ ...p, procedures: e.target.value }))}
+                />
+              </Field>
+              <SaveBar onSave={() => saveSiteInfo(zone.id)} saving={saving} label="Save Procedures" />
             </div>
           )}
 
@@ -2151,6 +2178,12 @@ export default function SetupPage() {
                   <Field label="Email">
                     <input className={inputCls} type="email" placeholder="manager@property.com" value={siteInfo.email ?? ""} onChange={(e) => setSiteInfo((p) => ({ ...p, email: e.target.value }))} />
                   </Field>
+                  <Field label="Office Hours" help="e.g. Mon–Fri 9am–6pm, Sat 10am–4pm">
+                    <input className={inputCls} placeholder="Mon–Fri 9:00 AM – 6:00 PM" value={siteInfo.office_hours ?? ""} onChange={(e) => setSiteInfo((p) => ({ ...p, office_hours: e.target.value }))} />
+                  </Field>
+                  <Field label="Pool Hours" help="e.g. Daily 8am–10pm, closed Nov–Mar">
+                    <input className={inputCls} placeholder="Daily 8:00 AM – 10:00 PM" value={siteInfo.pool_hours ?? ""} onChange={(e) => setSiteInfo((p) => ({ ...p, pool_hours: e.target.value }))} />
+                  </Field>
                 </div>
               </div>
 
@@ -2162,6 +2195,13 @@ export default function SetupPage() {
                     <div>
                       <p className="text-sm text-white font-medium">Guard Service On Site</p>
                       <p className="text-[11px] text-slate-500 mt-0.5">A physical security guard is stationed at this property</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-4 px-4 py-3 bg-white/[0.02] border border-amber-500/20 rounded cursor-pointer hover:bg-white/[0.04] transition-all" onClick={() => setSiteInfo((p) => ({ ...p, courtesy_officer_on_site: !p.courtesy_officer_on_site }))}>
+                    <Toggle checked={siteInfo.courtesy_officer_on_site ?? false} onChange={() => setSiteInfo((p) => ({ ...p, courtesy_officer_on_site: !p.courtesy_officer_on_site }))} />
+                    <div>
+                      <p className="text-sm text-white font-medium">Courtesy Officer On Site</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">A resident courtesy officer lives at this property — will be notified for after-hours incidents before police</p>
                     </div>
                   </div>
                   {siteInfo.guard_on_site && (
