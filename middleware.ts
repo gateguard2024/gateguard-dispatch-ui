@@ -42,8 +42,15 @@ export default clerkMiddleware(async (auth, req) => {
   });
 
   // 3. Role guard: agents cannot access /setup
+  // Clerk v6: publicMetadata appears as `metadata` in the default JWT template.
+  // Some custom JWT templates surface it as `publicMetadata` instead — check both.
   if (isSetupRoute(req)) {
-    const role = (session.sessionClaims?.metadata as any)?.role ?? 'agent';
+    const claims = session.sessionClaims as any;
+    const role: string =
+      claims?.metadata?.role ??
+      claims?.publicMetadata?.role ??
+      claims?.public_metadata?.role ??
+      'agent';
     if (role !== 'admin' && role !== 'supervisor') {
       return NextResponse.redirect(new URL('/alarms', req.url));
     }
