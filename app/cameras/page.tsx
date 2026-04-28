@@ -105,6 +105,10 @@ const Ic = {
 function camKey(cam: CameraRow): string {
   return cam.brivo_camera_id ?? cam.een_camera_id ?? cam.id;
 }
+/** Returns a datetime-local string in the browser's local timezone (not UTC). */
+function toLocalDTString(d: Date): string {
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
 function fmtTime(iso: string): string {
   return new Date(iso).toLocaleString('en-US', {
     month: 'short', day: 'numeric',
@@ -303,15 +307,15 @@ export default function CamerasPage() {
     setAlarmRaised(false);
     setAlarmReason('');
     setAlarmNotes('');
-    // Default hold end time: 2 hours from now
+    // Default hold end time: 2 hours from now (local time for datetime-local input)
     const twoHours = new Date(Date.now() + 2 * 60 * 60_000);
-    setHoldEndTime(twoHours.toISOString().slice(0, 16));
+    setHoldEndTime(toLocalDTString(twoHours));
     setView(3);
-    // Default time range: last 30 min
-    const now   = new Date();
-    const minus  = new Date(now.getTime() - 30 * 60_000);
-    setEndTime(now.toISOString().slice(0, 16));
-    setStartTime(minus.toISOString().slice(0, 16));
+    // Default time range: last 30 min (local time for datetime-local input)
+    const now  = new Date();
+    const minus = new Date(now.getTime() - 30 * 60_000);
+    setEndTime(toLocalDTString(now));
+    setStartTime(toLocalDTString(minus));
     // Load past notes and account doors in parallel
     const [{ data: notes }, { data: acct }] = await Promise.all([
       supabase
