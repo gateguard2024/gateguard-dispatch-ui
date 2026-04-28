@@ -168,29 +168,40 @@ export async function POST(request: Request) {
     console.log(`[een/recorded] First clip keys: ${Object.keys(clips[0]).join(', ')}`);
     console.log(`[een/recorded] First clip: ${JSON.stringify(clips[0]).slice(0, 600)}`);
 
-    const clip   = clips[0];
-    const hlsUrl = clip.hlsUrl ?? clip.hlsPlaybackUrl ?? clip.streamUrl ?? clip.mp4Url ?? null;
+    // Build full clip list — EEN records in ~30-min segments so a 4h window
+    // returns ~8 clips. We return ALL of them so the UI can let the agent
+    // navigate between segments (binary-search investigation workflow).
+    const allClips = clips
+      .map((c: any) => ({
+        url:            c.hlsUrl ?? c.hlsPlaybackUrl ?? c.streamUrl ?? c.mp4Url ?? null,
+        startTimestamp: c.startTimestamp ?? null,
+        endTimestamp:   c.endTimestamp   ?? null,
+      }))
+      .filter((c: any) => c.url !== null);
 
-    if (!hlsUrl) {
+    if (allClips.length === 0) {
       return NextResponse.json(
         {
-          error:    'EEN returned a clip but no HLS URL found.',
-          clipKeys: Object.keys(clip),
-          clip,
+          error:    'EEN returned clips but no HLS URL found in any segment.',
+          clipKeys: Object.keys(clips[0]),
+          clip:     clips[0],
         },
         { status: 404 }
       );
     }
 
-    console.log(`[een/recorded] ✓ type=${usedType} | ${clips.length} clip(s) | URL: ${hlsUrl.slice(0, 80)}...`);
+    console.log(`[een/recorded] ✓ type=${usedType} | ${allClips.length} segment(s) | first URL: ${String(allClips[0].url).slice(0, 80)}...`);
 
     return NextResponse.json({
-      url:            hlsUrl,
+      // ── Backward-compat single-clip fields ──
+      url:            allClips[0].url,
       token,                        // required by HLS.js fetchSetup for auth headers
       type:           usedType,
-      clipCount:      clips.length,
-      startTimestamp: clip.startTimestamp,
-      endTimestamp:   clip.endTimestamp,
+      clipCount:      allClips.length,
+      startTimestamp: allClips[0].startTimestamp,
+      endTimestamp:   allClips[allClips.length - 1].endTimestamp,
+      // ── Full segment list for navigator UI ──
+      clips: allClips,
     });
 
   } catch (err: any) {

@@ -137,6 +137,9 @@ export default function CamerasPage() {
   const [recordedToken, setRecordedToken]     = useState<string | null>(null);
   const [recordedLoading, setRecordedLoading] = useState(false);
   const [recordedError, setRecordedError]     = useState<string | null>(null);
+  const [recordedClips, setRecordedClips]     = useState<{ url: string; startTimestamp: string | null; endTimestamp: string | null }[]>([]);
+  const [activeClipIdx, setActiveClipIdx]     = useState(0);
+  const [playbackSec, setPlaybackSec]         = useState(0);   // video.currentTime of active clip
   const [startTime, setStartTime]             = useState('');
   const [endTime, setEndTime]                 = useState('');
   const [cameraNote, setCameraNote]           = useState('');
@@ -294,6 +297,9 @@ export default function CamerasPage() {
   const openCamera = useCallback(async (cam: CameraRow) => {
     setSelectedCamera(cam);
     setRecordedUrl(null);
+    setRecordedToken(null);
+    setRecordedClips([]);
+    setActiveClipIdx(0);
     setRecordedError(null);
     setCameraNote('');
     setDoorOpened(false);
@@ -355,7 +361,12 @@ export default function CamerasPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.url) throw new Error(data.error ?? 'No recording found');
-      setRecordedUrl(data.url);
+      // Store all segments for the navigator — fall back to single-clip shape
+      const clips = data.clips ?? [{ url: data.url, startTimestamp: data.startTimestamp ?? null, endTimestamp: data.endTimestamp ?? null }];
+      setRecordedClips(clips);
+      setActiveClipIdx(0);
+      setPlaybackSec(0);
+      setRecordedUrl(clips[0].url);
       setRecordedToken(data.token ?? null);
     } catch (err: any) {
       setRecordedError(err.message);
@@ -775,7 +786,7 @@ export default function CamerasPage() {
           {/* LEFT: Main player (full-width top 60%) + scrubber */}
           <div className="flex-1 flex flex-col min-w-0 border-r border-white/[0.06]">
             {/* Player — 60% */}
-            <div className="bg-black" style={{ height: '60%' }}>
+            <div className="bg-black relative" style={{ height: '60%' }}>
               <SmartVideoPlayer
                 accountId={selectedAccount.id}
                 cameraId={key}
@@ -784,7 +795,23 @@ export default function CamerasPage() {
                 recordedUrl={recordedUrl ?? undefined}
                 recordedToken={recordedToken ?? undefined}
                 label={selectedCamera.name}
+                onTimeUpdate={setPlaybackSec}
               />
+              {/* Wall-clock timestamp overlay — shown during recorded playback */}
+              {recordedUrl && recordedClips[activeClipIdx]?.startTimestamp && (
+                <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-black/70 backdrop-blur-sm border border-white/10 rounded px-2 py-1 pointer-events-none">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                  <span className="text-[10px] font-mono text-amber-300 tabular-nums">
+                    {new Date(
+                      new Date(recordedClips[activeClipIdx].startTimestamp!).getTime() + playbackSec * 1000
+                    ).toLocaleString('en-US', {
+                      month: 'short', day: 'numeric',
+                      hour: '2-digit', minute: '2-digit', second: '2-digit',
+                      hour12: true,
+                    })}
+                  </span>
+                </div>
+              )}
             </div>
             {/* Timeline scrubber — 40% */}
             <div className="flex-1 overflow-y-auto p-4 border-t border-white/[0.06]">
@@ -828,15 +855,86 @@ export default function CamerasPage() {
                 {recordedLoading ? 'Fetching...' : 'Load Recorded Clip'}
               </button>
               {recordedUrl && (
-                <div className="mt-2 flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                  <span className="text-[10px] text-amber-400">Playing recorded clip — double-click player for fullscreen</span>
-                  <button
-                    onClick={() => setRecordedUrl(null)}
-                    className="text-[9px] text-slate-500 hover:text-white underline ml-auto"
-                  >
-                    Back to live
-                  </button>
+                <div className="mt-2 flex flex-col gap-2">
+                  {/* Status bar */}
+                  <div className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                    <span className="text-[10px] text-amber-400">
+                      {recordedClips.length > 1
+                        ? `Segment ${activeClipIdx + 1} of ${recordedClips.length} — double-click player for fullscreen`
+                        : 'Playing recorded clip — double-click player for fullscreen'}
+                    </span>
+                    <button
+                      onClick={() => { setRecordedUrl(null); setRecordedClips([]); setActiveClipIdx(0); setPlaybackSec(0); }}
+                      className="text-[9px] text-slate-500 hover:text-white underline ml-auto shrink-0"
+                    >
+                      Back to live
+                    </button>
+                  </div>
+
+                  {/* Segment navigator — only shown when multiple clips */}
+                  {recordedClips.length > 1 && (
+                    <div className="flex flex-col gap-1.5">
+                      <p className="text-[9px] text-slate-500 uppercase tracking-wider">
+                        Segments — click to jump · {recordedClips.length} × ~30 min blocks
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        {recordedClips.map((clip, idx) => {
+                          const label = clip.startTimestamp
+                            ? new Date(clip.startTimestamp).toLocaleString('en-US', {
+                                month: 'short', day: 'numeric',
+                                hour: '2-digit', minute: '2-digit', hour12: true,
+                              })
+                            : `Seg ${idx + 1}`;
+                          const isActive = idx === activeClipIdx;
+                          return (
+                            <button
+                              key={idx}
+                              onClick={() => {
+                                setActiveClipIdx(idx);
+                                setPlaybackSec(0);
+                                setRecordedUrl(clip.url);
+                              }}
+                              title={label}
+                              className={`px-2 py-1 rounded border text-[9px] font-medium transition-all whitespace-nowrap ${
+                                isActive
+                                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
+                                  : 'bg-white/[0.03] border-white/[0.08] text-slate-500 hover:text-slate-200 hover:border-white/20'
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {/* Prev / Next controls */}
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <button
+                          onClick={() => {
+                            const prev = activeClipIdx - 1;
+                            if (prev >= 0) { setActiveClipIdx(prev); setPlaybackSec(0); setRecordedUrl(recordedClips[prev].url); }
+                          }}
+                          disabled={activeClipIdx === 0}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded border border-white/[0.08] text-[9px] text-slate-400 hover:text-white hover:border-white/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          ← Earlier
+                        </button>
+                        <span className="text-[9px] text-slate-600 flex-1 text-center">
+                          {activeClipIdx + 1} / {recordedClips.length}
+                        </span>
+                        <button
+                          onClick={() => {
+                            const next = activeClipIdx + 1;
+                            if (next < recordedClips.length) { setActiveClipIdx(next); setPlaybackSec(0); setRecordedUrl(recordedClips[next].url); }
+                          }}
+                          disabled={activeClipIdx === recordedClips.length - 1}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded border border-white/[0.08] text-[9px] text-slate-400 hover:text-white hover:border-white/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          Later →
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

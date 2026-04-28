@@ -19,6 +19,7 @@ interface SmartVideoPlayerProps {
   recordedToken?:   string;
   label?:           string;
   disableFullscreen?: boolean;  // Set true on wall-view tiles to prevent double-click fullscreen conflict
+  onTimeUpdate?:    (currentTimeSec: number) => void;  // fires with video.currentTime during recorded playback
 }
 
 export default function SmartVideoPlayer({
@@ -30,6 +31,7 @@ export default function SmartVideoPlayer({
   recordedToken,
   label,
   disableFullscreen = false,
+  onTimeUpdate,
 }: SmartVideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef     = useRef<HTMLVideoElement>(null);
@@ -184,7 +186,7 @@ export default function SmartVideoPlayer({
     const video = videoRef.current;
     if (!video) return;
 
-    const onTime     = () => setCurrentTime(video.currentTime);
+    const onTime     = () => { setCurrentTime(video.currentTime); onTimeUpdate?.(video.currentTime); };
     const onDuration = () => setDuration(video.duration || 0);
     const onPlay     = () => setIsPlaying(true);
     const onPause    = () => setIsPlaying(false);
