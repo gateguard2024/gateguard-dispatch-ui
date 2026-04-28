@@ -328,6 +328,8 @@ export default function AlarmsPage() {
   const [preAlarmToken, setPreAlarmToken]     = useState<string | null>(null);
   const [liveOffset, setLiveOffset]           = useState<number>(0);
   const [liveOffsetUrl, setLiveOffsetUrl]     = useState<string | null>(null);
+  const [liveOffsetToken, setLiveOffsetToken] = useState<string | null>(null);  // EEN auth token for recorded HLS
+  const [liveOffsetTs, setLiveOffsetTs]       = useState<Date | null>(null);    // local clock time of offset window
   const [fetchingClip, setFetchingClip]       = useState(false);
   // expandedPanel: null = dual view, 'pre-alarm' | 'live' = that panel fills the top section
   const [expandedPanel, setExpandedPanel]     = useState<'pre-alarm' | 'live' | null>(null);
@@ -411,6 +413,8 @@ export default function AlarmsPage() {
     setLiveOffsetUrl(null);
     setExpandedPanel(null);
     setResolvedEenCamId(null);
+    setLiveOffsetToken(null);
+    setLiveOffsetTs(null);
     setHoldExpandedId(null);
     setHoldActiveIds({});
     setHoldError(null);
@@ -656,6 +660,8 @@ export default function AlarmsPage() {
     if (offsetMinutes === 0) {
       setLiveOffset(0);
       setLiveOffsetUrl(null);
+      setLiveOffsetToken(null);
+      setLiveOffsetTs(null);
       return;
     }
     setFetchingClip(true);
@@ -668,11 +674,12 @@ export default function AlarmsPage() {
       return;
     }
 
-    const now       = Date.now();
-    // offsetMinutes is negative (e.g. -5 = 5 minutes ago)
+    const now         = Date.now();
+    // offsetMinutes is negative (e.g. -60 = 1 hour ago)
     const windowStart = now + offsetMinutes * 60_000;
-    const startTime = new Date(windowStart).toISOString().replace(/Z$/, '+00:00');
-    const endTime   = new Date(windowStart + 150_000).toISOString().replace(/Z$/, '+00:00'); // 2.5 min window
+    const windowDate  = new Date(windowStart);  // local-time anchor for display label
+    const startTime   = windowDate.toISOString().replace(/Z$/, '+00:00');
+    const endTime     = new Date(windowStart + 150_000).toISOString().replace(/Z$/, '+00:00'); // 2.5 min window
     try {
       const res = await fetch('/api/een/recorded', {
         method:  'POST',
@@ -681,7 +688,9 @@ export default function AlarmsPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        setLiveOffsetUrl(data.url ?? null);
+        setLiveOffsetUrl(data.url     ?? null);
+        setLiveOffsetToken(data.token ?? null);  // required for HLS auth — was being discarded
+        setLiveOffsetTs(windowDate);             // local clock time shown in label
         setLiveOffset(offsetMinutes);
       } else {
         console.warn('[fetchOffsetClip] No clip found for offset', offsetMinutes);
@@ -1053,14 +1062,24 @@ export default function AlarmsPage() {
                       </span>
                     ) : (
                       <span className="flex items-center gap-1 bg-slate-700/80 border border-slate-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-slate-200 uppercase tracking-wider">
-                        -{Math.abs(liveOffset)}m ago
+                        {liveOffsetTs
+                          ? liveOffsetTs.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })
+                          : `${Math.abs(liveOffset)}m ago`}
                       </span>
                     )}
                   </div>
 
-                  {/* Time navigation + expand indicator */}
-                  <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5" onDoubleClick={e => e.stopPropagation()}>
-                    {([0, -5, -15, -30] as const).map((offset) => (
+                  {/* Time navigation — Live | 5m | 15m | 30m | 1h | 2h | 4h */}
+                  <div className="absolute top-2 right-2 z-10 flex items-center gap-1" onDoubleClick={e => e.stopPropagation()}>
+                    {([
+                      { offset: 0,    label: 'Live' },
+                      { offset: -5,   label: '5m'   },
+                      { offset: -15,  label: '15m'  },
+                      { offset: -30,  label: '30m'  },
+                      { offset: -60,  label: '1h'   },
+                      { offset: -120, label: '2h'   },
+                      { offset: -240, label: '4h'   },
+                    ]).map(({ offset, label }) => (
                       <button
                         key={offset}
                         onClick={(e) => { e.stopPropagation(); fetchOffsetClip(offset); }}
@@ -1071,10 +1090,10 @@ export default function AlarmsPage() {
                             : 'bg-black/50 border-white/[0.12] text-slate-400 hover:text-white hover:border-white/30'
                           } ${fetchingClip ? 'opacity-40 cursor-wait' : ''}`}
                       >
-                        {offset === 0 ? 'Live' : `${Math.abs(offset)}m`}
+                        {label}
                       </button>
                     ))}
-                    <span className="text-[8px] text-white/25 bg-black/40 px-1 py-0.5 rounded pointer-events-none">
+                    <span className="text-[8px] text-white/25 bg-black/40 px-1 py-0.5 rounded pointer-events-none ml-0.5">
                       {expandedPanel === 'live' ? '⊡ dbl-click collapse' : '⤢ dbl-click expand'}
                     </span>
                   </div>
@@ -1087,6 +1106,7 @@ export default function AlarmsPage() {
                         source={activeCameraSource as 'brivo' | 'een'}
                         streamType="preview"
                         recordedUrl={liveOffsetUrl}
+                        recordedToken={liveOffsetToken ?? undefined}
                         label=""
                       />
                     ) : (
