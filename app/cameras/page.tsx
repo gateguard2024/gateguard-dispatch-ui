@@ -678,7 +678,7 @@ export default function CamerasPage() {
             </div>
           ) : (
             <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
-              {cameras.map((cam) => {
+              {cameras.map((cam, camIdx) => {
                 const key = camKey(cam);
                 return (
                   <div
@@ -694,6 +694,7 @@ export default function CamerasPage() {
                         source={cam.source}
                         streamType="preview"
                         disableFullscreen
+                        startDelay={camIdx * 400}
                       />
                     </div>
                     {/* Label */}

@@ -20,6 +20,7 @@ interface SmartVideoPlayerProps {
   label?:           string;
   disableFullscreen?: boolean;  // Set true on wall-view tiles to prevent double-click fullscreen conflict
   onTimeUpdate?:    (currentTimeSec: number) => void;  // fires with video.currentTime during recorded playback
+  startDelay?:      number;     // ms to wait before first stream request — stagger wall loads to avoid EEN burst locks
 }
 
 export default function SmartVideoPlayer({
@@ -32,6 +33,7 @@ export default function SmartVideoPlayer({
   label,
   disableFullscreen = false,
   onTimeUpdate,
+  startDelay        = 0,
 }: SmartVideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef     = useRef<HTMLVideoElement>(null);
@@ -90,7 +92,21 @@ export default function SmartVideoPlayer({
         });
 
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to get stream');
+        if (!res.ok) {
+          const isLock = res.status === 409 ||
+            (data.error ?? '').toLowerCase().includes('lock') ||
+            (data.error ?? '').toLowerCase().includes('internal error');
+          if (isLock && retryCount < 6) {
+            // Exponential backoff: 2s, 3s, 4.5s, 6.75s, 10s, 15s
+            const delay = Math.min(2000 * Math.pow(1.5, retryCount), 15000);
+            console.warn(`[SmartVideoPlayer] Stream lock at fetch. Retry ${retryCount + 1}/6 in ${Math.round(delay)}ms`);
+            setErrorMsg('Clearing stream lock…');
+            setStatus('error');
+            setTimeout(() => setRetryCount((n) => n + 1), delay);
+            return;
+          }
+          throw new Error(data.error || 'Failed to get stream');
+        }
 
         // Store token in HttpOnly cookie for proxy auth
         if (data.token) {
@@ -139,10 +155,10 @@ export default function SmartVideoPlayer({
           hls.on(Hls.Events.ERROR, (_event, errData) => {
             if (!errData.fatal) return;
             const code = errData.response?.code;
-            if ((code === 409 || code === 500) && retryCount < 3) {
+            if ((code === 409 || code === 500) && retryCount < 6) {
               hls.destroy();
-              const delay = (retryCount + 1) * 2500;
-              console.warn(`Stream lock. Retry ${retryCount + 1}/3 in ${delay}ms...`);
+              const delay = Math.min(2000 * Math.pow(1.5, retryCount), 15000);
+              console.warn(`[SmartVideoPlayer] HLS lock. Retry ${retryCount + 1}/6 in ${Math.round(delay)}ms`);
               setTimeout(() => setRetryCount((n) => n + 1), delay);
             } else {
               setErrorMsg(code === 409 ? 'Stream locked by another session' : 'Stream connection lost');
@@ -171,8 +187,16 @@ export default function SmartVideoPlayer({
   }, [accountId, cameraId, source, streamType, recordedUrl, recordedToken, retryCount]);
 
   useEffect(() => {
-    startStream();
+    // startDelay > 0: stagger wall loads to avoid EEN burst-locking multiple streams
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    if (startDelay > 0 && retryCount === 0) {
+      setStatus('loading');
+      timer = setTimeout(() => startStream(), startDelay);
+    } else {
+      startStream();
+    }
     return () => {
+      if (timer) clearTimeout(timer);
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
