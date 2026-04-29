@@ -65,7 +65,7 @@ function KpiCard({ label, value, sub, accent, pulse }: {
   pulse?: boolean;
 }) {
   return (
-    <div className="bg-white/[0.02] border border-white/[0.06] rounded px-4 py-3.5 flex flex-col gap-1.5">
+    <div className="bg-[#0d0f14] border border-white/[0.06] rounded px-4 py-3.5 flex flex-col gap-1.5">
       <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">{label}</p>
       <div className="flex items-center gap-2">
         <span className={`text-2xl font-bold leading-none ${accent ?? 'text-white'}`}>{value}</span>
@@ -407,7 +407,7 @@ export default function DashboardPage() {
             {lastUpdate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
           </span>
           <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded border text-[10px] font-bold uppercase tracking-widest ${
-            liveOn ? 'bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400' : 'bg-white/[0.02] border-white/[0.06] text-slate-600'
+            liveOn ? 'bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400' : 'bg-[#0d0f14] border-white/[0.06] text-slate-600'
           }`}>
             <span className={`w-1.5 h-1.5 rounded-full ${liveOn ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
             {liveOn ? 'Live' : 'Polling'}
@@ -455,7 +455,7 @@ export default function DashboardPage() {
         <div className={`rounded border px-4 py-3.5 ${
           gateStats && gateStats.needsService.length > 0
             ? 'border-amber-500/25 bg-amber-500/[0.03]'
-            : 'border-white/[0.06] bg-white/[0.02]'
+            : 'border-white/[0.06] bg-[#0d0f14]'
         }`}>
           {/* Panel header */}
           <div className="flex items-center justify-between mb-3">
@@ -541,7 +541,7 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
           {/* 14-day sparkline */}
-          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
+          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
             <SectionLabel>Alarms — Last 14 Days</SectionLabel>
             <Sparkline data={daily} />
             <div className="flex items-center justify-between mt-2">
@@ -561,7 +561,7 @@ export default function DashboardPage() {
           </div>
 
           {/* SLA bars */}
-          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
+          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
             <SectionLabel>Response Time SLA — 7 Days</SectionLabel>
             {sla.every(s => s.pct === 0) ? (
               <p className="text-[10px] text-slate-700 py-4 text-center">No response data yet</p>
@@ -586,7 +586,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Alarms per operator */}
-          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
+          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
             <SectionLabel>Alarms Per Operator — 24h</SectionLabel>
             {operators.length === 0 ? (
               <p className="text-[10px] text-slate-700 py-4 text-center">No activity yet</p>
@@ -615,12 +615,12 @@ export default function DashboardPage() {
         {/* ── Bottom row: hour chart + recent feed ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
-          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
+          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
             <SectionLabel>Alarms by Hour</SectionLabel>
             <HourChart data={hourData} trendPct={trendPct} />
           </div>
 
-          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
+          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
             <SectionLabel>Recent Events</SectionLabel>
             {recent.length === 0 ? (
               <p className="text-[10px] text-slate-700 py-4 text-center">No alarms recorded yet</p>

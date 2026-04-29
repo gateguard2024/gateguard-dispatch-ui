@@ -1,13 +1,37 @@
 // app/api/comms/call/route.ts
 // Initiates an outbound Twilio call to a site contact.
-// The call plays a notification message then hangs up.
-// Both the call attempt and Twilio SID are logged to the `calls` table.
+//
+// Uses INLINE TwiML — no webhook URL required.
+// Twilio reads the TwiML directly from the call creation request,
+// so the call works even if the app URL isn't publicly reachable.
 //
 // Body: { toNumber, siteName, alarmId?, patrolLogId?, operatorId?, operatorName?, notes? }
 
 import { NextResponse }               from 'next/server';
 import { createClient }               from '@supabase/supabase-js';
 import { getTwilioClient, TWILIO_FROM, TWILIO_CALLER } from '@/lib/twilio';
+
+// Build the voice message TwiML inline — no outbound webhook needed.
+function buildTwiML(siteName: string): string {
+  // Escape XML special chars in siteName
+  const safe = siteName
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Joanna" language="en-US">
+    Hello. This is GateGuard Security Operations contacting you regarding ${safe}.
+    Our team has noted a security event at your property and an operator is standing by.
+    Please call us back at your earliest convenience.
+    Thank you.
+  </Say>
+  <Pause length="1"/>
+  <Hangup/>
+</Response>`;
+}
 
 export async function POST(request: Request) {
   const supabase = createClient(
@@ -31,35 +55,31 @@ export async function POST(request: Request) {
     }
 
     if (!TWILIO_FROM) {
-      return NextResponse.json({ error: 'Twilio not configured' }, { status: 503 });
+      return NextResponse.json({ error: 'Twilio not configured — check TWILIO_FROM_NUMBER env var' }, { status: 503 });
     }
 
-    const client = getTwilioClient();
+    const client  = getTwilioClient();
+    const twiml   = buildTwiML(siteName);
 
-    // TwiML webhook URL — served by /api/comms/twiml
-    const appUrl   = process.env.NEXT_PUBLIC_APP_URL ?? process.env.VERCEL_URL ?? '';
-    const twimlUrl = `${appUrl.startsWith('http') ? appUrl : `https://${appUrl}`}/api/comms/twiml`
-      + `?site=${encodeURIComponent(siteName)}&alarm=${alarmId ?? ''}`;
-
+    // Use `twiml` param instead of `url` — inline TwiML, no webhook required.
     const call = await client.calls.create({
-      to:     toNumber,
-      from:   TWILIO_CALLER || TWILIO_FROM,
-      url:    twimlUrl,
-      // statusCallbackMethod omitted — add later for delivery receipts
+      to:    toNumber,
+      from:  TWILIO_CALLER || TWILIO_FROM,
+      twiml,
     });
 
     // Log to DB
     await supabase.from('calls').insert({
-      alarm_id:     alarmId,
+      alarm_id:      alarmId,
       patrol_log_id: patrolLogId,
-      operator_id:  operatorId,
+      operator_id:   operatorId,
       operator_name: operatorName,
-      to_number:    toNumber,
-      from_number:  TWILIO_FROM,
-      caller_id:    TWILIO_CALLER || null,
-      twilio_sid:   call.sid,
-      status:       'initiated',
-      site_name:    siteName,
+      to_number:     toNumber,
+      from_number:   TWILIO_FROM,
+      caller_id:     TWILIO_CALLER || null,
+      twilio_sid:    call.sid,
+      status:        'initiated',
+      site_name:     siteName,
       notes,
     });
 

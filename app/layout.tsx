@@ -18,6 +18,13 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "GateGuard OS | Monitoring Station",
   description: "Next-Gen Video Management & Access Control",
+  icons: {
+    icon: [
+      { url: '/favicon.ico',    sizes: '48x48' },
+      { url: '/favicon-192.png', sizes: '192x192', type: 'image/png' },
+    ],
+    apple: '/favicon-192.png',
+  },
 };
 
 type UserRole = "admin" | "supervisor" | "agent";
