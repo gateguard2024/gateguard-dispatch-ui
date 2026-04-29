@@ -46,6 +46,15 @@ interface RecentAlarm {
   created_at: string;
 }
 
+interface RecentCall {
+  id: string;
+  to_number: string;
+  site_name: string;
+  operator_name: string;
+  status: string;
+  created_at: string;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function fmtAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -210,8 +219,9 @@ export default function DashboardPage() {
   const [daily,     setDaily]     = useState<number[]>([]);
   const [hourData,  setHourData]  = useState<HourPt[]>([]);
   const [operators, setOperators] = useState<OperatorRow[]>([]);
-  const [recent,    setRecent]    = useState<RecentAlarm[]>([]);
-  const [trendPct,  setTrendPct]  = useState<number | null>(null);
+  const [recent,      setRecent]      = useState<RecentAlarm[]>([]);
+  const [recentCalls, setRecentCalls] = useState<RecentCall[]>([]);
+  const [trendPct,    setTrendPct]    = useState<number | null>(null);
   const [loading,   setLoading]   = useState(true);
   const [liveOn,    setLiveOn]    = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
@@ -340,6 +350,15 @@ export default function DashboardPage() {
     setRecent(data ?? []);
   }, []);
 
+  const loadRecentCalls = useCallback(async () => {
+    const { data } = await supabase
+      .from('calls')
+      .select('id, to_number, site_name, operator_name, status, created_at')
+      .order('created_at', { ascending: false })
+      .limit(10);
+    setRecentCalls(data ?? []);
+  }, []);
+
   const loadGates = useCallback(async () => {
     // Two-step: avoid FK join dependency on gates.account_id → accounts.id
     const [{ data: gateData, error }, { data: accountData }] = await Promise.all([
@@ -367,10 +386,10 @@ export default function DashboardPage() {
   }, []);
 
   const loadAll = useCallback(async () => {
-    await Promise.all([loadKpis(), loadSla(), loadDaily(), loadHour(), loadOperators(), loadRecent(), loadGates()]);
+    await Promise.all([loadKpis(), loadSla(), loadDaily(), loadHour(), loadOperators(), loadRecent(), loadGates(), loadRecentCalls()]);
     setLastUpdate(new Date());
     setLoading(false);
-  }, [loadKpis, loadSla, loadDaily, loadHour, loadOperators, loadRecent, loadGates]);
+  }, [loadKpis, loadSla, loadDaily, loadHour, loadOperators, loadRecent, loadGates, loadRecentCalls]);
 
   useEffect(() => {
     loadAll();
@@ -379,9 +398,10 @@ export default function DashboardPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'alarms' }, () => { loadKpis(); loadHour(); loadRecent(); })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'incident_reports' }, () => { loadSla(); loadOperators(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'gates' }, () => { loadGates(); })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'calls' }, () => { loadRecentCalls(); })
       .subscribe(s => setLiveOn(s === 'SUBSCRIBED'));
     return () => { clearInterval(poll); supabase.removeChannel(ch); };
-  }, [loadAll, loadKpis, loadHour, loadRecent, loadSla, loadOperators, loadGates]);
+  }, [loadAll, loadKpis, loadHour, loadRecent, loadSla, loadOperators, loadGates, loadRecentCalls]);
 
   if (loading) {
     return (
@@ -615,31 +635,60 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* ── Bottom row: hour chart + recent feed ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* ── Bottom row: hour chart + recent events + recent calls ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
 
-          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
+          {/* Hour chart — wider */}
+          <div className="lg:col-span-3 bg-[#0d0f14] border border-white/[0.06] rounded p-4">
             <SectionLabel>Alarms by Hour</SectionLabel>
             <HourChart data={hourData} trendPct={trendPct} />
           </div>
 
+          {/* Recent Events */}
           <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
             <SectionLabel>Recent Events</SectionLabel>
             {recent.length === 0 ? (
-              <p className="text-[10px] text-slate-700 py-4 text-center">No alarms recorded yet</p>
+              <p className="text-[10px] text-slate-700 py-4 text-center">No alarms yet</p>
             ) : (
-              <div className="space-y-1.5 max-h-64 overflow-y-auto pr-0.5">
+              <div className="space-y-1.5 max-h-56 overflow-y-auto pr-0.5">
                 {recent.map(a => (
-                  <div key={a.id} className="flex items-center gap-2.5 px-2.5 py-2 rounded border border-white/[0.04] hover:bg-white/[0.02] transition-all">
+                  <div key={a.id} className="flex items-center gap-2 px-2.5 py-1.5 rounded border border-white/[0.04] hover:bg-white/[0.02] transition-all">
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                       a.status === 'pending' ? 'bg-red-400' : a.status === 'processing' ? 'bg-amber-400' : 'bg-emerald-400'
                     }`} />
                     <PBadge p={a.priority} />
                     <div className="flex-1 min-w-0">
-                      <p className="text-[11px] text-slate-200 truncate">{a.event_label ?? a.priority}</p>
-                      <p className="text-[10px] text-slate-600 truncate">{a.site_name ?? '—'}</p>
+                      <p className="text-[10px] text-slate-200 truncate">{a.event_label ?? a.priority}</p>
+                      <p className="text-[9px] text-slate-600 truncate">{a.site_name ?? '—'}</p>
                     </div>
                     <span className="text-[9px] text-slate-700 shrink-0">{fmtAgo(a.created_at)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Recent Calls */}
+          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
+            <div className="flex items-center justify-between mb-3">
+              <SectionLabel>Recent Calls</SectionLabel>
+            </div>
+            {recentCalls.length === 0 ? (
+              <p className="text-[10px] text-slate-700 py-4 text-center">No calls yet</p>
+            ) : (
+              <div className="space-y-1.5 max-h-56 overflow-y-auto pr-0.5">
+                {recentCalls.map(c => (
+                  <div key={c.id} className="flex items-start gap-2 px-2.5 py-1.5 rounded border border-white/[0.04] hover:bg-white/[0.02] transition-all">
+                    {/* phone icon */}
+                    <svg className="w-3 h-3 text-emerald-500/60 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                        d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
+                    </svg>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[10px] text-slate-200 font-mono truncate">{c.to_number}</p>
+                      <p className="text-[9px] text-slate-600 truncate">{c.site_name || c.operator_name || '—'}</p>
+                    </div>
+                    <span className="text-[9px] text-slate-700 shrink-0">{fmtAgo(c.created_at)}</span>
                   </div>
                 ))}
               </div>

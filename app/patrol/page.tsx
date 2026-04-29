@@ -871,6 +871,41 @@ export default function PatrolPage() {
                 {rightTab === 'checklist' && (
                   <>
                     <div className="flex-1 overflow-y-auto p-4 space-y-4">
+
+                      {/* Quick Dial strip — top contacts always visible */}
+                      {currentSite.contacts.filter(c => c.phone).length > 0 && (
+                        <div>
+                          <p className="text-[8px] font-bold uppercase tracking-widest text-slate-600 mb-1.5 flex items-center gap-1.5">
+                            <svg className="w-3 h-3 text-emerald-500/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
+                            </svg>
+                            Quick Dial
+                          </p>
+                          <div className="space-y-1">
+                            {currentSite.contacts.filter(c => c.phone).slice(0, 3).map(c => (
+                              <button
+                                key={c.id}
+                                onClick={() => setDialerTarget({ phone: c.phone!, name: c.name, siteName: currentSite.name })}
+                                className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded border border-white/[0.06] hover:border-emerald-500/30 hover:bg-emerald-500/[0.06] transition-all group text-left"
+                              >
+                                <div className="w-4 h-4 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
+                                  <svg className="w-2 h-2 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                      d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
+                                  </svg>
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[9px] font-semibold text-white truncate">{c.name}</p>
+                                  <p className="text-[8px] text-slate-600 font-mono">{c.phone}</p>
+                                </div>
+                                <span className="text-[8px] font-bold text-slate-600 group-hover:text-emerald-400 transition-colors shrink-0">Call</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       <div>
                         <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-[0.1em] mb-2">Site Checklist</p>
                         <div className="space-y-1">

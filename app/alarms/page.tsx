@@ -1477,6 +1477,42 @@ export default function AlarmsPage() {
             </div>
           )}
 
+          {/* ── Quick Dial strip — visible contacts without leaving alarm ── */}
+          {activeAlarm && contacts.filter(c => c.phone).length > 0 && (
+            <div className="rounded-lg border border-white/[0.06] bg-[#0a0c10] px-3 py-2.5">
+              <p className="text-[8px] font-bold uppercase tracking-widest text-slate-600 mb-2 flex items-center gap-1.5">
+                <span className="text-emerald-500/60">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
+                  </svg>
+                </span>
+                Quick Dial
+              </p>
+              <div className="space-y-1.5">
+                {contacts.filter(c => c.phone).slice(0, 4).map(c => (
+                  <button
+                    key={c.id}
+                    onClick={() => setDialerTarget({ phone: c.phone!, name: c.name, siteName: activeAlarm.site_name, alarmId: activeAlarm.id })}
+                    className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded border border-white/[0.06] hover:border-emerald-500/30 hover:bg-emerald-500/[0.06] transition-all group text-left"
+                  >
+                    <div className="w-5 h-5 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0 group-hover:bg-emerald-500/20 transition-colors">
+                      <svg className="w-2.5 h-2.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
+                      </svg>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[10px] font-semibold text-white truncate">{c.name}</p>
+                      <p className="text-[8px] text-slate-600 font-mono">{c.phone}</p>
+                    </div>
+                    <span className="text-[8px] font-bold uppercase tracking-wider text-slate-600 group-hover:text-emerald-400 transition-colors shrink-0">Call</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* ── 1. Brivo Access Control ── */}
           <section>
             <SectionHeader icon={<Ic.Lock />} label="Brivo Access Control" />

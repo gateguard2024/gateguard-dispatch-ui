@@ -83,6 +83,9 @@ export default function CommsPage() {
   const [emailTo,       setEmailTo]       = useState('');
   const [template,      setTemplate]      = useState<EmailTemplate>('incident_report');
   const [emailNotes,    setEmailNotes]    = useState('');
+  const [incidentType,  setIncidentType]  = useState('');
+  const [location,      setLocation]      = useState('');
+  const [subjects,      setSubjects]      = useState('');
   const [customSubject, setCustomSubject] = useState('');
   const [customBody,    setCustomBody]    = useState('');
   const [ccOps,         setCcOps]         = useState(true);
@@ -198,6 +201,9 @@ export default function CommsPage() {
         siteName:      selectedSite?.name ?? '',
         operatorName,
         notes:         emailNotes || undefined,
+        incidentType:  incidentType || undefined,
+        location:      location     || undefined,
+        subjects:      subjects     || undefined,
         customSubject: template === 'custom' ? customSubject : undefined,
         customBody:    template === 'custom' ? customBody    : undefined,
         ccOps,
@@ -481,6 +487,43 @@ export default function CommsPage() {
                 </div>
               </div>
 
+              {/* Incident detail fields — shown for incident_report template */}
+              {template === 'incident_report' && (
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3.5 space-y-3">
+                  <p className="text-[8px] font-bold uppercase tracking-wider text-amber-500/70">Intelligence &amp; Evidence</p>
+                  <div>
+                    <label className="block text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1">Incident Type</label>
+                    <input
+                      type="text"
+                      value={incidentType}
+                      onChange={e => setIncidentType(e.target.value)}
+                      placeholder="e.g. Unauthorized Access, Theft, Disturbance…"
+                      className="w-full bg-[#0a0c10] border border-white/[0.12] rounded-lg px-3 py-2 text-[11px] text-white placeholder-slate-700 focus:outline-none focus:border-amber-500/40"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1">Location</label>
+                    <input
+                      type="text"
+                      value={location}
+                      onChange={e => setLocation(e.target.value)}
+                      placeholder="e.g. Gate 3 / Building A / Parking Deck…"
+                      className="w-full bg-[#0a0c10] border border-white/[0.12] rounded-lg px-3 py-2 text-[11px] text-white placeholder-slate-700 focus:outline-none focus:border-amber-500/40"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1">Subjects / Vehicles</label>
+                    <input
+                      type="text"
+                      value={subjects}
+                      onChange={e => setSubjects(e.target.value)}
+                      placeholder="e.g. Male, ~30s, black hoodie · Silver Toyota Camry…"
+                      className="w-full bg-[#0a0c10] border border-white/[0.12] rounded-lg px-3 py-2 text-[11px] text-white placeholder-slate-700 focus:outline-none focus:border-amber-500/40"
+                    />
+                  </div>
+                </div>
+              )}
+
               {/* Custom fields */}
               {template === 'custom' && (
                 <div className="space-y-2">
@@ -504,12 +547,16 @@ export default function CommsPage() {
               {/* Notes (for non-custom templates) */}
               {template !== 'custom' && (
                 <div>
-                  <label className="block text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Additional Notes (optional)</label>
+                  <label className="block text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                    {template === 'incident_report' ? 'Narrative / Additional Notes' : 'Additional Notes (optional)'}
+                  </label>
                   <textarea
                     value={emailNotes}
                     onChange={e => setEmailNotes(e.target.value)}
-                    placeholder="Any extra context to include in the email…"
-                    rows={3}
+                    placeholder={template === 'incident_report'
+                      ? 'Describe the incident in detail — timeline, actions taken, outcomes…'
+                      : 'Any extra context to include in the email…'}
+                    rows={template === 'incident_report' ? 5 : 3}
                     className="w-full bg-[#0a0c10] border border-white/[0.12] rounded-lg px-3 py-2 text-[11px] text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500/50 resize-none"
                   />
                 </div>

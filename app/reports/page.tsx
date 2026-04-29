@@ -18,7 +18,17 @@ const supabase = createClient(
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Priority = 'P1' | 'P2' | 'P3' | 'P4';
 type DateRange = 'today' | '7d' | '30d' | 'all';
-type ReportTab = 'incidents' | 'patrol-issues' | 'gates';
+type ReportTab = 'incidents' | 'patrol-issues' | 'gates' | 'comms';
+
+interface CommsEntry {
+  id:            string;
+  type:          'call' | 'email';
+  contact:       string;   // to_number or to_email
+  site_name:     string;
+  operator_name: string;
+  detail:        string;   // template name or call status
+  created_at:    string;
+}
 
 interface GateRecord {
   id:                 string;
@@ -142,6 +152,13 @@ export default function ReportsPage() {
   const [gatesLoading,  setGatesLoading]  = useState(false);
   const [togglingGate,  setTogglingGate]  = useState<string | null>(null);
   const [gateSearch,    setGateSearch]    = useState('');
+
+  // ── Comms state ────────────────────────────────────────────────────────────
+  const [commsEntries,   setCommsEntries]   = useState<CommsEntry[]>([]);
+  const [commsLoading,   setCommsLoading]   = useState(false);
+  const [commsRange,     setCommsRange]     = useState<DateRange>('7d');
+  const [commsTypeFilter, setCommsTypeFilter] = useState<'all' | 'call' | 'email'>('all');
+  const [commsSiteSearch, setCommsSiteSearch] = useState('');
 
   const fetchReports = useCallback(async () => {
     setLoading(true);
@@ -281,6 +298,52 @@ export default function ReportsPage() {
     }
   }
 
+  // ── Comms fetch ────────────────────────────────────────────────────────────
+  const fetchComms = useCallback(async () => {
+    setCommsLoading(true);
+    try {
+      const start = rangeStart(commsRange);
+      const [callsRes, emailsRes] = await Promise.all([
+        supabase.from('calls')
+          .select('id, to_number, site_name, operator_name, status, created_at')
+          .order('created_at', { ascending: false })
+          .limit(100)
+          .then(r => { return start ? supabase.from('calls').select('id, to_number, site_name, operator_name, status, created_at').gte('created_at', start).order('created_at', { ascending: false }).limit(100) : r; }),
+        supabase.from('emails_sent')
+          .select('id, to_email, template, site_name, operator_name, subject, created_at')
+          .order('created_at', { ascending: false })
+          .limit(100)
+          .then(r => { return start ? supabase.from('emails_sent').select('id, to_email, template, site_name, operator_name, subject, created_at').gte('created_at', start).order('created_at', { ascending: false }).limit(100) : r; }),
+      ]);
+      const calls: CommsEntry[] = (callsRes.data ?? []).map((c: any) => ({
+        id:            `call-${c.id}`,
+        type:          'call',
+        contact:       c.to_number,
+        site_name:     c.site_name ?? '',
+        operator_name: c.operator_name ?? '',
+        detail:        c.status ?? 'initiated',
+        created_at:    c.created_at,
+      }));
+      const emails: CommsEntry[] = (emailsRes.data ?? []).map((e: any) => ({
+        id:            `email-${e.id}`,
+        type:          'email',
+        contact:       e.to_email,
+        site_name:     e.site_name ?? '',
+        operator_name: e.operator_name ?? '',
+        detail:        e.template ? e.template.replace(/_/g, ' ') : (e.subject ?? ''),
+        created_at:    e.created_at,
+      }));
+      const merged = [...calls, ...emails].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      setCommsEntries(merged);
+    } finally {
+      setCommsLoading(false);
+    }
+  }, [commsRange]);
+
+  useEffect(() => { if (activeTab === 'comms') fetchComms(); }, [activeTab, fetchComms]);
+
   // Client-side text search
   const filtered = reports.filter(r => {
     if (!search) return true;
@@ -315,6 +378,8 @@ export default function ReportsPage() {
                 ? (loading ? 'Loading…' : `${totalCount} report${totalCount !== 1 ? 's' : ''} · showing ${filtered.length}`)
                 : activeTab === 'patrol-issues'
                 ? (patrolIssuesLoading ? 'Loading…' : `${patrolIssues.filter(i => !i.acknowledged).length} open patrol issue${patrolIssues.filter(i => !i.acknowledged).length !== 1 ? 's' : ''}`)
+                : activeTab === 'comms'
+                ? (commsLoading ? 'Loading…' : `${commsEntries.filter(e => commsTypeFilter === 'all' || e.type === commsTypeFilter).length} entries`)
                 : (gatesLoading ? 'Loading…' : `${gates.filter(g => g.status === 'needs_service').length} gate${gates.filter(g => g.status === 'needs_service').length !== 1 ? 's' : ''} need service · ${gates.length} total`)}
             </p>
           </div>
@@ -347,6 +412,12 @@ export default function ReportsPage() {
                   {gates.filter(g => g.status === 'needs_service').length}
                 </span>
               )}
+            </button>
+            <button
+              onClick={() => setActiveTab('comms')}
+              className={`px-3 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all ${activeTab === 'comms' ? 'bg-indigo-600/60 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+            >
+              Comms Log
             </button>
           </div>
         </div>
@@ -579,6 +650,100 @@ export default function ReportsPage() {
               </div>
             );
           })()}
+        </div>
+      )}
+
+      {/* ── Comms Log Tab ────────────────────────────────────────────────────── */}
+      {activeTab === 'comms' && (
+        <div className="flex-1 overflow-y-auto p-5">
+          {/* Filter row */}
+          <div className="flex items-center gap-2 mb-4 flex-wrap">
+            {/* Date range */}
+            <div className="flex items-center gap-0.5 bg-white/[0.04] border border-white/[0.06] rounded-md p-0.5">
+              {(['today','7d','30d','all'] as DateRange[]).map(r => (
+                <button key={r} onClick={() => setCommsRange(r)}
+                  className={`px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all ${commsRange === r ? 'bg-indigo-600/60 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+                  {r === 'today' ? 'Today' : r === '7d' ? '7 Days' : r === '30d' ? '30 Days' : 'All'}
+                </button>
+              ))}
+            </div>
+            {/* Type filter */}
+            <div className="flex items-center gap-0.5 bg-white/[0.04] border border-white/[0.06] rounded-md p-0.5">
+              {(['all','call','email'] as const).map(t => (
+                <button key={t} onClick={() => setCommsTypeFilter(t)}
+                  className={`px-2.5 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition-all ${commsTypeFilter === t ? 'bg-indigo-600/60 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+                  {t === 'all' ? 'All' : t === 'call' ? '📞 Calls' : '✉ Emails'}
+                </button>
+              ))}
+            </div>
+            {/* Site search */}
+            <input
+              value={commsSiteSearch}
+              onChange={e => setCommsSiteSearch(e.target.value)}
+              placeholder="Filter by site or contact…"
+              className="px-3 py-1.5 bg-white/[0.04] border border-white/[0.06] rounded text-[10px] text-slate-300 placeholder-slate-600 focus:outline-none focus:border-indigo-500/50 w-52"
+            />
+            <button onClick={fetchComms}
+              className="ml-auto px-3 py-1.5 rounded text-[9px] font-bold uppercase tracking-wider bg-white/[0.04] border border-white/[0.06] text-slate-400 hover:text-white transition-all">
+              Refresh
+            </button>
+          </div>
+
+          {/* Table */}
+          {commsLoading ? (
+            <div className="flex items-center justify-center h-40">
+              <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : (
+            <div className="border border-white/[0.06] rounded-lg overflow-hidden">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-[#030406] border-b border-white/[0.06]">
+                    <th className="px-4 py-2.5 text-[9px] font-semibold text-slate-500 uppercase tracking-[0.1em] w-8">Type</th>
+                    <th className="px-4 py-2.5 text-[9px] font-semibold text-slate-500 uppercase tracking-[0.1em]">Contact</th>
+                    <th className="px-4 py-2.5 text-[9px] font-semibold text-slate-500 uppercase tracking-[0.1em]">Site</th>
+                    <th className="px-4 py-2.5 text-[9px] font-semibold text-slate-500 uppercase tracking-[0.1em]">Detail</th>
+                    <th className="px-4 py-2.5 text-[9px] font-semibold text-slate-500 uppercase tracking-[0.1em] w-28">Operator</th>
+                    <th className="px-4 py-2.5 text-[9px] font-semibold text-slate-500 uppercase tracking-[0.1em] w-36">Date / Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {commsEntries
+                    .filter(e => commsTypeFilter === 'all' || e.type === commsTypeFilter)
+                    .filter(e => {
+                      if (!commsSiteSearch) return true;
+                      const s = commsSiteSearch.toLowerCase();
+                      return e.site_name.toLowerCase().includes(s) || e.contact.toLowerCase().includes(s) || e.operator_name.toLowerCase().includes(s);
+                    })
+                    .map((e, i) => (
+                      <tr key={e.id} className={`border-b border-white/[0.04] ${i % 2 === 0 ? 'bg-white/[0.005]' : ''} hover:bg-indigo-600/[0.04] transition-colors`}>
+                        <td className="px-4 py-2.5">
+                          <span className="text-[14px]">{e.type === 'call' ? '📞' : '✉️'}</span>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className="text-[11px] font-mono text-slate-200 truncate max-w-[180px] block">{e.contact}</span>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className="text-[11px] text-slate-400 truncate max-w-[160px] block">{e.site_name || '—'}</span>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className="text-[10px] text-slate-500 capitalize">{e.detail}</span>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className="text-[10px] text-slate-500 truncate block">{e.operator_name || '—'}</span>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <span className="text-[10px] text-slate-600 font-mono whitespace-nowrap">{fmtDateTime(e.created_at)}</span>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+              {commsEntries.filter(e => commsTypeFilter === 'all' || e.type === commsTypeFilter).length === 0 && (
+                <p className="text-[10px] text-slate-700 text-center py-10">No comms activity in this range.</p>
+              )}
+            </div>
+          )}
         </div>
       )}
 
