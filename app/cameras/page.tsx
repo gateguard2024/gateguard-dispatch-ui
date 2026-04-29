@@ -115,6 +115,24 @@ function fmtTime(iso: string): string {
     hour: '2-digit', minute: '2-digit', hour12: false,
   });
 }
+// ─── Reason → Priority map ────────────────────────────────────────────────────
+const REASON_PRIORITY: Record<string, 'P1' | 'P2' | 'P3'> = {
+  'Intrusion Detected':    'P1',
+  'Suspicious Person':     'P1',
+  'Fight / Altercation':   'P1',
+  'Weapon Observed':       'P1',
+  'Fire / Smoke':          'P1',
+  'Vandalism in Progress': 'P1',
+  'Loitering':             'P2',
+  'Unauthorized Access':   'P2',
+  'Gate Left Open':        'P2',
+  'Vehicle Blocking':      'P2',
+  'Package / Object Left': 'P2',
+  'Motion Detected':       'P3',
+  'Noise Complaint':       'P3',
+  'Welfare Check':         'P3',
+  'Other':                 'P3',
+};
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function CamerasPage() {
   // Clerk identity — used for audit logs and camera notes
@@ -327,17 +345,22 @@ export default function CamerasPage() {
       supabase
         .from('audit_logs')
         .select('id, details, created_at')
-        .eq('camera_id', cam.id)
+        .eq('account_id', (selectedAccount as Account).id)
         .eq('action', 'camera_note')
         .order('created_at', { ascending: false })
-        .limit(5),
+        .limit(50),
       supabase
         .from('accounts')
         .select('brivo_door_ids')
         .eq('id', (selectedAccount as Account).id)
         .single(),
     ]);
-    setPastNotes(notes ?? []);
+    const filtered = (notes ?? [])
+      .filter((n: any) => {
+        try { return JSON.parse(n.details).camera_id === cam.id; } catch { return false; }
+      })
+      .slice(0, 5);
+    setPastNotes(filtered);
     setAvailableDoors((acct as any)?.brivo_door_ids ?? []);
   }, [selectedAccount]);
   // ── Fetch recorded clip ───────────────────────────────────────────────────
@@ -378,17 +401,18 @@ export default function CamerasPage() {
   async function saveNote() {
     if (!selectedCamera || !cameraNote.trim()) return;
     setNotesSaving(true);
+    const noteDetails = JSON.stringify({ camera_id: selectedCamera.id, note: cameraNote.trim() });
     await supabase.from('audit_logs').insert({
-      camera_id:   selectedCamera.id,
+      account_id:  selectedAccount!.id,
       zone_id:     selectedCamera.zone_id,
       operator_id: operatorId,
       action:      'camera_note',
-      details:     cameraNote.trim(),
+      details:     noteDetails,
       created_at:  new Date().toISOString(),
     });
     setPastNotes(prev => [{
       id: Date.now().toString(),
-      details: cameraNote.trim(),
+      details: noteDetails,
       created_at: new Date().toISOString(),
     }, ...prev].slice(0, 5));
     setCameraNote('');
@@ -983,7 +1007,11 @@ export default function CamerasPage() {
                   {/* Reason */}
                   <select
                     value={alarmReason}
-                    onChange={e => setAlarmReason(e.target.value)}
+                    onChange={e => {
+                      const reason = e.target.value;
+                      setAlarmReason(reason);
+                      if (reason && REASON_PRIORITY[reason]) setAlarmPriority(REASON_PRIORITY[reason]);
+                    }}
                     className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2.5 py-1.5 text-[11px] text-slate-300 focus:outline-none focus:border-red-500/50 [color-scheme:dark]"
                   >
                     <option value="">— Select reason —</option>
@@ -1204,7 +1232,9 @@ export default function CamerasPage() {
                       key={note.id}
                       className="px-2.5 py-2 rounded bg-white/[0.02] border border-white/[0.05]"
                     >
-                      <p className="text-[10px] text-slate-300 leading-relaxed">{note.details}</p>
+                      <p className="text-[10px] text-slate-300 leading-relaxed">
+                        {(() => { try { return JSON.parse(note.details).note ?? note.details; } catch { return note.details; } })()}
+                      </p>
                       <p className="text-[9px] text-slate-600 mt-1">{fmtTime(note.created_at)}</p>
                     </div>
                   ))}

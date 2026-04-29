@@ -52,12 +52,14 @@ interface SiteChecklist {
 }
 
 interface SiteResult {
-  account_id: string;
-  site_name:  string;
-  status:     'clear' | 'issue' | 'pending';
-  checklist:  SiteChecklist;
-  notes:      string;
-  checked_at: string | null;
+  account_id:   string;
+  site_name:    string;
+  status:       'clear' | 'issue' | 'pending';
+  checklist:    SiteChecklist;
+  notes:        string;
+  issue_detail: string;   // free-text description when status = 'issue'
+  acknowledged: boolean;  // true once ops acknowledges in Reports
+  checked_at:   string | null;
 }
 
 interface PatrolLog {
@@ -116,6 +118,24 @@ function nextPatrolInfo(): { slot: typeof PATROL_SLOTS[0]; minutesUntil: number 
   return { slot: PATROL_SLOTS[0], minutesUntil: 0 };
 }
 
+// ─── Reason → Priority map ────────────────────────────────────────────────────
+const REASON_PRIORITY: Record<string, 'P1' | 'P2' | 'P3'> = {
+  'Intrusion Detected':    'P1',
+  'Suspicious Person':     'P1',
+  'Fight / Altercation':   'P1',
+  'Weapon Observed':       'P1',
+  'Fire / Smoke':          'P1',
+  'Vandalism in Progress': 'P1',
+  'Loitering':             'P2',
+  'Unauthorized Access':   'P2',
+  'Gate Left Open':        'P2',
+  'Vehicle Blocking':      'P2',
+  'Package / Object Left': 'P2',
+  'Motion Detected':       'P3',
+  'Noise Complaint':       'P3',
+  'Welfare Check':         'P3',
+  'Other':                 'P3',
+};
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function PatrolPage() {
   const { user }    = useUser();
@@ -198,6 +218,10 @@ export default function PatrolPage() {
     }
     load();
     loadHistory();
+    // Load all gates for pre-patrol banner + issue picker
+    supabase.from('gates').select('id, name, gate_type, account_id, status').then(({ data }) => {
+      if (data) setAllGates(data);
+    });
   }, []);
 
   async function loadHistory() {
@@ -222,12 +246,14 @@ export default function PatrolPage() {
   function startPatrol() {
     const now = new Date().toISOString();
     setResults(sites.map(s => ({
-      account_id: s.id,
-      site_name:  s.name,
-      status:     'pending',
-      checklist:  { ...EMPTY_CHECKLIST },
-      notes:      '',
-      checked_at: null,
+      account_id:   s.id,
+      site_name:    s.name,
+      status:       'pending',
+      checklist:    { ...EMPTY_CHECKLIST },
+      notes:        '',
+      issue_detail: '',
+      acknowledged: false,
+      checked_at:   null,
     })));
     setCurrentSiteIdx(0);
     setStartedAt(now);
@@ -247,17 +273,46 @@ export default function PatrolPage() {
     setResults(prev => prev.map((r, i) => i !== currentSiteIdx ? r : { ...r, notes: val }));
   }
 
+  function setIssueDetailForCurrent(val: string) {
+    setResults(prev => prev.map((r, i) => i !== currentSiteIdx ? r : { ...r, issue_detail: val }));
+  }
+
   function markSite(status: 'clear' | 'issue') {
     const now = new Date().toISOString();
     setResults(prev => prev.map((r, i) =>
       i !== currentSiteIdx ? r : { ...r, status, checked_at: now }
     ));
+    setIssueConfirming(false);
     // Auto-advance to next unreviewed site
     const nextPending = results.findIndex((r, i) => i > currentSiteIdx && r.status === 'pending');
     if (nextPending !== -1) setCurrentSiteIdx(nextPending);
   }
 
   // ── Submit ─────────────────────────────────────────────────────────────────
+  // ── Raise alarm from patrol ────────────────────────────────────────────────
+  async function raisePatrolAlarm() {
+    if (!currentSite || !alarmReason) return;
+    setAlarmRaising(true);
+    const { error } = await supabase.from('alarms').insert({
+      priority:    alarmPri,
+      event_type:  'manual.operatorRaisedEvent.v1',
+      event_label: alarmReason,
+      site_name:   currentSite.name,
+      zone_id:     currentSite.zone_id,
+      account_id:  currentSite.id,
+      source:      'patrol',
+      operator_id: operatorId,
+      notes:       alarmNotes || null,
+    });
+    setAlarmRaising(false);
+    if (!error) {
+      setAlarmRaised(true);
+      setAlarmReason('');
+      setAlarmNotes('');
+      setAlarmPri('P2');
+      setTimeout(() => { setAlarmRaised(false); setAlarmOpen(false); }, 2500);
+    }
+  }
   async function submitPatrol() {
     setSubmitting(true);
     setSubmitError(null);
@@ -298,11 +353,43 @@ export default function PatrolPage() {
   const issueCount    = results.filter(r => r.status === 'issue').length;
   const allSitesDone  = results.length > 0 && results.every(r => r.status !== 'pending');
 
+  // Mark a specific gate as needs_service when operator flags an issue
+  async function markGateNeedsService(gateId: string) {
+    if (!gateId) return;
+    setMarkingGate(true);
+    await supabase.from('gates').update({
+      status:            'needs_service',
+      status_updated_at: new Date().toISOString(),
+      status_updated_by: operatorName,
+    }).eq('id', gateId);
+    setAllGates(prev => prev.map(g => g.id === gateId ? { ...g, status: 'needs_service' } : g));
+    setMarkingGate(false);
+  }
+
   // Expanded camera modal (double-click → main stream)
   const [expandedCam, setExpandedCam] = useState<{ accountId: string; cameraId: string; name: string } | null>(null);
 
+  // Issue Found — confirm flow (show detail field + gate picker before marking)
+  const [issueConfirming, setIssueConfirming] = useState(false);
+
+  // Live gate status — loaded once, used for pre-patrol banner + issue picker
+  const [allGates,     setAllGates]     = useState<{ id: string; name: string; gate_type: string; account_id: string; status: string }[]>([]);
+  const [selectedGateId, setSelectedGateId] = useState<string>('');
+  const [markingGate,  setMarkingGate]  = useState(false);
+
+  // Raise alarm from patrol
+  const [alarmOpen,    setAlarmOpen]    = useState(false);
+  const [alarmPri,     setAlarmPri]     = useState<'P1' | 'P2' | 'P3'>('P2');
+  const [alarmReason,  setAlarmReason]  = useState('');
+  const [alarmNotes,   setAlarmNotes]   = useState('');
+  const [alarmRaising, setAlarmRaising] = useState(false);
+  const [alarmRaised,  setAlarmRaised]  = useState(false);
+
   // Right panel tab
   const [rightTab, setRightTab] = useState<'checklist' | 'site-brief' | 'contacts'>('checklist');
+
+  // Gates currently needing service — derived after allGates state is declared
+  const gatesNeedingService = allGates.filter(g => g.status === 'needs_service');
 
   // Grid columns based on camera count
   function gridCols(n: number) {
@@ -509,6 +596,32 @@ export default function PatrolPage() {
                     ))}
                   </div>
                 </div>
+
+                {/* ── Gates needing service banner (live from DB) ── */}
+                {gatesNeedingService.length > 0 && (
+                  <div className="w-full max-w-sm rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-3 space-y-2">
+                    <p className="text-[9px] font-bold text-amber-400 uppercase tracking-[0.12em] flex items-center gap-1.5">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                      </svg>
+                      {gatesNeedingService.length} Gate{gatesNeedingService.length > 1 ? 's' : ''} Need Service
+                    </p>
+                    {gatesNeedingService.map(gate => {
+                      const site = sites.find(s => s.id === gate.account_id);
+                      return (
+                        <div key={gate.id} className="flex items-center gap-2 px-2 py-1.5 rounded bg-amber-500/[0.06] border border-amber-500/10">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[10px] font-semibold text-white truncate">{gate.name}</p>
+                            {site && <p className="text-[9px] text-slate-600">{site.name}</p>}
+                          </div>
+                          <span className="text-[8px] text-amber-400 font-semibold uppercase">⚠ Service</span>
+                        </div>
+                      );
+                    })}
+                    <p className="text-[8px] text-slate-600">Mark resolved in Reports → Gates once tech confirms fix.</p>
+                  </div>
+                )}
 
                 <button
                   onClick={startPatrol}
@@ -754,14 +867,158 @@ export default function PatrolPage() {
                       )}
                     </div>
                     <div className="p-3 border-t border-white/[0.06] space-y-2">
-                      <div className="grid grid-cols-2 gap-2">
-                        <button onClick={() => markSite('clear')} className="py-2.5 rounded border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-[10px] font-bold uppercase tracking-wider transition-all">
-                          ✓ All Clear
+                      {/* ── Raise Alarm ── */}
+                      {alarmRaised ? (
+                        <div className="flex items-center justify-center gap-2 py-2 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px] font-semibold">
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="m4.5 12.75 6 6 9-13.5" />
+                          </svg>
+                          Alarm raised — dispatching
+                        </div>
+                      ) : alarmOpen ? (
+                        <div className="space-y-1.5 p-2 rounded border border-red-500/20 bg-red-500/[0.05]">
+                          {/* Priority pills */}
+                          <div className="grid grid-cols-3 gap-1">
+                            {(['P1','P2','P3'] as const).map(p => (
+                              <button
+                                key={p}
+                                onClick={() => setAlarmPri(p)}
+                                className={`py-1 rounded border text-[9px] font-semibold transition-all ${
+                                  alarmPri === p
+                                    ? p === 'P1' ? 'bg-red-600/30 border-red-500/50 text-red-300'
+                                      : p === 'P2' ? 'bg-amber-600/30 border-amber-500/50 text-amber-300'
+                                      : 'bg-slate-600/30 border-slate-500/50 text-slate-300'
+                                    : 'bg-white/[0.03] border-white/[0.06] text-slate-600 hover:text-slate-400'
+                                }`}
+                              >{p}</button>
+                            ))}
+                          </div>
+                          {/* Reason */}
+                          <select
+                            value={alarmReason}
+                            onChange={e => {
+                              const r = e.target.value;
+                              setAlarmReason(r);
+                              if (r && REASON_PRIORITY[r]) setAlarmPri(REASON_PRIORITY[r]);
+                            }}
+                            className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2 py-1.5 text-[10px] text-slate-300 focus:outline-none focus:border-red-500/50 [color-scheme:dark]"
+                          >
+                            <option value="">— Select reason —</option>
+                            <optgroup label="P1 — Threats">
+                              <option>Intrusion Detected</option>
+                              <option>Suspicious Person</option>
+                              <option>Fight / Altercation</option>
+                              <option>Weapon Observed</option>
+                              <option>Fire / Smoke</option>
+                              <option>Vandalism in Progress</option>
+                            </optgroup>
+                            <optgroup label="P2 — Security">
+                              <option>Loitering</option>
+                              <option>Unauthorized Access</option>
+                              <option>Gate Left Open</option>
+                              <option>Vehicle Blocking</option>
+                              <option>Package / Object Left</option>
+                            </optgroup>
+                            <optgroup label="P3 — General">
+                              <option>Motion Detected</option>
+                              <option>Noise Complaint</option>
+                              <option>Welfare Check</option>
+                              <option>Other</option>
+                            </optgroup>
+                          </select>
+                          {/* Notes */}
+                          <textarea
+                            value={alarmNotes}
+                            onChange={e => setAlarmNotes(e.target.value)}
+                            placeholder="Optional notes…"
+                            rows={2}
+                            className="w-full bg-white/[0.03] border border-white/[0.06] rounded px-2 py-1.5 text-[10px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-red-500/40"
+                          />
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={raisePatrolAlarm}
+                              disabled={alarmRaising || !alarmReason}
+                              className="flex-1 py-1.5 rounded border border-red-500/40 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-[10px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                            >
+                              {alarmRaising ? 'Raising…' : 'Confirm Alarm'}
+                            </button>
+                            <button
+                              onClick={() => { setAlarmOpen(false); setAlarmReason(''); setAlarmNotes(''); setAlarmPri('P2'); }}
+                              className="px-3 py-1.5 rounded border border-white/[0.08] text-slate-500 text-[10px] hover:text-slate-300 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setAlarmOpen(true)}
+                          className="w-full flex items-center justify-center gap-1.5 py-2 rounded border border-red-500/30 bg-red-500/[0.07] hover:bg-red-500/[0.14] text-red-400 text-[10px] font-semibold uppercase tracking-wider transition-all"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                          </svg>
+                          Raise Alarm
                         </button>
-                        <button onClick={() => markSite('issue')} className="py-2.5 rounded border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-300 text-[10px] font-bold uppercase tracking-wider transition-all">
-                          ! Issue Found
-                        </button>
-                      </div>
+                      )}
+                      {/* All Clear / Issue Found */}
+                      {issueConfirming ? (
+                        <div className="space-y-1.5 p-2 rounded border border-amber-500/20 bg-amber-500/[0.05]">
+                          <p className="text-[9px] font-semibold text-amber-400 uppercase tracking-wider">Describe the issue</p>
+                          <textarea
+                            value={currentResult.issue_detail}
+                            onChange={e => setIssueDetailForCurrent(e.target.value)}
+                            placeholder="Gate stuck open, broken sensor, unauthorized vehicle…"
+                            rows={3}
+                            autoFocus
+                            className="w-full bg-white/[0.03] border border-white/[0.06] rounded px-2 py-1.5 text-[10px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-amber-500/40"
+                          />
+                          {/* Gate picker — mark a specific gate as needs_service */}
+                          {allGates.filter(g => g.account_id === currentSite.id).length > 0 && (
+                            <div className="space-y-1">
+                              <p className="text-[9px] text-slate-500 uppercase tracking-wider">Flag a specific gate (optional)</p>
+                              <select
+                                value={selectedGateId}
+                                onChange={e => setSelectedGateId(e.target.value)}
+                                className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2 py-1.5 text-[10px] text-slate-300 focus:outline-none [color-scheme:dark]"
+                              >
+                                <option value="">— None / general issue —</option>
+                                {allGates.filter(g => g.account_id === currentSite.id).map(g => (
+                                  <option key={g.id} value={g.id}>{g.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={async () => {
+                                if (selectedGateId) await markGateNeedsService(selectedGateId);
+                                markSite('issue');
+                                setSelectedGateId('');
+                              }}
+                              disabled={markingGate}
+                              className="flex-1 py-1.5 rounded border border-red-500/40 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-[10px] font-bold uppercase tracking-wider transition-all disabled:opacity-40"
+                            >
+                              {markingGate ? '…' : '! Confirm Issue'}
+                            </button>
+                            <button
+                              onClick={() => { setIssueConfirming(false); setSelectedGateId(''); }}
+                              className="px-3 py-1.5 rounded border border-white/[0.08] text-slate-500 text-[10px] hover:text-slate-300 transition-colors"
+                            >
+                              Back
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-2">
+                          <button onClick={() => markSite('clear')} className="py-2.5 rounded border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-[10px] font-bold uppercase tracking-wider transition-all">
+                            ✓ All Clear
+                          </button>
+                          <button onClick={() => setIssueConfirming(true)} className="py-2.5 rounded border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-300 text-[10px] font-bold uppercase tracking-wider transition-all">
+                            ! Issue Found
+                          </button>
+                        </div>
+                      )}
                       {allSitesDone && (
                         <button onClick={submitPatrol} disabled={submitting} className="w-full py-2.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold uppercase tracking-wider transition-all disabled:opacity-40">
                           {submitting ? 'Saving…' : 'Submit Patrol Report'}
