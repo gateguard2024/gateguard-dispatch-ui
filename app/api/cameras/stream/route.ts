@@ -53,8 +53,17 @@ export async function POST(request: Request) {
     };
     if (apiKey) headers['x-api-key'] = apiKey;
 
-    const response = await fetch(url, { method: 'GET', headers });
-    const data     = await response.json();
+    const response  = await fetch(url, { method: 'GET', headers });
+    const rawText   = await response.text();
+    console.log(`[cameras/stream] EEN feeds status=${response.status} body=${rawText.slice(0, 500)}`);
+
+    let data: any;
+    try { data = JSON.parse(rawText); } catch {
+      return NextResponse.json(
+        { error: `EEN feeds returned non-JSON (${response.status}): ${rawText.slice(0, 200)}` },
+        { status: 502 }
+      );
+    }
 
     if (!response.ok) {
       return NextResponse.json(
