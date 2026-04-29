@@ -334,7 +334,9 @@ export default function PatrolPage() {
         completed_at:  completedAt,
         site_results:  finalResults,
         status:        'completed',
-        patrol_type:   selectedSlot,
+        patrol_type:   selectedSlot === 'spot-check'
+          ? `Spot Check — ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}`
+          : selectedSlot,
       });
       if (error) {
         setSubmitError(error.message.includes('does not exist')
@@ -549,7 +551,9 @@ export default function PatrolPage() {
                   </svg>
                 </div>
                 <div className="text-center">
-                  <p className="text-[15px] font-bold text-white">Patrol Complete — {selectedSlot} EST</p>
+                  <p className="text-[15px] font-bold text-white">
+                    {selectedSlot === 'spot-check' ? 'Spot Check Complete' : `Patrol Complete — ${selectedSlot} EST`}
+                  </p>
                   <p className="text-[11px] text-slate-400 mt-1">
                     {issueCount > 0
                       ? `${issueCount} issue${issueCount > 1 ? 's' : ''} found — raise alarms from Cameras page`
@@ -604,6 +608,25 @@ export default function PatrolPage() {
                       </button>
                     ))}
                   </div>
+                  {/* Spot check / random patrol */}
+                  <button
+                    onClick={() => setSelectedSlot('spot-check')}
+                    className={`w-full px-4 py-2.5 rounded border text-left transition-all ${
+                      selectedSlot === 'spot-check'
+                        ? 'border-violet-500/60 bg-violet-600/20 text-white'
+                        : 'border-dashed border-white/[0.12] bg-white/[0.01] text-slate-500 hover:border-white/25 hover:text-slate-400'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.348 14.651a3.75 3.75 0 010-5.303m5.304-.001a3.75 3.75 0 010 5.304m-7.425 2.122a6.75 6.75 0 010-9.546m9.546 0a6.75 6.75 0 010 9.546M5.106 18.894c-3.808-3.808-3.808-9.98 0-13.789m13.788 0c3.808 3.808 3.808 9.981 0 13.79M12 12h.008v.008H12V12z" />
+                      </svg>
+                      <div>
+                        <p className="text-[11px] font-bold">Spot Check / Random</p>
+                        <p className="text-[9px] text-slate-600 mt-0.5">Unscheduled patrol — logged with current time</p>
+                      </div>
+                    </div>
+                  </button>
                 </div>
 
                 {/* ── Gates needing service banner (live from DB) ── */}
@@ -641,7 +664,7 @@ export default function PatrolPage() {
                       : 'bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-slate-300'
                   }`}
                 >
-                  {loading ? 'Loading sites…' : sites.length === 0 ? 'No sites configured' : `Start ${selectedSlot} Patrol`}
+                  {loading ? 'Loading sites…' : sites.length === 0 ? 'No sites configured' : selectedSlot === 'spot-check' ? 'Start Spot Check' : `Start ${selectedSlot} Patrol`}
                 </button>
 
                 {tableError && (

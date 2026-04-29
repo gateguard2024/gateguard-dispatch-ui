@@ -2,14 +2,9 @@
 //
 // Returns the unique EEN property tags available on a given account.
 //
-// Strategy (two-tier):
-//   1. FAST PATH — if cameras already exist in Supabase for this account,
-//      derive tags directly from the stored een_tags column.
-//      No EEN API call needed, responds in ~50ms.
-//
-//   2. LIVE PATH — if no cameras exist yet (fresh account / first setup),
-//      call EEN GET /api/v3.0/cameras?include=tags and extract unique tags
-//      from the camera objects. Same auth pattern as sync-hardware.
+// Always calls EEN live — the fast-path DB shortcut was removed because it
+// only returned tags for already-synced cameras, missing any new tags set up
+// in EEN after the first zone was configured.
 //
 // Why not a separate EEN "tags" endpoint?
 //   EEN V3 has no standalone tags endpoint. Tags are properties of cameras.
@@ -17,19 +12,12 @@
 //   names only, without writing anything to the database.
 //
 // Request body:  { siteId: string }   ← Supabase accounts.id (UUID)
-// Response:      { success: true, tags: string[], source: "db" | "een" }
+// Response:      { success: true, tags: string[], source: "een" }
 
-// app/api/een/tags/route.ts
 import { NextResponse } from 'next/server';
-import { createClient }  from '@supabase/supabase-js';
 import { getValidEENToken } from '@/lib/een';
 
 export async function POST(request: Request) {
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
   try {
     const body = await request.json();
     const accountId: string | undefined = body.siteId ?? body.accountId;
@@ -41,27 +29,8 @@ export async function POST(request: Request) {
       );
     }
 
-    // Fast path: derive tags from cameras already in Supabase
-    const { data: existingCameras, error: camErr } = await supabase
-      .from('cameras')
-      .select('een_tags')
-      .eq('account_id', accountId)
-      .not('een_tags', 'is', null);
-
-    if (!camErr && existingCameras && existingCameras.length > 0) {
-      const tagSet = new Set<string>();
-      for (const cam of existingCameras) {
-        const tags: string[] = cam.een_tags ?? [];
-        for (const t of tags) {
-          const clean = t.trim();
-          if (clean) tagSet.add(clean);
-        }
-      }
-      const tags = Array.from(tagSet).sort();
-      return NextResponse.json({ success: true, tags, source: 'db' });
-    }
-
-    // Live path: call EEN cameras endpoint
+    // Always call EEN live — this is the setup wizard (infrequent) and
+    // accuracy matters more than latency here.
     const { token, cluster, apiKey } = await getValidEENToken(accountId);
 
     if (!cluster) {
