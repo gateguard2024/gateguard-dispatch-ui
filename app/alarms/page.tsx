@@ -26,7 +26,7 @@ const supabase = createClient(
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Priority = 'P1' | 'P2' | 'P3' | 'P4';
 type AlarmStatus = 'pending' | 'processing' | 'resolved';
-type ActionTaken = 'authorized' | 'unauthorized' | 'false_alarm' | 'police_dispatched' | 'emergency_services_on_site' | 'property_violation' | 'other' | '';
+type ActionTaken = 'authorized' | 'unauthorized' | 'false_alarm' | 'police_dispatched' | 'emergency_services_on_site' | 'property_violation' | 'gate_service_needed' | 'door_service_needed' | 'other' | '';
 type TabName = 'cameras' | 'history' | 'scripts' | 'notes';
 
 interface TriageResult {
@@ -131,6 +131,8 @@ const ACTION_OPTIONS: { value: ActionTaken; label: string }[] = [
   { value: 'police_dispatched',         label: 'Police Dispatched' },
   { value: 'emergency_services_on_site',label: 'Emergency Services On Site' },
   { value: 'property_violation',        label: 'Property Violation (Dumping / Loitering)' },
+  { value: 'gate_service_needed',       label: '🔧 Gate Service Needed' },
+  { value: 'door_service_needed',       label: '🔧 Door / Access Service Needed' },
   { value: 'other',                     label: 'Other' },
 ];
 
@@ -350,10 +352,18 @@ export default function AlarmsPage() {
   const [resolving, setResolving]       = useState(false);
   const [resolveError, setResolveError] = useState<string | null>(null);
 
+  // Gate picker for service-needed resolution
+  const [allGates, setAllGates]         = useState<{ id: string; name: string; account_id: string; gate_type: string }[]>([]);
+  const [selectedGateId, setSelectedGateId] = useState<string>('');
+
   // ── Supabase realtime subscription ─────────────────────────────────────────
   useEffect(() => {
     // Initial load
     fetchQueue();
+    // Load gate inventory for service-needed picker
+    supabase.from('gates').select('id, name, account_id, gate_type').then(({ data }) => {
+      if (data) setAllGates(data);
+    });
 
     const channel = supabase
       .channel('alarms-realtime')
@@ -826,7 +836,34 @@ export default function AlarmsPage() {
         generated_at:  new Date().toISOString(),
       });
 
-      // 4. Clear active alarm
+      // 4a. Mark specific gate as needs_service if operator selected one
+      if ((actionTaken === 'gate_service_needed' || actionTaken === 'door_service_needed') && selectedGateId) {
+        await supabase.from('gates').update({
+          status:            'needs_service',
+          status_updated_at: new Date().toISOString(),
+          status_updated_by: operatorName,
+        }).eq('id', selectedGateId);
+        setSelectedGateId('');
+      }
+
+      // 4b. Service notification — dual email for gate/door service needed
+      if (actionTaken === 'gate_service_needed' || actionTaken === 'door_service_needed') {
+        const siteContactEmail = contacts.find(c => c.email)?.email ?? null;
+        fetch('/api/alarms/service-notification', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            siteName:         activeAlarm.site_name,
+            actionTaken,
+            notes,
+            operatorName,
+            siteContactEmail,
+            alarmId:          activeAlarm.id,
+          }),
+        }).catch(err => console.warn('[service-notification] fetch failed:', err));
+      }
+
+      // 5. Clear active alarm
       setActiveAlarm(null);
       setDoors([]);
       setContacts([]);
@@ -1758,6 +1795,25 @@ export default function AlarmsPage() {
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                 ))}
               </select>
+
+              {/* Gate picker — shown when action is service-needed */}
+              {(actionTaken === 'gate_service_needed' || actionTaken === 'door_service_needed') && activeAlarm && (() => {
+                const accountId = activeAlarm.account_id ?? activeAlarm.zones?.account_id;
+                const siteGates = allGates.filter(g => g.account_id === accountId);
+                if (siteGates.length === 0) return null;
+                return (
+                  <select
+                    value={selectedGateId}
+                    onChange={e => setSelectedGateId(e.target.value)}
+                    className="w-full bg-amber-500/[0.06] border border-amber-500/30 rounded px-2.5 py-2 text-[11px] text-slate-300 focus:outline-none focus:border-amber-500/60 [color-scheme:dark]"
+                  >
+                    <option value="">— Select gate to flag (optional) —</option>
+                    {siteGates.map(g => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    ))}
+                  </select>
+                );
+              })()}
 
               {/* Resolution notes — police called, courtesy officer notified, etc. */}
               <textarea

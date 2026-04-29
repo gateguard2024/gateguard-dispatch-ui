@@ -117,6 +117,18 @@ interface Contact {
   priority: number;
 }
 
+interface Gate {
+  id?: string;
+  account_id: string;
+  zone_id: string;
+  name: string;
+  gate_type: 'vehicle' | 'pedestrian' | 'barrier';
+  brivo_door_id: string;
+  has_control: boolean;
+  status: 'operational' | 'needs_service' | 'unknown';
+  status_notes: string;
+}
+
 interface DeleteTarget {
   type: "zone" | "account";
   id: string;
@@ -881,6 +893,7 @@ export default function SetupPage() {
   const [zones, setZones] = useState<Zone[]>([]);
   const [zoneCameras, setZoneCameras] = useState<Record<string, Camera[]>>({});
   const [zoneContacts, setZoneContacts] = useState<Record<string, Contact[]>>({});
+  const [zoneGates,    setZoneGates]    = useState<Record<string, Gate[]>>({});
   const [loading, setLoading] = useState(true);
 
   // Panel state
@@ -890,7 +903,7 @@ export default function SetupPage() {
   const [camConfigSaving, setCamConfigSaving] = useState<string | null>(null); // cameraId being saved
   const [rightView, setRightView] = useState<"empty" | "wizard" | "zone-detail">("empty");
   const [detailTab, setDetailTab] = useState<
-    "overview" | "schedule" | "contacts" | "procedures" | "site-info" | "brivo"
+    "overview" | "schedule" | "contacts" | "procedures" | "site-info" | "brivo" | "gates"
   >("overview");
 
   // Wizard state
@@ -907,6 +920,11 @@ export default function SetupPage() {
   // Contact editing
   const [editContact, setEditContact] = useState<Contact | null>(null);
   const [contactSaveError, setContactSaveError] = useState<string | null>(null);
+
+  // Gate editing
+  const [editGate, setEditGate]       = useState<Gate | null>(null);
+  const [gateSaveError, setGateSaveError] = useState<string | null>(null);
+  const [gateSaving, setGateSaving]   = useState(false);
 
   // Deletion modal
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
@@ -961,16 +979,27 @@ export default function SetupPage() {
     if (data) setZoneContacts((p) => ({ ...p, [zoneId]: data }));
   }, []);
 
+  const loadZoneGates = useCallback(async (zoneId: string) => {
+    const { data } = await supabase
+      .from("gates")
+      .select("*")
+      .eq("zone_id", zoneId)
+      .order("name");
+    if (data) setZoneGates((p) => ({ ...p, [zoneId]: data }));
+  }, []);
+
   const handleSelectZone = (zone: Zone) => {
     setSelectedZoneId(zone.id);
     setRightView("zone-detail");
     setDetailTab("overview");
     setEditContact(null);
+    setEditGate(null);
     setSiteInfo({ ...defaultSiteInfo(), ...(zone.site_info ?? {}) });
     setWeeklySchedule({ ...defaultWeeklySchedule(), ...(zone.weekly_schedule ?? {}) });
     setHolidaySchedule({ ...defaultHolidaySchedule(), ...(zone.holiday_schedule ?? {}) });
     loadZoneCameras(zone.id);
     loadZoneContacts(zone.id);
+    loadZoneGates(zone.id);
   };
 
   // ── Toggles ──────────────────────────────────────────────────────────────
@@ -1030,6 +1059,31 @@ export default function SetupPage() {
   const deleteContact = async (contactId: string, zoneId: string) => {
     await supabase.from("contacts").delete().eq("id", contactId);
     loadZoneContacts(zoneId);
+  };
+
+  // ── Gate CRUD ─────────────────────────────────────────────────────────────
+  const saveGate = async (gate: Gate) => {
+    setGateSaveError(null);
+    setGateSaving(true);
+    try {
+      const { id, ...fields } = gate as Gate & { id?: string };
+      if (id) {
+        const { error } = await supabase.from("gates").update(fields).eq("id", id);
+        if (error) { setGateSaveError(error.message); return; }
+      } else {
+        const { error } = await supabase.from("gates").insert([fields]);
+        if (error) { setGateSaveError(error.message); return; }
+      }
+      await loadZoneGates(gate.zone_id);
+      setEditGate(null);
+    } finally {
+      setGateSaving(false);
+    }
+  };
+
+  const deleteGate = async (gateId: string, zoneId: string) => {
+    await supabase.from("gates").delete().eq("id", gateId);
+    loadZoneGates(zoneId);
   };
 
   // ── Harvest cameras ───────────────────────────────────────────────────────
@@ -1732,10 +1786,12 @@ export default function SetupPage() {
     const cams = zoneCameras[zone.id] ?? [];
     const contacts = zoneContacts[zone.id] ?? [];
 
+    const gates    = zoneGates[zone.id]    ?? [];
     const TABS = [
       { key: "overview",   label: "Overview" },
       { key: "schedule",   label: "Schedule" },
       { key: "contacts",   label: contacts.length ? `Contacts (${contacts.length})` : "Contacts" },
+      { key: "gates",      label: gates.length ? `Gates (${gates.length})` : "Gates" },
       { key: "procedures", label: "Procedures" },
       { key: "site-info",  label: "Site Info" },
       { key: "brivo",      label: "Brivo Access" },
@@ -2130,6 +2186,158 @@ export default function SetupPage() {
                     <span key={r} className="text-[10px] text-slate-600 bg-white/[0.03] border border-white/[0.05] px-2 py-0.5 rounded">{r}</span>
                   ))}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── GATES ── */}
+          {detailTab === "gates" && (
+            <div className="flex flex-col gap-4 max-w-xl">
+              <div className="flex items-center">
+                <SectionDivider>Monitored Gates &amp; Doors</SectionDivider>
+                <button
+                  onClick={() => setEditGate({ account_id: zone.account_id, zone_id: zone.id, name: "", gate_type: "vehicle", brivo_door_id: "", has_control: false, status: "operational", status_notes: "" })}
+                  className="flex items-center gap-1.5 text-[11px] text-indigo-400 hover:text-indigo-300 transition-all ml-3 shrink-0"
+                >
+                  <Ic d={I.plus} className="w-3 h-3" />
+                  Add Gate
+                </button>
+              </div>
+
+              <p className="text-[10px] text-slate-600 -mt-2 leading-relaxed">
+                List every gate or door this site has — even ones without Brivo control (e.g. exit-only gates). Status is managed in Reports → Gates.
+              </p>
+
+              {/* Edit / Add form */}
+              {editGate && (
+                <div className="bg-white/[0.02] border border-indigo-500/20 rounded p-4 flex flex-col gap-3">
+                  <p className="text-[9px] text-indigo-400 uppercase tracking-widest font-bold">
+                    {editGate.id ? "Edit Gate" : "New Gate"}
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Gate / Door Name">
+                      <input
+                        className={inputCls}
+                        placeholder='e.g. "Resident Gate"'
+                        value={editGate.name}
+                        onChange={e => setEditGate(g => g && { ...g, name: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="Type">
+                      <select
+                        className={inputCls + " cursor-pointer"}
+                        value={editGate.gate_type}
+                        onChange={e => setEditGate(g => g && { ...g, gate_type: e.target.value as Gate["gate_type"] })}
+                      >
+                        <option value="vehicle"    className="bg-[#0a0c11]">Vehicle Gate</option>
+                        <option value="pedestrian" className="bg-[#0a0c11]">Pedestrian Door</option>
+                        <option value="barrier"    className="bg-[#0a0c11]">Barrier / Arm</option>
+                      </select>
+                    </Field>
+                    <Field label="Brivo Door ID (if controlled)">
+                      <input
+                        className={inputCls}
+                        placeholder="Leave blank if no SOC control"
+                        value={editGate.brivo_door_id}
+                        onChange={e => setEditGate(g => g && { ...g, brivo_door_id: e.target.value, has_control: e.target.value.trim().length > 0 })}
+                      />
+                    </Field>
+                    <Field label="SOC Control?">
+                      <div className="flex items-center gap-2 h-full pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setEditGate(g => g && { ...g, has_control: !g.has_control })}
+                          className={`relative w-9 h-5 rounded-full border transition-all ${editGate.has_control ? "bg-emerald-600/40 border-emerald-500/50" : "bg-white/[0.06] border-white/[0.12]"}`}
+                        >
+                          <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full transition-all ${editGate.has_control ? "bg-emerald-400 translate-x-4" : "bg-slate-600"}`} />
+                        </button>
+                        <span className={`text-[10px] ${editGate.has_control ? "text-emerald-400" : "text-slate-600"}`}>
+                          {editGate.has_control ? "Yes — can open/hold" : "No — monitor only"}
+                        </span>
+                      </div>
+                    </Field>
+                  </div>
+                  {gateSaveError && (
+                    <p className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2.5 py-1.5">
+                      ✗ {gateSaveError}
+                    </p>
+                  )}
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button type="button" onClick={() => { setEditGate(null); setGateSaveError(null); }} className="text-xs text-slate-500 hover:text-slate-300 px-3 py-1.5 transition-all">Cancel</button>
+                    <button
+                      type="button"
+                      onClick={() => editGate && saveGate(editGate)}
+                      disabled={gateSaving || !editGate.name.trim()}
+                      className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-medium px-4 py-1.5 rounded transition-all"
+                    >
+                      {gateSaving ? "Saving…" : editGate.id ? "Save Changes" : "Add Gate"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Gate list */}
+              {gates.length === 0 && !editGate ? (
+                <div className="flex flex-col items-center justify-center h-20 border border-white/[0.05] rounded text-[11px] text-slate-700 uppercase tracking-wider gap-1">
+                  No gates configured for this site
+                </div>
+              ) : (
+                <div className="border border-white/[0.05] rounded overflow-hidden">
+                  {gates.map((gate, idx) => (
+                    <div
+                      key={gate.id}
+                      className={`flex items-center gap-3 px-3 py-3 group hover:bg-white/[0.02] transition-all ${idx < gates.length - 1 ? "border-b border-white/[0.04]" : ""}`}
+                    >
+                      {/* Icon */}
+                      <div className="w-7 h-7 bg-white/[0.03] border border-white/[0.06] rounded flex items-center justify-center shrink-0 text-slate-600 text-[13px]">
+                        {gate.gate_type === "vehicle" ? "🚗" : gate.gate_type === "pedestrian" ? "🚶" : "🚧"}
+                      </div>
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-slate-200 font-medium truncate">{gate.name}</p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[9px] text-slate-600 uppercase tracking-widest">{gate.gate_type}</span>
+                          {gate.has_control && (
+                            <span className="text-[8px] font-semibold px-1.5 py-0.5 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 uppercase tracking-wider">Brivo Control</span>
+                          )}
+                          <span className={`text-[8px] font-semibold px-1.5 py-0.5 rounded border uppercase tracking-wider ${
+                            gate.status === 'operational'   ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' :
+                            gate.status === 'needs_service' ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' :
+                                                             'border-slate-600/30 bg-slate-600/10 text-slate-500'
+                          }`}>
+                            {gate.status === 'operational' ? 'Operational' : gate.status === 'needs_service' ? 'Needs Service' : 'Unknown'}
+                          </span>
+                        </div>
+                      </div>
+                      {gate.brivo_door_id && (
+                        <p className="text-[9px] text-slate-600 font-mono hidden sm:block mr-2">{gate.brivo_door_id}</p>
+                      )}
+                      {/* Actions */}
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all shrink-0">
+                        <button
+                          onClick={() => setEditGate({ ...gate, brivo_door_id: gate.brivo_door_id ?? '', status_notes: gate.status_notes ?? '' } as Gate)}
+                          className="p-1.5 hover:bg-white/[0.06] rounded text-slate-600 hover:text-slate-300 transition-all"
+                        >
+                          <Ic d={I.edit} className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => gate.id && deleteGate(gate.id, zone.id)}
+                          className="p-1.5 hover:bg-red-500/10 rounded text-slate-700 hover:text-red-400 transition-all"
+                        >
+                          <Ic d={I.trash} className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="bg-white/[0.01] border border-white/[0.04] rounded p-3 mt-1">
+                <p className="text-[9px] text-slate-700 uppercase tracking-widest font-bold mb-1">Status Management</p>
+                <p className="text-[10px] text-slate-700 leading-relaxed">
+                  Gate status (Operational / Needs Service) is managed in <span className="text-indigo-500">Reports → Gates</span>.
+                  Agents and supervisors toggle status there after a patrol flags an issue or a tech confirms a fix.
+                </p>
               </div>
             </div>
           )}
