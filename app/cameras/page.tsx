@@ -15,8 +15,10 @@ const supabase = createClient(
 );
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Account {
-  id:               string;
-  name:             string;
+  id:               string;   // zone ID — tile key + camera loading
+  accountId:        string;   // parent account ID — EEN token, audit logs, Brivo
+  name:             string;   // zone name  e.g. "Marbella Place"
+  subtitle:         string;   // account/owner name  e.g. "Pegasus Properties"
   address?:         string;
   cameraCount:      number;
   onlineCount:      number;
@@ -193,43 +195,30 @@ export default function CamerasPage() {
   async function loadAccounts() {
     setLoading(true);
     try {
-      // Two flat queries instead of a nested join — more reliable across
-      // Supabase deployments where FK schema cache may not resolve chains.
-
-      // Try with primary camera columns first (requires migration 001m).
-      // If those columns don't exist yet, fall back to base columns so the
-      // page still renders while the migration is pending.
-      let accts: any[] | null = null;
-      let acctErr: any = null;
-
-      ({ data: accts, error: acctErr } = await supabase
+      // Load accounts for name lookup
+      const { data: accts, error: acctErr } = await supabase
         .from('accounts')
-        .select('id, name, primary_camera_id, primary_camera_esn')
-        .order('name'));
-
-      if (acctErr) {
-        console.warn('[cameras] primary camera columns missing — falling back (run migration 001m):', acctErr.message);
-        ({ data: accts, error: acctErr } = await supabase
-          .from('accounts')
-          .select('id, name')
-          .order('name'));
-      }
-
+        .select('id, name')
+        .order('name');
       if (acctErr) { console.error('[cameras] accounts query error:', acctErr); return; }
       if (!accts || accts.length === 0) return;
 
-      // Pull all cameras for these accounts in one query via zones
-      const accountIds = accts.map((a: any) => a.id);
+      const acctMap: Record<string, string> = {};
+      for (const a of accts) acctMap[a.id] = a.name;
 
+      // Load all zones — each zone becomes its own tile
+      const accountIds = accts.map((a: any) => a.id);
       const { data: zones, error: zoneErr } = await supabase
         .from('zones')
-        .select('id, account_id')
-        .in('account_id', accountIds);
+        .select('id, account_id, name')
+        .in('account_id', accountIds)
+        .order('name');
+      if (zoneErr) { console.error('[cameras] zones query error:', zoneErr); return; }
+      if (!zones || zones.length === 0) return;
 
-      if (zoneErr) { console.error('[cameras] zones query error:', zoneErr); }
+      const zoneIds = zones.map((z: any) => z.id);
 
-      const zoneIds = (zones ?? []).map((z: any) => z.id);
-
+      // Load cameras grouped by zone
       let camRows: any[] = [];
       if (zoneIds.length > 0) {
         const { data: cams, error: camErr } = await supabase
@@ -240,42 +229,33 @@ export default function CamerasPage() {
         camRows = cams ?? [];
       }
 
-      // Build a zone_id → account_id lookup
-      const zoneToAccount: Record<string, string> = {};
-      for (const z of (zones ?? [])) zoneToAccount[z.id] = z.account_id;
-
-      // Group cameras by account_id
-      const camsByAccount: Record<string, any[]> = {};
+      const camsByZone: Record<string, any[]> = {};
       for (const cam of camRows) {
-        const acctId = zoneToAccount[cam.zone_id];
-        if (!acctId) continue;
-        if (!camsByAccount[acctId]) camsByAccount[acctId] = [];
-        camsByAccount[acctId].push(cam);
+        if (!camsByZone[cam.zone_id]) camsByZone[cam.zone_id] = [];
+        camsByZone[cam.zone_id].push(cam);
       }
 
-      const mapped: Account[] = accts.map((a: any) => {
-        const allCams     = camsByAccount[a.id] ?? [];
-        const online      = allCams.filter((c: any) => c.is_monitored).length;
-        const snap        = allCams.find((c: any) => c.snapshot_url)?.snapshot_url ?? null;
-        // Pick first monitored EEN camera as fallback thumbnail
+      // One tile per zone
+      const mapped: Account[] = zones.map((z: any) => {
+        const allCams    = camsByZone[z.id] ?? [];
+        const online     = allCams.filter((c: any) => c.is_monitored).length;
+        const snap       = allCams.find((c: any) => c.snapshot_url)?.snapshot_url ?? null;
         const firstEenCam = allCams.find((c: any) => c.source === 'een' && c.een_camera_id && c.is_monitored)
                          ?? allCams.find((c: any) => c.source === 'een' && c.een_camera_id);
-        // Resolve primary camera (user-selected) for thumbnail
-        const primaryCam  = a.primary_camera_id
-          ? allCams.find((c: any) => c.id === a.primary_camera_id) ?? null
-          : null;
         return {
-          id:                a.id,
-          name:              a.name,
+          id:                z.id,                      // zone ID
+          accountId:         z.account_id,              // parent account ID
+          name:              z.name,                    // zone name shown on tile
+          subtitle:          acctMap[z.account_id] ?? '', // account/owner name
           address:           undefined,
           cameraCount:       allCams.length,
           onlineCount:       online,
           hasAlert:          false,
           firstSnap:         snap,
           firstEenCamId:     firstEenCam?.een_camera_id ?? null,
-          primaryCameraId:   a.primary_camera_id   ?? null,
-          primaryCameraEsn:  a.primary_camera_esn  ?? primaryCam?.een_camera_id ?? null,
-          primaryCameraSnap: primaryCam?.snapshot_url ?? null,
+          primaryCameraId:   null,
+          primaryCameraEsn:  firstEenCam?.een_camera_id ?? null,
+          primaryCameraSnap: null,
         };
       });
 
@@ -284,29 +264,16 @@ export default function CamerasPage() {
       setLoading(false);
     }
   }
-  // ── View 2: Load cameras for account ─────────────────────────────────────
+  // ── View 2: Load cameras for zone (one zone = one tile) ──────────────────
   const openAccount = useCallback(async (account: Account) => {
     setSelectedAccount(account);
     setView(2);
     setWallLoading(true);
-    // Get zone IDs for this account
-    const { data: zones } = await supabase
-      .from('zones')
-      .select('id')
-      .eq('account_id', account.id);
-
-    // Only select id — TypeScript infers { id: string }[] from the narrow select above
-    const zoneIds = (zones ?? []).map((z) => z.id);
-
-    if (zoneIds.length === 0) {
-      setCameras([]);
-      setWallLoading(false);
-      return;
-    }
+    // account.id is the zone ID — load cameras for this zone only
     const { data: cams } = await supabase
       .from('cameras')
       .select('id, name, source, brivo_camera_id, een_camera_id, is_monitored, snapshot_url, zone_id, brivo_door_id')
-      .in('zone_id', zoneIds)
+      .eq('zone_id', account.id)
       .order('name');
     setCameras((cams as CameraRow[]) ?? []);
     setWallLoading(false);
@@ -345,14 +312,14 @@ export default function CamerasPage() {
       supabase
         .from('audit_logs')
         .select('id, details, created_at')
-        .eq('account_id', (selectedAccount as Account).id)
+        .eq('account_id', (selectedAccount as Account).accountId)
         .eq('action', 'camera_note')
         .order('created_at', { ascending: false })
         .limit(50),
       supabase
         .from('accounts')
         .select('brivo_door_ids')
-        .eq('id', (selectedAccount as Account).id)
+        .eq('id', (selectedAccount as Account).accountId)
         .single(),
     ]);
     const filtered = (notes ?? [])
@@ -376,7 +343,7 @@ export default function CamerasPage() {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          accountId: selectedAccount.id,
+          accountId: selectedAccount.accountId,
           cameraId:  camKey(selectedCamera),
           startTime: new Date(startTime).toISOString(),
           endTime:   new Date(endTime).toISOString(),
@@ -403,7 +370,7 @@ export default function CamerasPage() {
     setNotesSaving(true);
     const noteDetails = JSON.stringify({ camera_id: selectedCamera.id, note: cameraNote.trim() });
     await supabase.from('audit_logs').insert({
-      account_id:  selectedAccount!.id,
+      account_id:  selectedAccount!.accountId,
       zone_id:     selectedCamera.zone_id,
       operator_id: operatorId,
       action:      'camera_note',
@@ -428,7 +395,7 @@ export default function CamerasPage() {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          accountId:    selectedAccount.id,
+          accountId:    selectedAccount.accountId,
           doorId:       linkedDoorId,
           operatorId,
           operatorName: operatorName,
@@ -466,7 +433,7 @@ export default function CamerasPage() {
     setHoldError(null);
     try {
       const body: any = {
-        accountId:    selectedAccount.id,
+        accountId:    selectedAccount.accountId,
         doorId:       linkedDoorId,
         mode:         holdMode,
         operatorId:   'operator-1',
@@ -498,7 +465,7 @@ export default function CamerasPage() {
         primary_camera_id:  cam.id,
         primary_camera_esn: cam.een_camera_id ?? null,
       })
-      .eq('id', selectedAccount.id);
+      .eq('id', selectedAccount.accountId);
     // Update local accounts list so tile updates immediately when going back
     setAccounts(prev => prev.map(a =>
       a.id === selectedAccount.id
@@ -519,7 +486,7 @@ export default function CamerasPage() {
         site_name:   selectedAccount.name,
         camera_id:   selectedCamera.id,
         zone_id:     selectedCamera.zone_id,
-        account_id:  selectedAccount.id,
+        account_id:  selectedAccount.accountId,
         source:      'manual',
         status:      'pending',
         created_at:  new Date().toISOString(),
@@ -529,7 +496,7 @@ export default function CamerasPage() {
       await supabase.from('audit_logs').insert({
         camera_id:   selectedCamera.id,
         zone_id:     selectedCamera.zone_id,
-        account_id:  selectedAccount.id,
+        account_id:  selectedAccount.accountId,
         operator_id: operatorId,
         action:      'manual_alarm_raised',
         details:     JSON.stringify({ priority: alarmPriority, reason: alarmReason, notes: alarmNotes }),
@@ -555,7 +522,7 @@ export default function CamerasPage() {
         method:  'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          accountId:    selectedAccount.id,
+          accountId:    selectedAccount.accountId,
           doorId:       linkedDoorId,
           operatorId,
           operatorName: operatorName,
@@ -612,7 +579,7 @@ export default function CamerasPage() {
                         /* pointer-events-none keeps the tile button clickable */
                         <div className="absolute inset-0 pointer-events-none">
                           <SmartVideoPlayer
-                            accountId={account.id}
+                            accountId={account.accountId}
                             cameraId={esnToUse}
                             source="een"
                             streamType="preview"
@@ -657,8 +624,8 @@ export default function CamerasPage() {
                   {/* Info */}
                   <div className="px-3 py-2.5">
                     <p className="text-[12px] font-semibold text-white truncate">{account.name}</p>
-                    {account.address && (
-                      <p className="text-[10px] text-slate-500 truncate mt-0.5">{account.address}</p>
+                    {account.subtitle && (
+                      <p className="text-[10px] text-slate-500 truncate mt-0.5">{account.subtitle}</p>
                     )}
                     <div className="flex items-center gap-2 mt-1.5">
                       <span className="text-[9px] text-slate-600">
@@ -688,7 +655,12 @@ export default function CamerasPage() {
           </button>
           <div className="w-px h-4 bg-white/[0.08]" />
           <div className="w-3.5 h-3.5 text-slate-400"><Ic.Camera /></div>
-          <span className="text-[13px] font-semibold text-white">{selectedAccount.name}</span>
+          <div className="flex flex-col">
+            <span className="text-[13px] font-semibold text-white leading-tight">{selectedAccount.name}</span>
+            {selectedAccount.subtitle && (
+              <span className="text-[10px] text-slate-500 leading-tight">{selectedAccount.subtitle}</span>
+            )}
+          </div>
           <span className="text-[10px] text-slate-600">
             {cameras.length} camera{cameras.length !== 1 ? 's' : ''}
           </span>
@@ -717,7 +689,7 @@ export default function CamerasPage() {
                     {/* pointer-events-none so hover actions and double-click on the tile work */}
                     <div className="absolute inset-0 pointer-events-none">
                       <SmartVideoPlayer
-                        accountId={selectedAccount.id}
+                        accountId={selectedAccount.accountId}
                         cameraId={key}
                         source={cam.source}
                         streamType="preview"
@@ -798,7 +770,10 @@ export default function CamerasPage() {
           <div className="w-px h-4 bg-white/[0.08]" />
           <div className="w-3.5 h-3.5 text-slate-400"><Ic.Camera /></div>
           <span className="text-[13px] font-semibold text-white">{selectedCamera.name}</span>
-          <span className="text-[10px] text-slate-600">{selectedAccount.name}</span>
+          <span className="text-[10px] text-slate-500">{selectedAccount.name}</span>
+          {selectedAccount.subtitle && (
+            <span className="text-[10px] text-slate-600">· {selectedAccount.subtitle}</span>
+          )}
           <div className="ml-auto flex items-center gap-1.5">
             <span className={`block w-1.5 h-1.5 rounded-full ${selectedCamera.is_monitored ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
             <span className="text-[10px] text-slate-600">{selectedCamera.is_monitored ? 'Monitored' : 'Offline'}</span>
@@ -811,7 +786,7 @@ export default function CamerasPage() {
             {/* Player — 60% */}
             <div className="bg-black relative" style={{ height: '60%' }}>
               <SmartVideoPlayer
-                accountId={selectedAccount.id}
+                accountId={selectedAccount.accountId}
                 cameraId={key}
                 source={selectedCamera.source}
                 streamType="preview"
