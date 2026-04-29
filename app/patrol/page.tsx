@@ -9,7 +9,8 @@
 import React, { useState, useEffect } from 'react';
 import { useUser } from '@clerk/nextjs';
 import { createClient } from '@supabase/supabase-js';
-import SmartVideoPlayer from '@/components/SmartVideoPlayer';
+import SmartVideoPlayer  from '@/components/SmartVideoPlayer';
+import CommunicationHub  from '@/components/CommunicationHub';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -404,7 +405,7 @@ export default function PatrolPage() {
   const [alarmError,   setAlarmError]   = useState<string | null>(null);
 
   // Right panel tab
-  const [rightTab, setRightTab] = useState<'checklist' | 'site-brief' | 'contacts'>('checklist');
+  const [rightTab, setRightTab] = useState<'checklist' | 'site-brief' | 'contacts' | 'comms'>('checklist');
 
   // Gates currently needing service — derived after allGates state is declared
   const gatesNeedingService = allGates.filter(g => g.status === 'needs_service');
@@ -846,6 +847,7 @@ export default function PatrolPage() {
                     { key: 'checklist',  label: 'Checklist' },
                     { key: 'site-brief', label: 'Site Brief' },
                     { key: 'contacts',   label: `Contacts${currentSite.contacts.length ? ` (${currentSite.contacts.length})` : ''}` },
+                    { key: 'comms',      label: '📞 Comms' },
                   ] as const).map(tab => (
                     <button
                       key={tab.key}
@@ -1203,6 +1205,18 @@ export default function PatrolPage() {
                         </div>
                       ))
                     )}
+                  </div>
+                )}
+
+                {/* ── COMMS TAB ── */}
+                {rightTab === 'comms' && currentSite && (
+                  <div className="flex-1 overflow-y-auto">
+                    <CommunicationHub
+                      siteName={currentSite.name}
+                      siteContactPhone={currentSite.contacts[0]?.phone ?? null}
+                      siteContactEmail={currentSite.contacts[0]?.email ?? null}
+                      operatorName={operatorName}
+                    />
                   </div>
                 )}
               </div>

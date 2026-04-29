@@ -15,7 +15,8 @@ import React, {
 } from 'react';
 import { useUser } from '@clerk/nextjs';
 import { createClient } from '@supabase/supabase-js';
-import SmartVideoPlayer from '@/components/SmartVideoPlayer';
+import SmartVideoPlayer   from '@/components/SmartVideoPlayer';
+import CommunicationHub   from '@/components/CommunicationHub';
 
 // ─── Supabase client ─────────────────────────────────────────────────────────
 const supabase = createClient(
@@ -27,7 +28,7 @@ const supabase = createClient(
 type Priority = 'P1' | 'P2' | 'P3' | 'P4';
 type AlarmStatus = 'pending' | 'processing' | 'resolved';
 type ActionTaken = 'authorized' | 'unauthorized' | 'false_alarm' | 'police_dispatched' | 'emergency_services_on_site' | 'property_violation' | 'gate_service_needed' | 'door_service_needed' | 'other' | '';
-type TabName = 'cameras' | 'history' | 'scripts' | 'notes';
+type TabName = 'cameras' | 'history' | 'scripts' | 'notes' | 'comms';
 
 interface TriageResult {
   decision:        'auto_dismiss' | 'route_to_human' | 'escalate' | string;
@@ -324,6 +325,10 @@ export default function AlarmsPage() {
   const [notes, setNotes]             = useState('');
   const [activeCameraId, setActiveCameraId] = useState<string | null>(null);
 
+  // Site contact for CommunicationHub — loaded when alarm is processed
+  const [siteContactPhone, setSiteContactPhone] = useState<string | null>(null);
+  const [siteContactEmail, setSiteContactEmail] = useState<string | null>(null);
+
   // Video panel state
   // preAlarmUrl: undefined = fetching, null = no clip found, string = URL ready
   const [preAlarmUrl, setPreAlarmUrl]         = useState<string | null | undefined>(undefined);
@@ -434,6 +439,25 @@ export default function AlarmsPage() {
 
     const accountId = alarm.account_id ?? alarm.zones?.account_id;
     const zoneId    = alarm.zone_id;
+
+    // Reset + load site contact for CommunicationHub
+    setSiteContactPhone(null);
+    setSiteContactEmail(null);
+    if (accountId) {
+      supabase
+        .from('zone_contacts')
+        .select('phone, email')
+        .eq('account_id', accountId)
+        .order('priority', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+        .then(({ data: contact }) => {
+          if (contact) {
+            setSiteContactPhone(contact.phone ?? null);
+            setSiteContactEmail(contact.email ?? null);
+          }
+        });
+    }
 
     // Set initial live camera
     const camId = alarm.cameras?.brivo_camera_id ?? alarm.cameras?.een_camera_id ?? null;
@@ -1213,17 +1237,19 @@ export default function AlarmsPage() {
             <div className="flex-1 flex flex-col min-h-0">
               {/* Tab bar */}
               <div className="flex border-b border-white/[0.06] px-2 pt-1 gap-1 items-end">
-                {(['cameras', 'history', 'scripts', 'notes'] as const).map((tab) => (
+                {(['cameras', 'history', 'scripts', 'notes', 'comms'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
                     className={`px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider rounded-t transition-all ${
                       activeTab === tab
-                        ? 'text-white border-b-2 border-indigo-500'
+                        ? tab === 'comms'
+                          ? 'text-white border-b-2 border-violet-500'
+                          : 'text-white border-b-2 border-indigo-500'
                         : 'text-slate-500 hover:text-slate-300'
                     }`}
                   >
-                    {tab === 'cameras' ? `Cameras (${siteCameras.length})` : tab === 'history' ? 'History' : tab === 'scripts' ? 'Scripts' : 'Notes'}
+                    {tab === 'cameras' ? `Cameras (${siteCameras.length})` : tab === 'history' ? 'History' : tab === 'scripts' ? 'Scripts' : tab === 'notes' ? 'Notes' : '📞 Comms'}
                   </button>
                 ))}
                 {/* Grid/List toggle — only visible on cameras tab */}
@@ -1400,6 +1426,19 @@ export default function AlarmsPage() {
                     onChange={e => setNotes(e.target.value)}
                     placeholder="Add operator notes..."
                     className="w-full h-full min-h-[120px] bg-white/[0.02] border border-white/[0.06] rounded px-3 py-2 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500/50"
+                  />
+                )}
+
+                {/* Communications Hub */}
+                {activeTab === 'comms' && activeAlarm && (
+                  <CommunicationHub
+                    alarmId={activeAlarm.id}
+                    siteName={activeAlarm.site_name}
+                    siteContactPhone={siteContactPhone}
+                    siteContactEmail={siteContactEmail}
+                    operatorId={operatorId}
+                    operatorName={operatorName}
+                    priority={activeAlarm.priority}
                   />
                 )}
               </div>
