@@ -241,14 +241,18 @@ export default function ReportsPage() {
   const fetchGates = useCallback(async () => {
     setGatesLoading(true);
     try {
-      const { data: gateRows } = await supabase
-        .from('gates')
-        .select('*, accounts(name)')
-        .order('status')
-        .order('name');
+      // Two-step: fetch gates + accounts separately to avoid FK join dependency
+      const [{ data: gateRows, error: gateErr }, { data: accountRows }] = await Promise.all([
+        supabase.from('gates').select('*').order('status').order('name'),
+        supabase.from('accounts').select('id, name').order('name'),
+      ]);
+      if (gateErr) console.error('fetchGates error:', gateErr);
+      const accountMap: Record<string, string> = Object.fromEntries(
+        (accountRows ?? []).map((a: any) => [a.id, a.name])
+      );
       const mapped: GateRecord[] = (gateRows ?? []).map((g: any) => ({
         ...g,
-        site_name: g.accounts?.name ?? g.account_id,
+        site_name: accountMap[g.account_id] ?? g.account_id,
       }));
       setGates(mapped);
     } finally {

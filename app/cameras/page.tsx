@@ -535,11 +535,10 @@ export default function CamerasPage() {
         details:     JSON.stringify({ priority: alarmPriority, reason: alarmReason, notes: alarmNotes }),
         created_at:  new Date().toISOString(),
       });
-      setAlarmRaised(true);
+      setAlarmRaised(true);    // persists until page refresh — user sees confirmation
       setRaiseAlarmOpen(false);
       setAlarmReason('');
       setAlarmNotes('');
-      setTimeout(() => setAlarmRaised(false), 6000);
     } catch (err: any) {
       console.error('[raiseAlarm]', err.message);
     } finally {
@@ -969,11 +968,17 @@ export default function CamerasPage() {
             {/* ── Raise Alarm ── */}
             <div className="px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
               <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Raise Alarm</span>
-              {alarmRaised && (
-                <span className="text-[9px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">✓ Alarm raised</span>
-              )}
             </div>
             <div className="px-4 py-3 border-b border-white/[0.06] flex flex-col gap-2.5">
+              {/* Persistent confirmation — clears on page refresh */}
+              {alarmRaised && (
+                <div className="flex items-center gap-2 py-2 px-3 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px] font-semibold">
+                  <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="m4.5 12.75 6 6 9-13.5" />
+                  </svg>
+                  Alarm raised — dispatching to queue
+                </div>
+              )}
               {!raiseAlarmOpen ? (
                 <button
                   onClick={() => setRaiseAlarmOpen(true)}
@@ -982,29 +987,11 @@ export default function CamerasPage() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-3.5 h-3.5">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
                   </svg>
-                  Raise Alarm
+                  {alarmRaised ? 'Raise Another Alarm' : 'Raise Alarm'}
                 </button>
               ) : (
                 <div className="flex flex-col gap-2">
-                  {/* Priority */}
-                  <div className="grid grid-cols-3 gap-1">
-                    {(['P1','P2','P3'] as const).map(p => (
-                      <button
-                        key={p}
-                        onClick={() => setAlarmPriority(p)}
-                        className={`py-1.5 rounded border text-[10px] font-semibold transition-all ${
-                          alarmPriority === p
-                            ? p === 'P1' ? 'bg-red-600/30 border-red-500/50 text-red-300'
-                              : p === 'P2' ? 'bg-amber-600/30 border-amber-500/50 text-amber-300'
-                              : 'bg-slate-600/30 border-slate-500/50 text-slate-300'
-                            : 'bg-white/[0.03] border-white/[0.06] text-slate-600 hover:text-slate-400'
-                        }`}
-                      >
-                        {p}
-                      </button>
-                    ))}
-                  </div>
-                  {/* Reason */}
+                  {/* Reason — pick first; priority auto-fills below */}
                   <select
                     value={alarmReason}
                     onChange={e => {
@@ -1037,6 +1024,32 @@ export default function CamerasPage() {
                       <option value="Other">Other</option>
                     </optgroup>
                   </select>
+                  {/* Priority — auto-filled from reason, click to override */}
+                  <div>
+                    <p className="text-[9px] text-slate-600 mb-1 uppercase tracking-wider">
+                      Priority
+                      {alarmReason && REASON_PRIORITY[alarmReason] && alarmPriority !== REASON_PRIORITY[alarmReason] && (
+                        <span className="ml-1.5 text-amber-500">· overridden</span>
+                      )}
+                    </p>
+                    <div className="grid grid-cols-3 gap-1">
+                      {(['P1','P2','P3'] as const).map(p => (
+                        <button
+                          key={p}
+                          onClick={() => setAlarmPriority(p)}
+                          className={`py-1.5 rounded border text-[10px] font-semibold transition-all ${
+                            alarmPriority === p
+                              ? p === 'P1' ? 'bg-red-600/30 border-red-500/50 text-red-300'
+                                : p === 'P2' ? 'bg-amber-600/30 border-amber-500/50 text-amber-300'
+                                : 'bg-slate-600/30 border-slate-500/50 text-slate-300'
+                              : 'bg-white/[0.03] border-white/[0.06] text-slate-600 hover:text-slate-400'
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   {/* Notes */}
                   <textarea
                     value={alarmNotes}

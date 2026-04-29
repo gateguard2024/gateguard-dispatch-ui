@@ -341,15 +341,28 @@ export default function DashboardPage() {
   }, []);
 
   const loadGates = useCallback(async () => {
-    const { data } = await supabase
-      .from('gates')
-      .select('id, name, gate_type, status, status_updated_at, status_updated_by, accounts(name)')
-      .order('status', { ascending: false });  // needs_service sorts before operational
-    const rows = (data ?? []) as unknown as GateStatusRow[];
+    // Two-step: avoid FK join dependency on gates.account_id → accounts.id
+    const [{ data: gateData, error }, { data: accountData }] = await Promise.all([
+      supabase.from('gates').select('id, name, gate_type, status, status_updated_at, status_updated_by, account_id').order('name'),
+      supabase.from('accounts').select('id, name').order('name'),
+    ]);
+    if (error) {
+      // gates table may not exist yet — show empty state gracefully
+      setGateStats({ total: 0, operational: 0, needsService: [] });
+      return;
+    }
+    const accountMap: Record<string, string> = Object.fromEntries(
+      (accountData ?? []).map((a: any) => [a.id, a.name])
+    );
+    const rows = (gateData ?? []).map((g: any) => ({
+      ...g,
+      accounts: accountMap[g.account_id] ? { name: accountMap[g.account_id] } : null,
+    })) as unknown as GateStatusRow[];
+    const needsService = rows.filter(g => g.status === 'needs_service');
     setGateStats({
       total:        rows.length,
       operational:  rows.filter(g => g.status === 'operational').length,
-      needsService: rows.filter(g => g.status === 'needs_service'),
+      needsService,
     });
   }, []);
 
@@ -405,7 +418,7 @@ export default function DashboardPage() {
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
 
         {/* ── KPI Row ── */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           <KpiCard
             label="Open Alarms"
             value={kpis?.openAlarms ?? 0}
@@ -436,53 +449,93 @@ export default function DashboardPage() {
             value={kpis?.camerasMonitored ?? 0}
             sub="Monitored"
           />
-          <KpiCard
-            label="Gates — Operational"
-            value={gateStats ? `${gateStats.operational} / ${gateStats.total}` : '—'}
-            accent={gateStats && gateStats.needsService.length > 0 ? 'text-amber-400' : 'text-emerald-400'}
-            pulse={gateStats ? gateStats.needsService.length > 0 : false}
-            sub={gateStats && gateStats.needsService.length > 0
-              ? `${gateStats.needsService.length} need${gateStats.needsService.length === 1 ? 's' : ''} service`
-              : gateStats ? 'All operational' : 'Loading…'}
-          />
         </div>
 
-        {/* ── Gates Needing Service banner ── */}
-        {gateStats && gateStats.needsService.length > 0 && (
-          <div className="rounded border border-amber-500/25 bg-amber-500/[0.04] px-4 py-3">
-            <div className="flex items-center gap-2 mb-2.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
-              <p className="text-[9px] font-bold text-amber-400 uppercase tracking-widest">
-                Gates Needing Service — {gateStats.needsService.length} gate{gateStats.needsService.length !== 1 ? 's' : ''}
-              </p>
-              <a
-                href="/reports"
-                className="ml-auto text-[9px] text-amber-500 hover:text-amber-300 font-semibold border border-amber-500/30 hover:border-amber-400/50 rounded px-2 py-0.5 transition-colors"
-              >
-                Manage in Reports →
-              </a>
+        {/* ── Gate Status Panel ── */}
+        <div className={`rounded border px-4 py-3.5 ${
+          gateStats && gateStats.needsService.length > 0
+            ? 'border-amber-500/25 bg-amber-500/[0.03]'
+            : 'border-white/[0.06] bg-white/[0.02]'
+        }`}>
+          {/* Panel header */}
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Gate Status</p>
+              {gateStats && gateStats.total > 0 && (
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] font-semibold text-emerald-400">
+                    {gateStats.operational} operational
+                  </span>
+                  {gateStats.needsService.length > 0 && (
+                    <>
+                      <span className="text-slate-700">·</span>
+                      <span className="flex items-center gap-1 text-[10px] font-bold text-amber-400">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                        {gateStats.needsService.length} need{gateStats.needsService.length === 1 ? 's' : ''} service
+                      </span>
+                    </>
+                  )}
+                  <span className="text-slate-700">·</span>
+                  <span className="text-[10px] text-slate-600">{gateStats.total} total</span>
+                </div>
+              )}
             </div>
+            <a
+              href="/reports"
+              className="text-[9px] text-slate-600 hover:text-indigo-400 font-semibold border border-white/[0.06] hover:border-indigo-500/30 rounded px-2.5 py-1 transition-colors"
+            >
+              Manage in Reports →
+            </a>
+          </div>
+
+          {/* Content */}
+          {!gateStats || gateStats.total === 0 ? (
+            <p className="text-[10px] text-slate-700 py-1">
+              {!gateStats ? 'Loading…' : 'No gates configured — add gates in Setup → select zone → Gates tab'}
+            </p>
+          ) : gateStats.needsService.length === 0 ? (
+            /* All clear state */
+            <div className="flex items-center gap-2.5 py-1">
+              <div className="w-5 h-5 rounded-full bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center shrink-0">
+                <svg className="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="m4.5 12.75 6 6 9-13.5" />
+                </svg>
+              </div>
+              <p className="text-[11px] text-emerald-400 font-semibold">All {gateStats.total} gates operational</p>
+            </div>
+          ) : (
+            /* Needs service list */
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
               {gateStats.needsService.map(g => (
-                <div key={g.id} className="flex items-center gap-2.5 px-3 py-2 rounded border border-amber-500/20 bg-amber-500/[0.06]">
-                  <span className="text-amber-400 text-sm shrink-0">⚠</span>
+                <div key={g.id} className="flex items-start gap-2.5 px-3 py-2.5 rounded border border-amber-500/20 bg-amber-500/[0.05]">
+                  <span className="text-amber-400 text-[13px] leading-none mt-0.5 shrink-0">⚠</span>
                   <div className="min-w-0 flex-1">
                     <p className="text-[11px] font-semibold text-white truncate">{g.name}</p>
-                    <p className="text-[9px] text-slate-500 truncate">
+                    <p className="text-[9px] text-slate-500 truncate mt-0.5">
                       {(g.accounts as any)?.name ?? 'Unknown site'}
                       {g.gate_type ? ` · ${g.gate_type}` : ''}
                     </p>
+                    {g.status_updated_by && (
+                      <p className="text-[8px] text-slate-600 mt-0.5">
+                        Flagged by {g.status_updated_by.split(' ')[0]}
+                        {g.status_updated_at ? ` · ${fmtAgo(g.status_updated_at)}` : ''}
+                      </p>
+                    )}
                   </div>
-                  {g.status_updated_by && (
-                    <p className="text-[8px] text-slate-600 shrink-0 text-right">
-                      by {g.status_updated_by.split(' ')[0]}
-                    </p>
-                  )}
                 </div>
               ))}
+              {/* Filler card showing operational count */}
+              <div className="flex items-center gap-2.5 px-3 py-2.5 rounded border border-emerald-500/15 bg-emerald-500/[0.03]">
+                <svg className="w-3.5 h-3.5 text-emerald-500/60 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m4.5 12.75 6 6 9-13.5" />
+                </svg>
+                <p className="text-[10px] text-emerald-600 font-medium">
+                  {gateStats.operational} gate{gateStats.operational !== 1 ? 's' : ''} operational
+                </p>
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* ── Middle row: trend + SLA ── */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

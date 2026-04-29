@@ -302,16 +302,21 @@ export default function PatrolPage() {
       zone_id:     currentSite.zone_id,
       account_id:  currentSite.id,
       source:      'patrol',
+      status:      'pending',
       operator_id: operatorId,
       notes:       alarmNotes || null,
+      created_at:  new Date().toISOString(),
     });
     setAlarmRaising(false);
-    if (!error) {
-      setAlarmRaised(true);
+    if (error) {
+      setAlarmError(error.message);
+    } else {
+      setAlarmRaised(true);   // persists until page refresh
+      setAlarmOpen(false);
       setAlarmReason('');
       setAlarmNotes('');
       setAlarmPri('P2');
-      setTimeout(() => { setAlarmRaised(false); setAlarmOpen(false); }, 2500);
+      setAlarmError(null);
     }
   }
   async function submitPatrol() {
@@ -385,6 +390,7 @@ export default function PatrolPage() {
   const [alarmNotes,   setAlarmNotes]   = useState('');
   const [alarmRaising, setAlarmRaising] = useState(false);
   const [alarmRaised,  setAlarmRaised]  = useState(false);
+  const [alarmError,   setAlarmError]   = useState<string | null>(null);
 
   // Right panel tab
   const [rightTab, setRightTab] = useState<'checklist' | 'site-brief' | 'contacts'>('checklist');
@@ -872,31 +878,16 @@ export default function PatrolPage() {
                     <div className="p-3 border-t border-white/[0.06] space-y-2">
                       {/* ── Raise Alarm ── */}
                       {alarmRaised ? (
-                        <div className="flex items-center justify-center gap-2 py-2 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px] font-semibold">
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        /* Persistent success — clears on page refresh */
+                        <div className="flex items-center justify-center gap-2 py-2.5 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px] font-semibold">
+                          <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="m4.5 12.75 6 6 9-13.5" />
                           </svg>
-                          Alarm raised — dispatching
+                          Alarm raised — dispatching to queue
                         </div>
                       ) : alarmOpen ? (
                         <div className="space-y-1.5 p-2 rounded border border-red-500/20 bg-red-500/[0.05]">
-                          {/* Priority pills */}
-                          <div className="grid grid-cols-3 gap-1">
-                            {(['P1','P2','P3'] as const).map(p => (
-                              <button
-                                key={p}
-                                onClick={() => setAlarmPri(p)}
-                                className={`py-1 rounded border text-[9px] font-semibold transition-all ${
-                                  alarmPri === p
-                                    ? p === 'P1' ? 'bg-red-600/30 border-red-500/50 text-red-300'
-                                      : p === 'P2' ? 'bg-amber-600/30 border-amber-500/50 text-amber-300'
-                                      : 'bg-slate-600/30 border-slate-500/50 text-slate-300'
-                                    : 'bg-white/[0.03] border-white/[0.06] text-slate-600 hover:text-slate-400'
-                                }`}
-                              >{p}</button>
-                            ))}
-                          </div>
-                          {/* Reason */}
+                          {/* Reason first — priority auto-fills below */}
                           <select
                             value={alarmReason}
                             onChange={e => {
@@ -929,6 +920,30 @@ export default function PatrolPage() {
                               <option>Other</option>
                             </optgroup>
                           </select>
+                          {/* Priority — auto-set from reason, tap to override */}
+                          <div>
+                            <p className="text-[8px] text-slate-600 mb-1 uppercase tracking-wider">
+                              Priority
+                              {alarmReason && REASON_PRIORITY[alarmReason] && alarmPri !== REASON_PRIORITY[alarmReason] && (
+                                <span className="ml-1.5 text-amber-500">· overridden</span>
+                              )}
+                            </p>
+                            <div className="grid grid-cols-3 gap-1">
+                              {(['P1','P2','P3'] as const).map(p => (
+                                <button
+                                  key={p}
+                                  onClick={() => setAlarmPri(p)}
+                                  className={`py-1 rounded border text-[9px] font-semibold transition-all ${
+                                    alarmPri === p
+                                      ? p === 'P1' ? 'bg-red-600/30 border-red-500/50 text-red-300'
+                                        : p === 'P2' ? 'bg-amber-600/30 border-amber-500/50 text-amber-300'
+                                        : 'bg-slate-600/30 border-slate-500/50 text-slate-300'
+                                      : 'bg-white/[0.03] border-white/[0.06] text-slate-600 hover:text-slate-400'
+                                  }`}
+                                >{p}</button>
+                              ))}
+                            </div>
+                          </div>
                           {/* Notes */}
                           <textarea
                             value={alarmNotes}
@@ -937,6 +952,9 @@ export default function PatrolPage() {
                             rows={2}
                             className="w-full bg-white/[0.03] border border-white/[0.06] rounded px-2 py-1.5 text-[10px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-red-500/40"
                           />
+                          {alarmError && (
+                            <p className="text-[9px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1">✗ {alarmError}</p>
+                          )}
                           <div className="flex gap-1.5">
                             <button
                               onClick={raisePatrolAlarm}
@@ -946,7 +964,7 @@ export default function PatrolPage() {
                               {alarmRaising ? 'Raising…' : 'Confirm Alarm'}
                             </button>
                             <button
-                              onClick={() => { setAlarmOpen(false); setAlarmReason(''); setAlarmNotes(''); setAlarmPri('P2'); }}
+                              onClick={() => { setAlarmOpen(false); setAlarmReason(''); setAlarmNotes(''); setAlarmPri('P2'); setAlarmError(null); }}
                               className="px-3 py-1.5 rounded border border-white/[0.08] text-slate-500 text-[10px] hover:text-slate-300 transition-colors"
                             >
                               Cancel
@@ -955,7 +973,7 @@ export default function PatrolPage() {
                         </div>
                       ) : (
                         <button
-                          onClick={() => setAlarmOpen(true)}
+                          onClick={() => { setAlarmOpen(true); setAlarmError(null); }}
                           className="w-full flex items-center justify-center gap-1.5 py-2 rounded border border-red-500/30 bg-red-500/[0.07] hover:bg-red-500/[0.14] text-red-400 text-[10px] font-semibold uppercase tracking-wider transition-all"
                         >
                           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
