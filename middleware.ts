@@ -10,6 +10,8 @@
 //   /api/webhooks — EEN/Brivo webhooks (external callers)
 //   /api/ai/triage — Called by cron
 //   /api/brivo    — Brivo API routes
+//   /api/comms/voice-connect  — Twilio TwiML App webhook (no Clerk session)
+//   /api/comms/voice-fallback — Twilio post-dial callback (no Clerk session)
 //
 // Role-based route access:
 //   agent      → /dashboard, /alarms, /cameras, /reports  (no Setup)
@@ -27,6 +29,9 @@ const isPublicRoute = createRouteMatcher([
   '/api/webhooks(.*)',
   '/api/ai/triage(.*)',
   '/api/brivo(.*)',
+  // Twilio's servers call these with no Clerk session — must be public
+  '/api/comms/voice-connect(.*)',
+  '/api/comms/voice-fallback(.*)',
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
