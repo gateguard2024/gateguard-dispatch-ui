@@ -77,8 +77,6 @@ export default function CommsPage() {
 
   // ── Dialer ──────────────────────────────────────────────────────────────────
   const [phoneInput,  setPhoneInput]  = useState('');
-  const [calling,     setCalling]     = useState(false);
-  const [callResult,  setCallResult]  = useState<{ ok: boolean; msg: string } | null>(null);
   const [dialerModal, setDialerModal] = useState<DialerTarget | null>(null);
 
   // ── Email ───────────────────────────────────────────────────────────────────
@@ -177,26 +175,13 @@ export default function CommsPage() {
     if (c.email) setEmailTo(c.email);
   }
 
-  // ── Dial ────────────────────────────────────────────────────────────────────
-  async function handleCall() {
+  // ── Dial — opens the WebRTC browser phone modal ─────────────────────────────
+  function handleCall() {
     if (!phoneInput.trim()) return;
-    setCalling(true);
-    setCallResult(null);
-    const res = await fetch('/api/comms/call', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        toNumber:     phoneInput.trim(),
-        siteName:     selectedSite?.name ?? '',
-        operatorId,
-        operatorName,
-      }),
+    setDialerModal({
+      phone:    phoneInput.trim(),
+      siteName: selectedSite?.name,
     });
-    const json = await res.json();
-    setCalling(false);
-    setCallResult(res.ok
-      ? { ok: true,  msg: 'Call initiated — GateGuard 844 will ring the contact shortly.' }
-      : { ok: false, msg: json.error ?? 'Call failed' });
   }
 
   // ── Email ────────────────────────────────────────────────────────────────────
@@ -378,52 +363,32 @@ export default function CommsPage() {
 
               <div>
                 <label className="block text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                  Phone Number
+                  Phone Number — 10 digits or +1…
                 </label>
                 <input
                   type="tel"
                   value={phoneInput}
                   onChange={e => setPhoneInput(e.target.value)}
-                  placeholder="+1 555 000 0000"
-                  className="w-full bg-[#0a0c10] border border-white/[0.12] rounded-lg px-3 py-2.5 text-[13px] font-mono text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500/50"
+                  onKeyDown={e => e.key === 'Enter' && handleCall()}
+                  placeholder="8005551234 or +18005551234"
+                  className="w-full bg-[#0a0c10] border border-white/[0.12] rounded-lg px-3 py-2.5 text-[14px] font-mono text-white placeholder-slate-700 focus:outline-none focus:border-emerald-500/50 tracking-wider"
                 />
                 <p className="text-[8px] text-slate-600 mt-1">
-                  Caller ID displayed: <span className="text-slate-400 font-mono">GateGuard 844</span>
+                  Caller ID: <span className="text-slate-400 font-mono">GateGuard 844</span>
+                  {' · '}Callback: <span className="text-slate-400 font-mono">844-469-4283 x900</span>
                 </p>
               </div>
 
-              {callResult && (
-                <div className={`rounded-lg px-3 py-2.5 text-[10px] leading-relaxed border ${
-                  callResult.ok
-                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                    : 'bg-red-500/10 border-red-500/30 text-red-300'
-                }`}>
-                  {callResult.msg}
-                </div>
-              )}
-
               <button
                 onClick={handleCall}
-                disabled={calling || !phoneInput.trim()}
+                disabled={!phoneInput.trim()}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600/90 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-[11px] font-bold text-white transition-all"
               >
-                {calling ? (
-                  <>
-                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                    </svg>
-                    Connecting…
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                        d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z"/>
-                    </svg>
-                    Call via GateGuard
-                  </>
-                )}
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z"/>
+                </svg>
+                Open Dialer
               </button>
 
               {/* Recent contacts quick-dial */}
@@ -438,10 +403,10 @@ export default function CommsPage() {
                           <p className="text-[9px] text-slate-500 font-mono">{c.phone}</p>
                         </div>
                         <button
-                          onClick={() => { setPhoneInput(c.phone!); setCallResult(null); }}
-                          className="text-[9px] font-bold text-indigo-400 hover:text-indigo-300 transition-colors"
+                          onClick={() => setDialerModal({ phone: c.phone!, name: c.name, siteName: selectedSite?.name })}
+                          className="text-[9px] font-bold text-emerald-400 hover:text-emerald-300 transition-colors"
                         >
-                          Use
+                          Call
                         </button>
                       </div>
                     ))}
@@ -457,7 +422,7 @@ export default function CommsPage() {
               <div>
                 <h2 className="text-[13px] font-bold text-white mb-1">Send Email</h2>
                 <p className="text-[10px] text-slate-500">
-                  Emails send from <span className="font-mono text-slate-400">soc@gateguard.co</span>. Choose a template or write a custom message.
+                  Emails send from <span className="font-mono text-slate-400">soc@ggsoc.com</span>. Choose a template or write a custom message.
                 </p>
               </div>
 
