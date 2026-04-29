@@ -18,6 +18,22 @@ interface KpiData {
   resolutionRate:   number | null;
 }
 
+interface GateStatusRow {
+  id:               string;
+  name:             string;
+  gate_type:        string;
+  status:           string;
+  status_updated_at: string | null;
+  status_updated_by: string | null;
+  accounts?: { name: string } | null;
+}
+
+interface GateStats {
+  operational:  number;
+  total:        number;
+  needsService: GateStatusRow[];
+}
+
 interface SlaRow   { label: string; pct: number; color: string; }
 interface HourPt   { hour: string; current: number; previous: number; }
 interface OperatorRow { name: string; count: number; }
@@ -199,6 +215,7 @@ export default function DashboardPage() {
   const [loading,   setLoading]   = useState(true);
   const [liveOn,    setLiveOn]    = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
+  const [gateStats, setGateStats] = useState<GateStats | null>(null);
 
   const loadKpis = useCallback(async () => {
     const todayStart = new Date();
@@ -323,11 +340,24 @@ export default function DashboardPage() {
     setRecent(data ?? []);
   }, []);
 
+  const loadGates = useCallback(async () => {
+    const { data } = await supabase
+      .from('gates')
+      .select('id, name, gate_type, status, status_updated_at, status_updated_by, accounts(name)')
+      .order('status', { ascending: false });  // needs_service sorts before operational
+    const rows = (data ?? []) as unknown as GateStatusRow[];
+    setGateStats({
+      total:        rows.length,
+      operational:  rows.filter(g => g.status === 'operational').length,
+      needsService: rows.filter(g => g.status === 'needs_service'),
+    });
+  }, []);
+
   const loadAll = useCallback(async () => {
-    await Promise.all([loadKpis(), loadSla(), loadDaily(), loadHour(), loadOperators(), loadRecent()]);
+    await Promise.all([loadKpis(), loadSla(), loadDaily(), loadHour(), loadOperators(), loadRecent(), loadGates()]);
     setLastUpdate(new Date());
     setLoading(false);
-  }, [loadKpis, loadSla, loadDaily, loadHour, loadOperators, loadRecent]);
+  }, [loadKpis, loadSla, loadDaily, loadHour, loadOperators, loadRecent, loadGates]);
 
   useEffect(() => {
     loadAll();
@@ -335,9 +365,10 @@ export default function DashboardPage() {
     const ch = supabase.channel('dashboard')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'alarms' }, () => { loadKpis(); loadHour(); loadRecent(); })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'incident_reports' }, () => { loadSla(); loadOperators(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'gates' }, () => { loadGates(); })
       .subscribe(s => setLiveOn(s === 'SUBSCRIBED'));
     return () => { clearInterval(poll); supabase.removeChannel(ch); };
-  }, [loadAll, loadKpis, loadHour, loadRecent, loadSla, loadOperators]);
+  }, [loadAll, loadKpis, loadHour, loadRecent, loadSla, loadOperators, loadGates]);
 
   if (loading) {
     return (
@@ -374,7 +405,7 @@ export default function DashboardPage() {
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
 
         {/* ── KPI Row ── */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <KpiCard
             label="Open Alarms"
             value={kpis?.openAlarms ?? 0}
@@ -405,7 +436,53 @@ export default function DashboardPage() {
             value={kpis?.camerasMonitored ?? 0}
             sub="Monitored"
           />
+          <KpiCard
+            label="Gates — Operational"
+            value={gateStats ? `${gateStats.operational} / ${gateStats.total}` : '—'}
+            accent={gateStats && gateStats.needsService.length > 0 ? 'text-amber-400' : 'text-emerald-400'}
+            pulse={gateStats ? gateStats.needsService.length > 0 : false}
+            sub={gateStats && gateStats.needsService.length > 0
+              ? `${gateStats.needsService.length} need${gateStats.needsService.length === 1 ? 's' : ''} service`
+              : gateStats ? 'All operational' : 'Loading…'}
+          />
         </div>
+
+        {/* ── Gates Needing Service banner ── */}
+        {gateStats && gateStats.needsService.length > 0 && (
+          <div className="rounded border border-amber-500/25 bg-amber-500/[0.04] px-4 py-3">
+            <div className="flex items-center gap-2 mb-2.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
+              <p className="text-[9px] font-bold text-amber-400 uppercase tracking-widest">
+                Gates Needing Service — {gateStats.needsService.length} gate{gateStats.needsService.length !== 1 ? 's' : ''}
+              </p>
+              <a
+                href="/reports"
+                className="ml-auto text-[9px] text-amber-500 hover:text-amber-300 font-semibold border border-amber-500/30 hover:border-amber-400/50 rounded px-2 py-0.5 transition-colors"
+              >
+                Manage in Reports →
+              </a>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {gateStats.needsService.map(g => (
+                <div key={g.id} className="flex items-center gap-2.5 px-3 py-2 rounded border border-amber-500/20 bg-amber-500/[0.06]">
+                  <span className="text-amber-400 text-sm shrink-0">⚠</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[11px] font-semibold text-white truncate">{g.name}</p>
+                    <p className="text-[9px] text-slate-500 truncate">
+                      {(g.accounts as any)?.name ?? 'Unknown site'}
+                      {g.gate_type ? ` · ${g.gate_type}` : ''}
+                    </p>
+                  </div>
+                  {g.status_updated_by && (
+                    <p className="text-[8px] text-slate-600 shrink-0 text-right">
+                      by {g.status_updated_by.split(' ')[0]}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* ── Middle row: trend + SLA ── */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

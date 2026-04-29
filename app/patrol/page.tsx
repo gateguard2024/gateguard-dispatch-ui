@@ -165,6 +165,7 @@ export default function PatrolPage() {
   // ── History ────────────────────────────────────────────────────────────────
   const [history, setHistory]           = useState<PatrolLog[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [selectedLog, setSelectedLog]   = useState<PatrolLog | null>(null);
 
   // ── Load sites via accounts → zones → cameras ─────────────────────────────
   useEffect(() => {
@@ -504,7 +505,11 @@ export default function PatrolPage() {
               {history.map(h => {
                 const issues = (h.site_results ?? []).filter((r: SiteResult) => r.status === 'issue').length;
                 return (
-                  <div key={h.id} className="px-2 py-1.5 rounded border border-white/[0.04] bg-white/[0.01]">
+                  <div
+                    key={h.id}
+                    onClick={() => setSelectedLog(h)}
+                    className="px-2 py-1.5 rounded border border-white/[0.04] bg-white/[0.01] cursor-pointer hover:bg-white/[0.04] hover:border-indigo-500/20 transition-colors group"
+                  >
                     <div className="flex items-center justify-between gap-1">
                       <span className="text-[9px] font-mono text-slate-400 truncate">{fmtDateTime(h.started_at)}</span>
                       {issues > 0
@@ -514,9 +519,7 @@ export default function PatrolPage() {
                     </div>
                     <div className="flex items-center justify-between mt-0.5">
                       <p className="text-[9px] text-slate-600 truncate">{h.operator_name}</p>
-                      {h.patrol_type && h.patrol_type !== 'scheduled' && (
-                        <span className="text-[8px] font-mono text-slate-600 shrink-0">{h.patrol_type}</span>
-                      )}
+                      <span className="text-[8px] text-slate-700 group-hover:text-indigo-400 shrink-0 transition-colors">View →</span>
                     </div>
                   </div>
                 );
@@ -1154,6 +1157,132 @@ export default function PatrolPage() {
           </>
         )}
       </main>
+
+      {/* ── PATROL LOG DETAIL MODAL ──────────────────────────────────────────── */}
+      {selectedLog && (() => {
+        const log = selectedLog;
+        const issues = (log.site_results ?? []).filter(r => r.status === 'issue');
+        const clears = (log.site_results ?? []).filter(r => r.status === 'clear');
+        const CHECKLIST_LABELS: Record<string, string> = {
+          gates_functional:        'Gates Functional',
+          no_unauthorized_persons: 'No Unauthorized Persons',
+          common_areas_clear:      'Common Areas Clear',
+          no_loitering:            'No Loitering',
+          no_dumping:              'No Dumping / Trash',
+        };
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+            onClick={() => setSelectedLog(null)}
+          >
+            <div
+              className="relative w-full max-w-2xl max-h-[85vh] flex flex-col rounded-xl border border-white/[0.08] bg-[#0c0e14] shadow-2xl overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Modal header */}
+              <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-white/[0.06] shrink-0">
+                <div>
+                  <p className="text-[10px] font-semibold text-indigo-400 uppercase tracking-widest mb-0.5">Patrol Log</p>
+                  <p className="text-[14px] font-bold text-white">{fmtDateTime(log.started_at)}</p>
+                  <p className="text-[10px] text-slate-500 mt-0.5">
+                    {log.operator_name}
+                    {log.patrol_type && log.patrol_type !== 'scheduled' && ` · ${log.patrol_type}`}
+                    {log.completed_at && ` · completed ${fmtTime(log.completed_at)}`}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  {issues.length > 0 && (
+                    <a
+                      href="/reports"
+                      className="text-[9px] font-semibold text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 rounded px-2.5 py-1.5 transition-colors"
+                    >
+                      View in Reports →
+                    </a>
+                  )}
+                  <button
+                    onClick={() => setSelectedLog(null)}
+                    className="w-7 h-7 flex items-center justify-center rounded border border-white/[0.08] text-slate-500 hover:text-white hover:bg-white/[0.06] transition-all text-[14px]"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              {/* Summary bar */}
+              <div className="flex items-center gap-6 px-5 py-2.5 border-b border-white/[0.04] bg-white/[0.01] shrink-0">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  <span className="text-[10px] text-emerald-400 font-semibold">{clears.length} clear</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                  <span className="text-[10px] text-red-400 font-semibold">{issues.length} issue{issues.length !== 1 ? 's' : ''}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                  <span className="text-[10px] text-slate-500">{(log.site_results ?? []).length} sites</span>
+                </div>
+              </div>
+
+              {/* Site results */}
+              <div className="flex-1 overflow-y-auto divide-y divide-white/[0.04]">
+                {(log.site_results ?? []).map((r, idx) => {
+                  const isIssue = r.status === 'issue';
+                  const checklist = r.checklist ?? {};
+                  const failedItems = Object.entries(checklist)
+                    .filter(([, v]) => !v)
+                    .map(([k]) => CHECKLIST_LABELS[k] ?? k);
+                  return (
+                    <div key={idx} className={`px-5 py-3 ${isIssue ? 'bg-red-500/[0.03]' : ''}`}>
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isIssue ? 'bg-red-400' : 'bg-emerald-400'}`} />
+                        <p className="text-[11px] font-semibold text-white flex-1 truncate">{r.site_name}</p>
+                        <span className={`text-[9px] font-bold uppercase tracking-wider ${isIssue ? 'text-red-400' : 'text-emerald-400'}`}>
+                          {isIssue ? 'Issue Found' : 'All Clear'}
+                        </span>
+                      </div>
+
+                      {/* Failed checklist items */}
+                      {failedItems.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mb-1.5 ml-3.5">
+                          {failedItems.map(item => (
+                            <span key={item} className="text-[8px] px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400">
+                              ✗ {item}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Issue detail */}
+                      {isIssue && r.issue_detail && (
+                        <p className="text-[10px] text-amber-300/80 ml-3.5 mb-1 italic">&quot;{r.issue_detail}&quot;</p>
+                      )}
+
+                      {/* Notes */}
+                      {r.notes && (
+                        <p className="text-[9px] text-slate-500 ml-3.5">Notes: {r.notes}</p>
+                      )}
+
+                      {/* Acknowledged badge */}
+                      {isIssue && (
+                        <div className="ml-3.5 mt-1">
+                          {r.acknowledged
+                            ? <span className="text-[8px] text-emerald-500 font-semibold">✓ Acknowledged</span>
+                            : <span className="text-[8px] text-amber-500 font-semibold">⚠ Pending acknowledgement</span>
+                          }
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {(log.site_results ?? []).length === 0 && (
+                  <p className="text-[10px] text-slate-600 text-center py-10">No site results recorded</p>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
