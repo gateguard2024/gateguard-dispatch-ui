@@ -54,6 +54,12 @@ const NAV_ITEMS = [
     icon: "M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
   },
   {
+    label: "COMMS",
+    path: "/comms",
+    roles: ["admin", "supervisor", "agent"] as UserRole[],
+    icon: "M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z",
+  },
+  {
     label: "SETUP",
     path: "/setup",
     roles: ["admin", "supervisor"] as UserRole[],
@@ -84,7 +90,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
   return (
     <ClerkProvider>
-      <html lang="en" className="h-full bg-[#030406] text-slate-200 antialiased">
+      <html lang="en" className="h-full bg-[#1a1c22] text-slate-200 antialiased">
         <body className={`${inter.className} h-full overflow-hidden flex`}>
 
           {/* SIDEBAR */}
@@ -140,8 +146,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             </div>
           </aside>
 
-          {/* MAIN */}
-          <main className="flex-1 h-full overflow-hidden relative bg-[#030406]">
+          {/* MAIN — dark gray with subtle dot-grid pattern for depth */}
+          <main
+            className="flex-1 h-full overflow-hidden relative"
+            style={{
+              backgroundColor: '#1e2025',
+              backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.045) 1px, transparent 1px)',
+              backgroundSize: '24px 24px',
+            }}
+          >
             {children}
           </main>
 

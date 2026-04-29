@@ -17,6 +17,7 @@ import { useUser } from '@clerk/nextjs';
 import { createClient } from '@supabase/supabase-js';
 import SmartVideoPlayer   from '@/components/SmartVideoPlayer';
 import CommunicationHub   from '@/components/CommunicationHub';
+import DialerModal, { DialerTarget } from '@/components/DialerModal';
 
 // ─── Supabase client ─────────────────────────────────────────────────────────
 const supabase = createClient(
@@ -328,6 +329,9 @@ export default function AlarmsPage() {
   // Site contact for CommunicationHub — loaded when alarm is processed
   const [siteContactPhone, setSiteContactPhone] = useState<string | null>(null);
   const [siteContactEmail, setSiteContactEmail] = useState<string | null>(null);
+
+  // In-app dialer modal
+  const [dialerTarget, setDialerTarget] = useState<DialerTarget | null>(null);
 
   // Video panel state
   // preAlarmUrl: undefined = fetching, null = no clip found, string = URL ready
@@ -1769,12 +1773,13 @@ export default function AlarmsPage() {
                       )}
                     </div>
                     {c.phone && (
-                      <a
-                        href={`tel:${c.phone}`}
-                        className="shrink-0 ml-2 w-7 h-7 flex items-center justify-center rounded border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.08] text-slate-400 hover:text-white transition-all"
+                      <button
+                        onClick={() => setDialerTarget({ phone: c.phone!, name: c.name, siteName: activeAlarm?.site_name, alarmId: activeAlarm?.id })}
+                        className="shrink-0 ml-2 w-7 h-7 flex items-center justify-center rounded border border-white/[0.08] bg-white/[0.03] hover:bg-emerald-500/20 hover:border-emerald-500/40 text-slate-400 hover:text-emerald-300 transition-all"
+                        title="Call via GateGuard"
                       >
                         <div className="w-3.5 h-3.5"><Ic.Phone /></div>
-                      </a>
+                      </button>
                     )}
                   </div>
                 ))}
@@ -1892,6 +1897,16 @@ export default function AlarmsPage() {
 
         </div>
       </aside>
+
+      {/* In-app dialer modal — replaces tel: system phone handoff */}
+      {dialerTarget && (
+        <DialerModal
+          {...dialerTarget}
+          operatorName={operatorName}
+          operatorId={operatorId ?? undefined}
+          onClose={() => setDialerTarget(null)}
+        />
+      )}
     </div>
   );
 }
