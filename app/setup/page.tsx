@@ -1206,6 +1206,29 @@ export default function SetupPage() {
     }
   };
 
+  // ── Re-authenticate EEN for an existing account ──────────────────────────
+  // Used when the token has expired and there's no way to auto-refresh.
+  // Launches the same OAuth flow as the wizard, keyed on the account name.
+  const reAuthEEN = (zone: Zone) => {
+    const account = accounts.find((a) => a.id === zone.account_id);
+    if (!account) { alert("Account not found — try reloading the page."); return; }
+    const clientId = process.env.NEXT_PUBLIC_EEN_CLIENT_ID;
+    if (!clientId) { alert("NEXT_PUBLIC_EEN_CLIENT_ID is not set in Vercel environment variables."); return; }
+    const redirectUri =
+      process.env.NEXT_PUBLIC_EEN_REDIRECT_URI ||
+      "https://gateguard-dispatch-ui.vercel.app/callback";
+    const state = btoa(account.name.trim());
+    const authUrl = [
+      "https://auth.eagleeyenetworks.com/oauth2/authorize",
+      `?client_id=${encodeURIComponent(clientId)}`,
+      `&redirect_uri=${encodeURIComponent(redirectUri)}`,
+      `&response_type=code`,
+      `&scope=vms.all`,
+      `&state=${encodeURIComponent(state)}`,
+    ].join("");
+    window.location.href = authUrl;
+  };
+
   // ── Step 2: Admin launches EEN OAuth — deliberate click, not automatic ───
   const wizLaunchOAuth = () => {
     const clientId = process.env.NEXT_PUBLIC_EEN_CLIENT_ID;
@@ -1886,6 +1909,34 @@ export default function SetupPage() {
                   </p>
                 </div>
               </div>
+
+              {/* ── EEN Connection Status + Re-auth ── */}
+              {(() => {
+                const account = accounts.find((a) => a.id === zone.account_id);
+                const isConnected = !!account?.een_refresh_token;
+                return (
+                  <div className={`flex items-center justify-between px-4 py-3 rounded border ${isConnected ? "bg-emerald-500/5 border-emerald-500/20" : "bg-red-500/5 border-red-500/30"}`}>
+                    <div className="flex items-center gap-3">
+                      <div className={`w-2 h-2 rounded-full shrink-0 ${isConnected ? "bg-emerald-400" : "bg-red-500"}`} />
+                      <div>
+                        <p className="text-sm text-white font-medium">
+                          EEN {isConnected ? "Connected" : "Not Connected"}
+                        </p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {isConnected ? "Camera streams active" : "Re-authenticate to restore camera feeds"}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => reAuthEEN(zone)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-[11px] font-medium transition-all ${isConnected ? "text-slate-400 hover:text-white border border-white/10 hover:border-white/20 hover:bg-white/5" : "text-white bg-red-500/20 border border-red-500/40 hover:bg-red-500/30"}`}
+                    >
+                      <Ic d={I.refresh} className="w-3 h-3" />
+                      Re-authenticate EEN
+                    </button>
+                  </div>
+                );
+              })()}
 
               <div>
                 <div className="flex items-center mb-3">
