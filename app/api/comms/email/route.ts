@@ -10,7 +10,13 @@ import { NextResponse } from 'next/server';
 import { Resend }       from 'resend';
 import { createClient } from '@supabase/supabase-js';
 
-const FROM_EMAIL = 'GateGuard SOC <soc@gateguard.co>';
+// Use verified custom domain if available; fall back to Resend's shared
+// domain so emails keep working while ggsoc.com is being verified.
+// Once resend.com/domains shows ggsoc.com as Verified, remove the fallback.
+const DOMAIN_VERIFIED = process.env.RESEND_DOMAIN_VERIFIED === 'true';
+const FROM_EMAIL = DOMAIN_VERIFIED
+  ? 'GateGuard SOC <soc@ggsoc.com>'
+  : 'GateGuard SOC <onboarding@resend.dev>';
 const OPS_EMAIL  = 'rfeldman@gateguard.co';
 
 // ─── Email templates ──────────────────────────────────────────────────────────

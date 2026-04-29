@@ -495,28 +495,31 @@ export default function DashboardPage() {
             </p>
           ) : gateStats.needsService.length === 0 ? (
             /* All clear state */
-            <div className="flex items-center gap-2.5 py-1">
-              <div className="w-5 h-5 rounded-full bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center shrink-0">
-                <svg className="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="flex items-center gap-3 px-4 py-3.5 rounded border border-emerald-500/15 bg-emerald-500/[0.03]">
+              <div className="w-6 h-6 rounded-full bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center shrink-0">
+                <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="m4.5 12.75 6 6 9-13.5" />
                 </svg>
               </div>
-              <p className="text-[11px] text-emerald-400 font-semibold">All {gateStats.total} gates operational</p>
+              <div>
+                <p className="text-[12px] text-emerald-400 font-semibold">All {gateStats.total} gates operational</p>
+                <p className="text-[9px] text-emerald-600/70 mt-0.5">No service flags — all systems nominal</p>
+              </div>
             </div>
           ) : (
             /* Needs service list */
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
               {gateStats.needsService.map(g => (
-                <div key={g.id} className="flex items-start gap-2.5 px-3 py-2.5 rounded border border-amber-500/20 bg-amber-500/[0.05]">
-                  <span className="text-amber-400 text-[13px] leading-none mt-0.5 shrink-0">⚠</span>
+                <div key={g.id} className="flex items-start gap-3 px-4 py-3.5 rounded border border-amber-500/20 bg-amber-500/[0.05]">
+                  <span className="text-amber-400 text-[16px] leading-none mt-0.5 shrink-0">⚠</span>
                   <div className="min-w-0 flex-1">
-                    <p className="text-[11px] font-semibold text-white truncate">{g.name}</p>
-                    <p className="text-[9px] text-slate-500 truncate mt-0.5">
+                    <p className="text-[12px] font-semibold text-white truncate">{g.name}</p>
+                    <p className="text-[10px] text-slate-500 truncate mt-0.5">
                       {(g.accounts as any)?.name ?? 'Unknown site'}
                       {g.gate_type ? ` · ${g.gate_type}` : ''}
                     </p>
                     {g.status_updated_by && (
-                      <p className="text-[8px] text-slate-600 mt-0.5">
+                      <p className="text-[9px] text-slate-600 mt-1">
                         Flagged by {g.status_updated_by.split(' ')[0]}
                         {g.status_updated_at ? ` · ${fmtAgo(g.status_updated_at)}` : ''}
                       </p>
@@ -525,11 +528,11 @@ export default function DashboardPage() {
                 </div>
               ))}
               {/* Filler card showing operational count */}
-              <div className="flex items-center gap-2.5 px-3 py-2.5 rounded border border-emerald-500/15 bg-emerald-500/[0.03]">
-                <svg className="w-3.5 h-3.5 text-emerald-500/60 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <div className="flex items-center gap-3 px-4 py-3.5 rounded border border-emerald-500/15 bg-emerald-500/[0.03]">
+                <svg className="w-4 h-4 text-emerald-500/60 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m4.5 12.75 6 6 9-13.5" />
                 </svg>
-                <p className="text-[10px] text-emerald-600 font-medium">
+                <p className="text-[11px] text-emerald-600 font-medium">
                   {gateStats.operational} gate{gateStats.operational !== 1 ? 's' : ''} operational
                 </p>
               </div>
