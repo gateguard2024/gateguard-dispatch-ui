@@ -564,7 +564,7 @@ export default function CamerasPage() {
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {accounts.map((account) => (
+              {accounts.map((account, acctIdx) => (
                 <button
                   key={account.id}
                   onClick={() => openAccount(account)}
@@ -584,6 +584,7 @@ export default function CamerasPage() {
                             source="een"
                             streamType="preview"
                             disableFullscreen
+                            startDelay={acctIdx * 200}
                           />
                         </div>
                       );
@@ -694,7 +695,7 @@ export default function CamerasPage() {
                         source={cam.source}
                         streamType="preview"
                         disableFullscreen
-                        startDelay={camIdx * 400}
+                        startDelay={camIdx * 200}
                       />
                     </div>
                     {/* Label */}
