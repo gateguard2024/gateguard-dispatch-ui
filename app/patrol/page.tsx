@@ -243,6 +243,15 @@ export default function PatrolPage() {
     }
   }
 
+  // ── Gate-ack interceptor — show modal if gates need service, else start immediately ──
+  function requestStartPatrol() {
+    if (gatesNeedingService.length > 0) {
+      setGateAckOpen(true);
+    } else {
+      startPatrol();
+    }
+  }
+
   // ── Start patrol ───────────────────────────────────────────────────────────
   function startPatrol() {
     const now = new Date().toISOString();
@@ -399,6 +408,9 @@ export default function PatrolPage() {
 
   // Gates currently needing service — derived after allGates state is declared
   const gatesNeedingService = allGates.filter(g => g.status === 'needs_service');
+
+  // Gate acknowledgment modal — shown before patrol starts if any gates need service
+  const [gateAckOpen, setGateAckOpen] = useState(false);
 
   // Grid columns based on camera count
   function gridCols(n: number) {
@@ -561,7 +573,7 @@ export default function PatrolPage() {
                   </p>
                 </div>
                 <button
-                  onClick={startPatrol}
+                  onClick={requestStartPatrol}
                   disabled={loading || sites.length === 0}
                   className="px-6 py-2.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 text-indigo-300 text-[11px] font-semibold uppercase tracking-wider transition-all"
                 >
@@ -656,7 +668,7 @@ export default function PatrolPage() {
                 )}
 
                 <button
-                  onClick={startPatrol}
+                  onClick={requestStartPatrol}
                   disabled={loading || sites.length === 0}
                   className={`px-8 py-3 rounded-lg font-bold text-[12px] uppercase tracking-wider transition-all disabled:opacity-30 ${
                     patrolDue
@@ -1324,6 +1336,77 @@ export default function PatrolPage() {
           </div>
         );
       })()}
+
+      {/* ── GATE ACKNOWLEDGMENT MODAL ──────────────────────────────────────── */}
+      {gateAckOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-6">
+          <div className="bg-[#0c0e14] border border-amber-500/30 rounded-xl shadow-2xl w-full max-w-md flex flex-col">
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-amber-500/20 flex items-start gap-3">
+              <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0 mt-0.5">
+                <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-[13px] font-bold text-amber-300">
+                  {gatesNeedingService.length} Gate{gatesNeedingService.length > 1 ? 's' : ''} Need Service
+                </p>
+                <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">
+                  You must acknowledge the following known issues before starting your patrol.
+                  Note them in your site checklist if conditions have changed.
+                </p>
+              </div>
+            </div>
+
+            {/* Gate list */}
+            <div className="px-5 py-3 space-y-2 max-h-60 overflow-y-auto">
+              {gatesNeedingService.map(gate => {
+                const site = sites.find(s => s.id === gate.account_id);
+                return (
+                  <div key={gate.id} className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-amber-500/15 bg-amber-500/[0.05]">
+                    <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[11px] font-semibold text-white truncate">{gate.name}</p>
+                      <p className="text-[9px] text-slate-500">
+                        {site?.name ?? gate.account_id} · {gate.gate_type}
+                      </p>
+                    </div>
+                    <span className="text-[8px] font-bold text-amber-400 uppercase tracking-wider shrink-0">⚠ Service Needed</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer note */}
+            <div className="px-5 py-3 border-t border-white/[0.05]">
+              <p className="text-[9px] text-slate-600 leading-relaxed">
+                These gates are flagged in Reports → Gates. Service team follow-up is pending.
+                If a gate has been repaired during your patrol, mark it Operational in Reports after completing.
+              </p>
+            </div>
+
+            {/* Actions */}
+            <div className="px-5 py-4 flex gap-2 border-t border-white/[0.06]">
+              <button
+                onClick={() => {
+                  setGateAckOpen(false);
+                  startPatrol();
+                }}
+                className="flex-1 py-2.5 rounded-lg border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-[11px] font-bold uppercase tracking-wider transition-all"
+              >
+                I Acknowledge — Start Patrol
+              </button>
+              <button
+                onClick={() => setGateAckOpen(false)}
+                className="px-4 py-2.5 rounded-lg border border-white/[0.08] text-slate-500 text-[11px] hover:text-slate-300 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
