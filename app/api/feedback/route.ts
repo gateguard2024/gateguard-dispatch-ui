@@ -4,10 +4,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Lazy — SUPABASE_SERVICE_ROLE_KEY is a runtime secret, not available at build time
+function makeSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+}
 
 // GET  /api/feedback?status=pending&since=7d&limit=50
 export async function GET(req: NextRequest) {
@@ -16,6 +19,7 @@ export async function GET(req: NextRequest) {
   const since   = searchParams.get('since');    // 7d | 30d | all
   const limit   = parseInt(searchParams.get('limit') ?? '100');
 
+  const supabase = makeSupabase();
   let query = supabase
     .from('feature_requests')
     .select('*')
@@ -48,6 +52,7 @@ export async function POST(req: NextRequest) {
   if (!title?.trim())        return NextResponse.json({ error: 'Title is required' }, { status: 400 });
   if (!submittedBy?.trim())  return NextResponse.json({ error: 'submittedBy is required' }, { status: 400 });
 
+  const supabase = makeSupabase();
   const { data, error } = await supabase
     .from('feature_requests')
     .insert({

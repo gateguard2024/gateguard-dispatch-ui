@@ -4,10 +4,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Lazy — SUPABASE_SERVICE_ROLE_KEY is a runtime secret, not available at build time
+function makeSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+}
 
 // PATCH /api/feedback/:id
 // Body: { status?, adminNotes? }
@@ -23,6 +26,7 @@ export async function PATCH(
   if (body.status)     updates.status      = body.status;
   if (body.adminNotes !== undefined) updates.admin_notes = body.adminNotes;
 
+  const supabase = makeSupabase();
   const { data, error } = await supabase
     .from('feature_requests')
     .update(updates)
