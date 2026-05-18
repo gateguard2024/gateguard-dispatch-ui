@@ -51,6 +51,7 @@ interface SiteChecklist {
   common_areas_clear:      boolean;
   no_loitering:            boolean;
   no_dumping:              boolean;
+  cameras_operational:     boolean;
 }
 
 interface SiteResult {
@@ -88,6 +89,7 @@ const CHECKLIST_LABELS: Record<keyof SiteChecklist, string> = {
   common_areas_clear:      'Common areas clear (pool, mailroom, leasing office)',
   no_loitering:            'No loitering near dumpsters or main gate',
   no_dumping:              'No trash / dumping violations visible',
+  cameras_operational:     'Cameras operational / video feed available',
 };
 
 const EMPTY_CHECKLIST: SiteChecklist = {
@@ -96,6 +98,7 @@ const EMPTY_CHECKLIST: SiteChecklist = {
   common_areas_clear:      false,
   no_loitering:            false,
   no_dumping:              false,
+  cameras_operational:     false,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1276,6 +1279,7 @@ export default function PatrolPage() {
           common_areas_clear:      'Common Areas Clear',
           no_loitering:            'No Loitering',
           no_dumping:              'No Dumping / Trash',
+          cameras_operational:     'Cameras Operational',
         };
         return (
           <div
