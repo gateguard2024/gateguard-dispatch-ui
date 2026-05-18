@@ -11,6 +11,7 @@ const isPublicRoute = createRouteMatcher([
   '/api/auth/een(.*)',      // EEN token exchange (called server-side, no session yet)
   '/api/webhooks(.*)',      // Clerk + EEN webhooks
   '/api/cron(.*)',          // Vercel cron jobs (no user session)
+  '/api/feedback(.*)',      // Feature request read/write — no PII, open for curl/admin scripts
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
