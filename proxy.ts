@@ -1,5 +1,6 @@
-// middleware.ts
+// proxy.ts
 // Clerk v6 auth middleware — required for currentUser() / auth() in Server Components
+// Named "proxy" per Next.js 16 convention (middleware.ts is deprecated in Next.js 16).
 // Public routes (sign-in, callback, webhooks) bypass auth; everything else is protected.
 
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
