@@ -195,16 +195,20 @@ export default function CamerasPage() {
   async function loadAccounts() {
     setLoading(true);
     try {
-      // Load accounts for name lookup
+      // Load accounts for name lookup + saved primary camera selection
       const { data: accts, error: acctErr } = await supabase
         .from('accounts')
-        .select('id, name')
+        .select('id, name, primary_camera_id, primary_camera_esn')
         .order('name');
       if (acctErr) { console.error('[cameras] accounts query error:', acctErr); return; }
       if (!accts || accts.length === 0) return;
 
       const acctMap: Record<string, string> = {};
-      for (const a of accts) acctMap[a.id] = a.name;
+      const acctPrimary: Record<string, { id: string | null; esn: string | null }> = {};
+      for (const a of accts) {
+        acctMap[a.id] = a.name;
+        acctPrimary[a.id] = { id: a.primary_camera_id ?? null, esn: a.primary_camera_esn ?? null };
+      }
 
       // Load all zones — each zone becomes its own tile
       const accountIds = accts.map((a: any) => a.id);
@@ -253,8 +257,9 @@ export default function CamerasPage() {
           hasAlert:          false,
           firstSnap:         snap,
           firstEenCamId:     firstEenCam?.een_camera_id ?? null,
-          primaryCameraId:   null,
-          primaryCameraEsn:  firstEenCam?.een_camera_id ?? null,
+          // Restore saved primary camera — falls back to first EEN cam if none saved
+          primaryCameraId:   acctPrimary[z.account_id]?.id ?? null,
+          primaryCameraEsn:  acctPrimary[z.account_id]?.esn ?? firstEenCam?.een_camera_id ?? null,
           primaryCameraSnap: null,
         };
       });

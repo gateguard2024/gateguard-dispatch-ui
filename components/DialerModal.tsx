@@ -130,8 +130,11 @@ export default function DialerModal({
         const { Device: TwilioDevice } = await import('@twilio/voice-sdk');
 
         const device = new TwilioDevice(json.token, {
-          logLevel:  'warn',
+          logLevel:         'warn',
           codecPreferences: ['opus', 'pcmu'] as any,
+          // Route through Mumbai edge for India-based call centers (Tata / Airtel).
+          // Override with NEXT_PUBLIC_TWILIO_EDGE if the call center moves regions.
+          edge:             (process.env.NEXT_PUBLIC_TWILIO_EDGE as any) ?? 'mumbai',
         });
 
         device.on('ready',       () => { if (!cancelled) setPhase('ready'); });
