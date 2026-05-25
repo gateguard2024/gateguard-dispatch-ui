@@ -12,6 +12,7 @@ import { createClient } from '@supabase/supabase-js';
 import SmartVideoPlayer  from '@/components/SmartVideoPlayer';
 import CommunicationHub  from '@/components/CommunicationHub';
 import DialerModal, { DialerTarget } from '@/components/DialerModal';
+import { pushToPortal } from '@/lib/portalIngest';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -308,7 +309,7 @@ export default function PatrolPage() {
   async function raisePatrolAlarm() {
     if (!currentSite || !alarmReason) return;
     setAlarmRaising(true);
-    const { error } = await supabase.from('alarms').insert({
+    const { data: newAlarm, error } = await supabase.from('alarms').insert({
       priority:    alarmPri,
       event_type:  'manual.operatorRaisedEvent.v1',
       event_label: alarmReason,
@@ -320,11 +321,23 @@ export default function PatrolPage() {
       operator_id: operatorId,
       notes:       alarmNotes || null,
       created_at:  new Date().toISOString(),
-    });
+    }).select('id').single();
     setAlarmRaising(false);
     if (error) {
       setAlarmError(error.message);
     } else {
+      // Push alarm creation to portal (non-blocking)
+      pushToPortal({
+        source:          'soc_alarm',
+        source_id:       newAlarm?.id ?? `patrol-alarm-${Date.now()}`,
+        incident_status: 'open',
+        site_name:       currentSite.name,
+        een_account_id:  currentSite.id,
+        event_type:      'manual.operatorRaisedEvent.v1',
+        event_label:     alarmReason,
+        priority:        alarmPri,
+        operator_name:   operatorName,
+      });
       setAlarmRaised(true);   // persists until page refresh
       setAlarmOpen(false);
       setAlarmReason('');
@@ -369,25 +382,19 @@ export default function PatrolPage() {
       }
 
       // Push each issue to GateGuard Portal incidents (non-blocking)
-      if (process.env.NEXT_PUBLIC_PORTAL_URL && process.env.NEXT_PUBLIC_GGSOC_SECRET && patrolRow?.id) {
+      if (patrolRow?.id) {
         const issueResults = finalResults.filter(r => r.status === 'issue');
         for (const r of issueResults) {
-          fetch(`${process.env.NEXT_PUBLIC_PORTAL_URL}/api/incidents/ingest`, {
-            method:  'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-ggsoc-secret': process.env.NEXT_PUBLIC_GGSOC_SECRET,
-            },
-            body: JSON.stringify({
-              source:         'soc_patrol',
-              source_id:      `${patrolRow.id}::${r.account_id}`,
-              site_name:      r.site_name,
-              een_account_id: r.account_id,
-              issue_detail:   r.issue_detail,
-              operator_name:  operatorName,
-              patrol_type:    patrolType,
-            }),
-          }).catch(err => console.warn('[portal-ingest] patrol push failed:', err));
+          pushToPortal({
+            source:          'soc_patrol',
+            source_id:       `${patrolRow.id}::${r.account_id}`,
+            incident_status: 'open',
+            site_name:       r.site_name,
+            een_account_id:  r.account_id,
+            issue_detail:    r.issue_detail,
+            operator_name:   operatorName,
+            patrol_type:     patrolType,
+          });
         }
       }
 

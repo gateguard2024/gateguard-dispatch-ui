@@ -18,6 +18,7 @@ import { createClient } from '@supabase/supabase-js';
 import SmartVideoPlayer   from '@/components/SmartVideoPlayer';
 import CommunicationHub   from '@/components/CommunicationHub';
 import DialerModal, { DialerTarget } from '@/components/DialerModal';
+import { pushToPortal } from '@/lib/portalIngest';
 
 // ─── Supabase client ─────────────────────────────────────────────────────────
 const supabase = createClient(
@@ -378,7 +379,33 @@ export default function AlarmsPage() {
       .channel('alarms-realtime')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'alarms' },
+        { event: 'INSERT', schema: 'public', table: 'alarms' },
+        (payload) => {
+          fetchQueue();
+          // Push new alarm to Portal incidents immediately on creation
+          const a = payload.new as any;
+          pushToPortal({
+            source:          'soc_alarm',
+            source_id:       a.id,
+            incident_status: 'open',
+            site_name:       a.site_name ?? '',
+            een_account_id:  a.source === 'brivo' ? undefined : a.account_id,
+            brivo_account_id: a.source === 'brivo' ? a.account_id : undefined,
+            event_type:      a.event_type,
+            event_label:     a.event_label,
+            priority:        a.priority,
+            operator_name:   a.operator_name ?? undefined,
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'alarms' },
+        () => fetchQueue()
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'alarms' },
         () => fetchQueue()
       )
       .subscribe();
@@ -864,29 +891,21 @@ export default function AlarmsPage() {
         generated_at:  new Date().toISOString(),
       });
 
-      // 3b. Push to GateGuard Portal — incidents page (non-blocking)
-      if (process.env.NEXT_PUBLIC_PORTAL_URL && process.env.NEXT_PUBLIC_GGSOC_SECRET) {
-        fetch(`${process.env.NEXT_PUBLIC_PORTAL_URL}/api/incidents/ingest`, {
-          method:  'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-ggsoc-secret': process.env.NEXT_PUBLIC_GGSOC_SECRET,
-          },
-          body: JSON.stringify({
-            source:           'soc_alarm',
-            source_id:        activeAlarm.id,
-            site_name:        activeAlarm.site_name,
-            een_account_id:   activeAlarm.source === 'een'   ? accountId : undefined,
-            brivo_account_id: activeAlarm.source === 'brivo' ? accountId : undefined,
-            event_type:       activeAlarm.event_type,
-            event_label:      activeAlarm.event_label,
-            priority:         activeAlarm.priority,
-            operator_name:    operatorName,
-            action_taken:     actionTaken,
-            notes,
-          }),
-        }).catch(err => console.warn('[portal-ingest] alarm push failed:', err));
-      }
+      // 3b. Push resolved status to Portal — upserts the incident created on alarm arrival
+      pushToPortal({
+        source:           'soc_alarm',
+        source_id:        activeAlarm.id,
+        incident_status:  'resolved',
+        site_name:        activeAlarm.site_name,
+        een_account_id:   activeAlarm.source === 'brivo' ? undefined : (accountId ?? undefined),
+        brivo_account_id: activeAlarm.source === 'brivo' ? (accountId ?? undefined) : undefined,
+        event_type:       activeAlarm.event_type,
+        event_label:      activeAlarm.event_label,
+        priority:         activeAlarm.priority,
+        operator_name:    operatorName,
+        action_taken:     actionTaken,
+        notes,
+      });
 
       // 4a. Mark specific gate as needs_service if operator selected one
       if ((actionTaken === 'gate_service_needed' || actionTaken === 'door_service_needed') && selectedGateId) {
