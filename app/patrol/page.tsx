@@ -341,17 +341,24 @@ export default function PatrolPage() {
       r.status === 'pending' ? { ...r, status: 'clear' as const, checked_at: completedAt } : r
     );
     try {
-      const { error } = await supabase.from('patrol_logs').insert({
-        operator_id:   operatorId,
-        operator_name: operatorName,
-        started_at:    startedAt,
-        completed_at:  completedAt,
-        site_results:  finalResults,
-        status:        'completed',
-        patrol_type:   selectedSlot === 'spot-check'
-          ? `Spot Check — ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}`
-          : selectedSlot,
-      });
+      const patrolType = selectedSlot === 'spot-check'
+        ? `Spot Check — ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}`
+        : selectedSlot;
+
+      const { data: patrolRow, error } = await supabase
+        .from('patrol_logs')
+        .insert({
+          operator_id:   operatorId,
+          operator_name: operatorName,
+          started_at:    startedAt,
+          completed_at:  completedAt,
+          site_results:  finalResults,
+          status:        'completed',
+          patrol_type:   patrolType,
+        })
+        .select('id')
+        .single();
+
       if (error) {
         setSubmitError(error.message.includes('does not exist')
           ? 'patrol_logs table not yet created — run migration SQL below.'
@@ -360,6 +367,30 @@ export default function PatrolPage() {
         setSubmitting(false);
         return;
       }
+
+      // Push each issue to GateGuard Portal incidents (non-blocking)
+      if (process.env.NEXT_PUBLIC_PORTAL_URL && process.env.NEXT_PUBLIC_GGSOC_SECRET && patrolRow?.id) {
+        const issueResults = finalResults.filter(r => r.status === 'issue');
+        for (const r of issueResults) {
+          fetch(`${process.env.NEXT_PUBLIC_PORTAL_URL}/api/incidents/ingest`, {
+            method:  'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-ggsoc-secret': process.env.NEXT_PUBLIC_GGSOC_SECRET,
+            },
+            body: JSON.stringify({
+              source:         'soc_patrol',
+              source_id:      `${patrolRow.id}::${r.account_id}`,
+              site_name:      r.site_name,
+              een_account_id: r.account_id,
+              issue_detail:   r.issue_detail,
+              operator_name:  operatorName,
+              patrol_type:    patrolType,
+            }),
+          }).catch(err => console.warn('[portal-ingest] patrol push failed:', err));
+        }
+      }
+
       setPatrolActive(false);
       setPatrolComplete(true);
       loadHistory();

@@ -864,6 +864,30 @@ export default function AlarmsPage() {
         generated_at:  new Date().toISOString(),
       });
 
+      // 3b. Push to GateGuard Portal — incidents page (non-blocking)
+      if (process.env.NEXT_PUBLIC_PORTAL_URL && process.env.NEXT_PUBLIC_GGSOC_SECRET) {
+        fetch(`${process.env.NEXT_PUBLIC_PORTAL_URL}/api/incidents/ingest`, {
+          method:  'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-ggsoc-secret': process.env.NEXT_PUBLIC_GGSOC_SECRET,
+          },
+          body: JSON.stringify({
+            source:           'soc_alarm',
+            source_id:        activeAlarm.id,
+            site_name:        activeAlarm.site_name,
+            een_account_id:   activeAlarm.source === 'een'   ? accountId : undefined,
+            brivo_account_id: activeAlarm.source === 'brivo' ? accountId : undefined,
+            event_type:       activeAlarm.event_type,
+            event_label:      activeAlarm.event_label,
+            priority:         activeAlarm.priority,
+            operator_name:    operatorName,
+            action_taken:     actionTaken,
+            notes,
+          }),
+        }).catch(err => console.warn('[portal-ingest] alarm push failed:', err));
+      }
+
       // 4a. Mark specific gate as needs_service if operator selected one
       if ((actionTaken === 'gate_service_needed' || actionTaken === 'door_service_needed') && selectedGateId) {
         await supabase.from('gates').update({
