@@ -269,8 +269,8 @@ async function processEvent(supabase: any, event: EENEvent) {
   } else {
     console.log(`[webhooks/eagleeye] Alarm created — ${priority} ${labelFor(event.type)} @ ${siteName}`);
 
-    // Bridge to Portal — only for P1/P2 alarms (actionable); skip high-volume P3 motion events
-    if (priority === 'P1' || priority === 'P2') {
+    // Bridge all P1/P2/P3 alarms to Portal incidents (P4 is already skipped above)
+    {
       // Get the inserted alarm ID for cross-referencing
       const { data: inserted } = await supabase
         .from('alarms')
