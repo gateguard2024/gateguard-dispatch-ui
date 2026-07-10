@@ -20,6 +20,9 @@ interface SmartVideoPlayerProps {
   label?:           string;
   disableFullscreen?: boolean;  // Set true on wall-view tiles to prevent double-click fullscreen conflict
   startDelay?:      number;
+  snapshotUrl?:      string;  // shown while stream loads — instant visual feedback
+  prefetchedHlsUrl?: string;  // skip /api/cameras/stream fetch if already have URL
+  prefetchedToken?:  string;  // paired with prefetchedHlsUrl
 }
 
 export default function SmartVideoPlayer({
@@ -32,6 +35,9 @@ export default function SmartVideoPlayer({
   label,
   disableFullscreen = false,
   startDelay        = 0,
+  snapshotUrl       = undefined,
+  prefetchedHlsUrl  = undefined,
+  prefetchedToken   = undefined,
 }: SmartVideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef     = useRef<HTMLVideoElement>(null);
@@ -61,48 +67,6 @@ export default function SmartVideoPlayer({
 
     try {
       let proxyUrl: string;
-
-      if (recordedUrl) {
-        // ── Recorded playback ─────────────────────────────────────────────
-        // EEN media servers block cross-origin requests (no CORS headers).
-        // We must proxy all HLS traffic through our server which:
-        //   1. Adds the Bearer token to every EEN request
-        //   2. Rewrites relative segment URLs in the manifest to also use our proxy
-        // Route: /api/een/hls?accountId={id}&url={encoded_een_url}
-        if (recordedToken) {
-          proxyUrl = `/api/een/hls?accountId=${encodeURIComponent(accountId)}&url=${encodeURIComponent(recordedUrl)}`;
-        } else {
-          // Fallback: old proxy (no token — segments may fail)
-          proxyUrl = recordedUrl.includes('?')
-            ? `/api/cameras/proxy?url=${encodeURIComponent(recordedUrl)}`
-            : recordedUrl;
-        }
-      } else {
-        // ── Live stream: pick endpoint by source ──────────────────────────
-        const endpoint = source === 'brivo'
-          ? '/api/brivo/stream'
-          : '/api/cameras/stream';
-
-        const res  = await fetch(endpoint, {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ accountId, cameraId, streamType }),
-        });
-
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to get stream');
-
-        // Store token in HttpOnly cookie for proxy auth
-        if (data.token) {
-          await fetch('/api/cameras/set-cookie', {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ token: data.token }),
-          });
-        }
-
-        proxyUrl = `/api/cameras/proxy?url=${encodeURIComponent(data.hlsUrl)}`;
-      }
 
       // ── Mount HLS player ───────────────────────────────────────────────
       const mountHls = (url: string) => {
@@ -162,13 +126,69 @@ export default function SmartVideoPlayer({
         }
       };
 
+      // Fast path: use pre-fetched URL+token (skips /api/cameras/stream round-trip)
+      if (!recordedUrl && prefetchedHlsUrl && prefetchedToken) {
+        if (prefetchedToken) {
+          await fetch('/api/cameras/set-cookie', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ token: prefetchedToken }),
+          });
+        }
+        const prefetchedProxyUrl = `/api/cameras/proxy?url=${encodeURIComponent(prefetchedHlsUrl)}`;
+        mountHls(prefetchedProxyUrl);
+        return;
+      }
+
+      if (recordedUrl) {
+        // ── Recorded playback ─────────────────────────────────────────────
+        // EEN media servers block cross-origin requests (no CORS headers).
+        // We must proxy all HLS traffic through our server which:
+        //   1. Adds the Bearer token to every EEN request
+        //   2. Rewrites relative segment URLs in the manifest to also use our proxy
+        // Route: /api/een/hls?accountId={id}&url={encoded_een_url}
+        if (recordedToken) {
+          proxyUrl = `/api/een/hls?accountId=${encodeURIComponent(accountId)}&url=${encodeURIComponent(recordedUrl)}`;
+        } else {
+          // Fallback: old proxy (no token — segments may fail)
+          proxyUrl = recordedUrl.includes('?')
+            ? `/api/cameras/proxy?url=${encodeURIComponent(recordedUrl)}`
+            : recordedUrl;
+        }
+      } else {
+        // ── Live stream: pick endpoint by source ──────────────────────────
+        const endpoint = source === 'brivo'
+          ? '/api/brivo/stream'
+          : '/api/cameras/stream';
+
+        const res  = await fetch(endpoint, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ accountId, cameraId, streamType }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to get stream');
+
+        // Store token in HttpOnly cookie for proxy auth
+        if (data.token) {
+          await fetch('/api/cameras/set-cookie', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ token: data.token }),
+          });
+        }
+
+        proxyUrl = `/api/cameras/proxy?url=${encodeURIComponent(data.hlsUrl)}`;
+      }
+
       mountHls(proxyUrl);
 
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to initialize stream');
       setStatus('error');
     }
-  }, [accountId, cameraId, source, streamType, recordedUrl, recordedToken, retryCount]);
+  }, [accountId, cameraId, source, streamType, recordedUrl, recordedToken, retryCount, prefetchedHlsUrl, prefetchedToken]);
 
   useEffect(() => {
     const timer = setTimeout(startStream, startDelay);
@@ -276,6 +296,15 @@ export default function SmartVideoPlayer({
             </p>
           )}
         </div>
+      )}
+
+      {/* Snapshot shown while stream loads — disappears when playing */}
+      {snapshotUrl && status === 'loading' && (
+        <img
+          src={snapshotUrl}
+          alt="camera preview"
+          className="absolute inset-0 w-full h-full object-cover opacity-70 pointer-events-none"
+        />
       )}
 
       {/* Error overlay */}

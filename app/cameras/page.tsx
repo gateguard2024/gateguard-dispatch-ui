@@ -146,6 +146,8 @@ export default function CamerasPage() {
   const [doorOpening, setDoorOpening]         = useState(false);
   const [doorOpened, setDoorOpened]           = useState(false);
   const [doorError, setDoorError]             = useState<string | null>(null);
+  // Pre-fetched stream URLs (populated when camera wall opens)
+  const [preFetchedStreams, setPreFetchedStreams] = useState<Record<string, { hlsUrl: string; token: string }>>({});
   // Primary camera state
   const [settingPrimary, setSettingPrimary]   = useState<string | null>(null); // cameraId being set
   // Raise alarm state
@@ -264,6 +266,34 @@ export default function CamerasPage() {
       .eq('zone_id', account.id)
       .order('name');
     setCameras((cams as CameraRow[]) ?? []);
+
+    // Pre-fetch all EEN stream URLs in parallel — eliminates per-camera sequential delay
+    // Stagger 80ms apart (tighter than playback stagger) to avoid EEN session lock
+    const streamsToFetch = ((cams as CameraRow[]) ?? [])
+      .filter(c => c.source === 'een' && c.een_camera_id);
+    const fetched: Record<string, { hlsUrl: string; token: string }> = {};
+    await Promise.allSettled(
+      streamsToFetch.map(async (cam, idx) => {
+        await new Promise(r => setTimeout(r, idx * 80));
+        try {
+          const res = await fetch('/api/cameras/stream', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({
+              accountId:  account.accountId,
+              cameraId:   cam.een_camera_id,
+              streamType: 'preview',
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.hlsUrl) fetched[cam.id] = { hlsUrl: data.hlsUrl, token: data.token };
+          }
+        } catch { /* non-fatal — SmartVideoPlayer falls back to its own fetch */ }
+      })
+    );
+    setPreFetchedStreams(fetched);
+
     setWallLoading(false);
   }, []);
   // ── View 3: Open single camera ────────────────────────────────────────────
@@ -545,8 +575,13 @@ export default function CamerasPage() {
                   onClick={() => openAccount(account)}
                   className="group relative flex flex-col rounded border border-indigo-900/25 bg-indigo-950/20 hover:bg-indigo-900/15 hover:border-indigo-600/35 transition-all text-left overflow-hidden"
                 >
-                  {/* Thumbnail — static JPEG snapshot (fast, no stream lock) */}
+                  {/* Thumbnail — building icon always present as base; img overlays when loaded */}
                   <div className="aspect-video bg-[#040c1a] relative overflow-hidden">
+                    {/* Base layer — always visible until img loads */}
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="w-8 h-8 text-slate-700"><Ic.Building /></div>
+                    </div>
+                    {/* Snapshot overlay — EEN live snapshot, falls back to stored snap */}
                     {(() => {
                       const esnToUse  = account.primaryCameraEsn ?? account.firstEenCamId;
                       const snapToUse = account.primaryCameraSnap ?? account.firstSnap;
@@ -554,12 +589,15 @@ export default function CamerasPage() {
                         <img
                           src={`/api/een/image?accountId=${account.accountId}&cameraId=${esnToUse}`}
                           alt={account.name}
-                          className="w-full h-full object-cover"
+                          className="absolute inset-0 w-full h-full object-cover"
                           onError={(e) => {
                             const t = e.target as HTMLImageElement;
-                            // Fall back to stored snap if EEN image fails
-                            if (snapToUse && t.src !== snapToUse) { t.src = snapToUse; }
-                            else { t.style.display = 'none'; }
+                            if (snapToUse && t.src !== snapToUse) {
+                              t.src = snapToUse;
+                            } else {
+                              t.style.display = 'none';
+                              // building icon base layer is now visible
+                            }
                           }}
                         />
                       );
@@ -567,14 +605,10 @@ export default function CamerasPage() {
                         <img
                           src={snapToUse}
                           alt={account.name}
-                          className="w-full h-full object-cover opacity-60"
+                          className="absolute inset-0 w-full h-full object-cover opacity-60"
                         />
                       );
-                      return (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <div className="w-8 h-8 text-slate-700"><Ic.Building /></div>
-                        </div>
-                      );
+                      return null;
                     })()}
                     {/* Primary camera label */}
                     {account.primaryCameraId && (
@@ -669,6 +703,9 @@ export default function CamerasPage() {
                         streamType="preview"
                         disableFullscreen
                         startDelay={camIdx * 200}
+                        snapshotUrl={cam.snapshot_url ?? undefined}
+                        prefetchedHlsUrl={preFetchedStreams[cam.id]?.hlsUrl}
+                        prefetchedToken={preFetchedStreams[cam.id]?.token}
                       />
                     </div>
                     {/* Label */}
