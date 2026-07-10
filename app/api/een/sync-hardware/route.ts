@@ -90,24 +90,43 @@ export async function POST(request: Request) {
 
     console.log(`[sync-hardware] EEN returned ${cameras.length} cameras`);
 
-    // Fallback engine: JS-side tag filter
-    // If the API ignored the tag param and returned everything, filter here.
+    // Log first camera's raw shape so we can debug tag field names in Vercel logs
+    if (cameras.length > 0) {
+      const sample = cameras[0];
+      console.log(`[sync-hardware] Sample camera keys: ${Object.keys(sample).join(', ')}`);
+      console.log(`[sync-hardware] Sample tags field: ${JSON.stringify(sample.tags ?? sample.tagList ?? sample.deviceTags ?? sample.labels ?? 'NONE')}`);
+    }
+
+    // JS-side tag filter — handles multiple EEN tag field names
+    // EEN V3 API uses 'tags' as array of strings on most responses,
+    // but some EEN deployments use tagList (array of strings) or
+    // deviceTags / labels (array of objects with name/value).
     if (!isSingleSite && cameras.length > 0) {
-      const tagLower   = eenTag.toLowerCase();
+      const tagLower = eenTag.toLowerCase().trim();
+
+      const extractTags = (cam: any): string[] => {
+        // Try every known EEN tag field name, extract to array of lowercase strings
+        const raw = cam.tags ?? cam.tagList ?? cam.deviceTags ?? cam.labels ?? [];
+        return (Array.isArray(raw) ? raw : []).map((t: any) => {
+          if (typeof t === 'string') return t.toLowerCase().trim();
+          // Object form: {name, value, label, id} — try each
+          return (t?.name ?? t?.value ?? t?.label ?? t?.tagName ?? '').toLowerCase().trim();
+        }).filter(Boolean);
+      };
+
       const jsFiltered = cameras.filter((cam: any) => {
-        const tags: string[] = (cam.tags ?? cam.tagList ?? []).map((t: any) =>
-          (typeof t === 'string' ? t : t?.name ?? '').toLowerCase()
-        );
-        return tags.includes(tagLower);
+        const camTags = extractTags(cam);
+        // Exact match OR the camera name starts with the zone tag (fallback for untagged setups)
+        return camTags.includes(tagLower);
       });
 
       if (jsFiltered.length > 0) {
         cameras = jsFiltered;
-        console.log(`[sync-hardware] JS tag filter: ${cameras.length} cameras match tag "${eenTag}"`);
+        console.log(`[sync-hardware] Tag filter matched ${cameras.length} cameras for tag "${eenTag}"`);
       } else {
-        // JS filter returned nothing — either API already filtered correctly,
-        // or cameras genuinely have no tag. Trust the API result.
-        console.warn(`[sync-hardware] JS tag filter matched 0 cameras — using full API result`);
+        // No cameras matched the tag — log what tags we DID see, then fall back to full result
+        const allTags = [...new Set(cameras.flatMap((c: any) => extractTags(c)))];
+        console.warn(`[sync-hardware] Tag "${eenTag}" matched 0 cameras. Tags seen: ${allTags.join(', ') || 'NONE'} — using full account result`);
       }
     }
 
@@ -127,6 +146,15 @@ export async function POST(request: Request) {
     //   tags / tagList → array of tag strings
     //   status         → { connectionStatus: 'online' | 'offline' }
     //
+    // Reuse the same extractTags helper defined above (hoisted here for upsert row building)
+    const extractTagStrings = (cam: any): string[] => {
+      const raw = cam.tags ?? cam.tagList ?? cam.deviceTags ?? cam.labels ?? [];
+      return (Array.isArray(raw) ? raw : []).map((t: any) => {
+        if (typeof t === 'string') return t.trim();
+        return (t?.name ?? t?.value ?? t?.label ?? t?.tagName ?? '').trim();
+      }).filter(Boolean);
+    };
+
     const rows = cameras
       .map((cam: any) => ({
         zone_id:       zoneId,
@@ -136,9 +164,7 @@ export async function POST(request: Request) {
         source:        'een',
         is_monitored:  true,
         snapshot_url:  null,
-        een_tags:      (cam.tags ?? cam.tagList ?? []).map((t: any) =>
-                         typeof t === 'string' ? t : (t?.name ?? '')
-                       ),
+        een_tags:      extractTagStrings(cam),
       }))
       .filter(r => r.een_camera_id != null);
 
