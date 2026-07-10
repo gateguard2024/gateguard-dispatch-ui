@@ -126,11 +126,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
   return (
     <ClerkProvider>
-      <html lang="en" className="h-full bg-[#1a1c22] text-slate-200 antialiased">
+      <html lang="en" className="h-full bg-[#07111f] text-slate-200 antialiased">
         <body className={`${inter.className} h-full overflow-hidden flex`}>
 
           {/* SIDEBAR */}
-          <aside className="w-24 lg:w-[104px] flex flex-col items-center py-6 bg-[#0a0c10] border-r border-white/5 z-50 shadow-[10px_0_30px_rgba(0,0,0,0.5)] shrink-0">
+          <aside className="w-24 lg:w-[104px] flex flex-col items-center py-6 bg-[#040c1a] border-r border-indigo-900/30 z-50 shadow-[10px_0_40px_rgba(4,12,26,0.8)] shrink-0">
 
             {/* Logo */}
             <div className="mb-10 w-full flex justify-center">
@@ -186,8 +186,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <main
             className="flex-1 h-full overflow-hidden relative"
             style={{
-              backgroundColor: '#1e2025',
-              backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.045) 1px, transparent 1px)',
+              backgroundColor: '#07111f',
+              backgroundImage: 'radial-gradient(circle, rgba(99,102,241,0.06) 1px, transparent 1px)',
               backgroundSize: '24px 24px',
             }}
           >
