@@ -15,17 +15,19 @@ const supabase = createClient(
 );
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Account {
-  id:               string;
-  name:             string;
+  id:               string;   // zone ID — tile key + camera loading
+  accountId:        string;   // parent account ID — EEN token, Brivo, audit logs
+  name:             string;   // zone/property name e.g. "Marbella Place"
+  subtitle:         string;   // account/owner group e.g. "Pegasus Properties"
   address?:         string;
   cameraCount:      number;
   onlineCount:      number;
   hasAlert:         boolean;
   firstSnap:        string | null;
   firstEenCamId:    string | null;
-  primaryCameraId:  string | null;   // user-selected primary camera
-  primaryCameraEsn: string | null;   // ESN of primary camera for live thumbnail
-  primaryCameraSnap: string | null;  // static snap fallback for primary camera
+  primaryCameraId:  string | null;
+  primaryCameraEsn: string | null;
+  primaryCameraSnap: string | null;
 }
 interface CameraRow {
   id:              string;
@@ -168,12 +170,7 @@ export default function CamerasPage() {
   async function loadAccounts() {
     setLoading(true);
     try {
-      // Two flat queries instead of a nested join — more reliable across
-      // Supabase deployments where FK schema cache may not resolve chains.
-
-      // Try with primary camera columns first (requires migration 001m).
-      // If those columns don't exist yet, fall back to base columns so the
-      // page still renders while the migration is pending.
+      // 1. Load accounts for name lookup + EEN auth context
       let accts: any[] | null = null;
       let acctErr: any = null;
 
@@ -183,7 +180,6 @@ export default function CamerasPage() {
         .order('name'));
 
       if (acctErr) {
-        console.warn('[cameras] primary camera columns missing — falling back (run migration 001m):', acctErr.message);
         ({ data: accts, error: acctErr } = await supabase
           .from('accounts')
           .select('id, name')
@@ -193,18 +189,24 @@ export default function CamerasPage() {
       if (acctErr) { console.error('[cameras] accounts query error:', acctErr); return; }
       if (!accts || accts.length === 0) return;
 
-      // Pull all cameras for these accounts in one query via zones
+      const acctMap: Record<string, string> = {};
+      for (const a of accts) acctMap[a.id] = a.name;
+
       const accountIds = accts.map((a: any) => a.id);
 
+      // 2. Load zones — one tile per zone
       const { data: zones, error: zoneErr } = await supabase
         .from('zones')
-        .select('id, account_id')
-        .in('account_id', accountIds);
+        .select('id, account_id, name, een_tag')
+        .in('account_id', accountIds)
+        .order('name');
 
       if (zoneErr) { console.error('[cameras] zones query error:', zoneErr); }
+      if (!zones || zones.length === 0) return;
 
-      const zoneIds = (zones ?? []).map((z: any) => z.id);
+      const zoneIds = zones.map((z: any) => z.id);
 
+      // 3. Load cameras grouped by zone_id
       let camRows: any[] = [];
       if (zoneIds.length > 0) {
         const { data: cams, error: camErr } = await supabase
@@ -215,42 +217,33 @@ export default function CamerasPage() {
         camRows = cams ?? [];
       }
 
-      // Build a zone_id → account_id lookup
-      const zoneToAccount: Record<string, string> = {};
-      for (const z of (zones ?? [])) zoneToAccount[z.id] = z.account_id;
-
-      // Group cameras by account_id
-      const camsByAccount: Record<string, any[]> = {};
+      const camsByZone: Record<string, any[]> = {};
       for (const cam of camRows) {
-        const acctId = zoneToAccount[cam.zone_id];
-        if (!acctId) continue;
-        if (!camsByAccount[acctId]) camsByAccount[acctId] = [];
-        camsByAccount[acctId].push(cam);
+        if (!camsByZone[cam.zone_id]) camsByZone[cam.zone_id] = [];
+        camsByZone[cam.zone_id].push(cam);
       }
 
-      const mapped: Account[] = accts.map((a: any) => {
-        const allCams     = camsByAccount[a.id] ?? [];
-        const online      = allCams.filter((c: any) => c.is_monitored).length;
-        const snap        = allCams.find((c: any) => c.snapshot_url)?.snapshot_url ?? null;
-        // Pick first monitored EEN camera as fallback thumbnail
+      // 4. Map one Account tile per zone
+      const mapped: Account[] = zones.map((z: any) => {
+        const allCams    = camsByZone[z.id] ?? [];
+        const online     = allCams.filter((c: any) => c.is_monitored).length;
+        const snap       = allCams.find((c: any) => c.snapshot_url)?.snapshot_url ?? null;
         const firstEenCam = allCams.find((c: any) => c.source === 'een' && c.een_camera_id && c.is_monitored)
                          ?? allCams.find((c: any) => c.source === 'een' && c.een_camera_id);
-        // Resolve primary camera (user-selected) for thumbnail
-        const primaryCam  = a.primary_camera_id
-          ? allCams.find((c: any) => c.id === a.primary_camera_id) ?? null
-          : null;
         return {
-          id:                a.id,
-          name:              a.name,
+          id:                z.id,                       // zone ID
+          accountId:         z.account_id,               // parent account ID
+          name:              z.name,                     // zone/property name
+          subtitle:          acctMap[z.account_id] ?? '', // account/owner group
           address:           undefined,
           cameraCount:       allCams.length,
           onlineCount:       online,
           hasAlert:          false,
           firstSnap:         snap,
           firstEenCamId:     firstEenCam?.een_camera_id ?? null,
-          primaryCameraId:   a.primary_camera_id   ?? null,
-          primaryCameraEsn:  a.primary_camera_esn  ?? primaryCam?.een_camera_id ?? null,
-          primaryCameraSnap: primaryCam?.snapshot_url ?? null,
+          primaryCameraId:   null,
+          primaryCameraEsn:  firstEenCam?.een_camera_id ?? null,
+          primaryCameraSnap: null,
         };
       });
 
@@ -264,24 +257,11 @@ export default function CamerasPage() {
     setSelectedAccount(account);
     setView(2);
     setWallLoading(true);
-    // Get zone IDs for this account
-    const { data: zones } = await supabase
-      .from('zones')
-      .select('id')
-      .eq('account_id', account.id);
-
-    // Only select id — TypeScript infers { id: string }[] from the narrow select above
-    const zoneIds = (zones ?? []).map((z) => z.id);
-
-    if (zoneIds.length === 0) {
-      setCameras([]);
-      setWallLoading(false);
-      return;
-    }
+    // account.id is the zone ID — load cameras for this specific zone
     const { data: cams } = await supabase
       .from('cameras')
       .select('id, name, source, brivo_camera_id, een_camera_id, is_monitored, snapshot_url, zone_id, brivo_door_id')
-      .in('zone_id', zoneIds)
+      .eq('zone_id', account.id)
       .order('name');
     setCameras((cams as CameraRow[]) ?? []);
     setWallLoading(false);
@@ -324,7 +304,7 @@ export default function CamerasPage() {
       supabase
         .from('accounts')
         .select('brivo_door_ids')
-        .eq('id', (selectedAccount as Account).id)
+        .eq('id', (selectedAccount as Account).accountId)
         .single(),
     ]);
     setPastNotes(notes ?? []);
@@ -343,7 +323,7 @@ export default function CamerasPage() {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          accountId: selectedAccount.id,
+          accountId: selectedAccount.accountId,
           cameraId:  camKey(selectedCamera),
           startTime: new Date(startTime).toISOString(),
           endTime:   new Date(endTime).toISOString(),
@@ -389,7 +369,7 @@ export default function CamerasPage() {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          accountId:    selectedAccount.id,
+          accountId:    selectedAccount.accountId,
           doorId:       linkedDoorId,
           operatorId,
           operatorName: operatorName,
@@ -427,7 +407,7 @@ export default function CamerasPage() {
     setHoldError(null);
     try {
       const body: any = {
-        accountId:    selectedAccount.id,
+        accountId:    selectedAccount.accountId,
         doorId:       linkedDoorId,
         mode:         holdMode,
         operatorId:   'operator-1',
@@ -459,7 +439,7 @@ export default function CamerasPage() {
         primary_camera_id:  cam.id,
         primary_camera_esn: cam.een_camera_id ?? null,
       })
-      .eq('id', selectedAccount.id);
+      .eq('id', selectedAccount.accountId);
     // Update local accounts list so tile updates immediately when going back
     setAccounts(prev => prev.map(a =>
       a.id === selectedAccount.id
@@ -480,7 +460,7 @@ export default function CamerasPage() {
         site_name:   selectedAccount.name,
         camera_id:   selectedCamera.id,
         zone_id:     selectedCamera.zone_id,
-        account_id:  selectedAccount.id,
+        account_id:  selectedAccount.accountId,
         source:      'manual',
         status:      'pending',
         created_at:  new Date().toISOString(),
@@ -490,7 +470,7 @@ export default function CamerasPage() {
       await supabase.from('audit_logs').insert({
         camera_id:   selectedCamera.id,
         zone_id:     selectedCamera.zone_id,
-        account_id:  selectedAccount.id,
+        account_id:  selectedAccount.accountId,
         operator_id: operatorId,
         action:      'manual_alarm_raised',
         details:     JSON.stringify({ priority: alarmPriority, reason: alarmReason, notes: alarmNotes }),
@@ -517,7 +497,7 @@ export default function CamerasPage() {
         method:  'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          accountId:    selectedAccount.id,
+          accountId:    selectedAccount.accountId,
           doorId:       linkedDoorId,
           operatorId,
           operatorName: operatorName,
@@ -572,7 +552,7 @@ export default function CamerasPage() {
                       const snapToUse = account.primaryCameraSnap ?? account.firstSnap;
                       if (esnToUse) return (
                         <img
-                          src={`/api/een/image?accountId=${account.id}&cameraId=${esnToUse}`}
+                          src={`/api/een/image?accountId=${account.accountId}&cameraId=${esnToUse}`}
                           alt={account.name}
                           className="w-full h-full object-cover"
                           onError={(e) => {
@@ -620,6 +600,9 @@ export default function CamerasPage() {
                   {/* Info */}
                   <div className="px-3 py-2.5">
                     <p className="text-[12px] font-semibold text-white truncate">{account.name}</p>
+                    {account.subtitle && (
+                      <p className="text-[10px] text-slate-500 truncate mt-0.5">{account.subtitle}</p>
+                    )}
                     {account.address && (
                       <p className="text-[10px] text-slate-500 truncate mt-0.5">{account.address}</p>
                     )}
@@ -669,7 +652,7 @@ export default function CamerasPage() {
             </div>
           ) : (
             <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
-              {cameras.map((cam) => {
+              {cameras.map((cam, camIdx) => {
                 const key = camKey(cam);
                 return (
                   <div
@@ -680,11 +663,12 @@ export default function CamerasPage() {
                     {/* pointer-events-none so hover actions and double-click on the tile work */}
                     <div className="absolute inset-0 pointer-events-none">
                       <SmartVideoPlayer
-                        accountId={selectedAccount.id}
+                        accountId={selectedAccount.accountId}
                         cameraId={key}
                         source={cam.source}
                         streamType="preview"
                         disableFullscreen
+                        startDelay={camIdx * 200}
                       />
                     </div>
                     {/* Label */}
@@ -774,7 +758,7 @@ export default function CamerasPage() {
             {/* Player — 60% */}
             <div className="bg-black" style={{ height: '60%' }}>
               <SmartVideoPlayer
-                accountId={selectedAccount.id}
+                accountId={selectedAccount.accountId}
                 cameraId={key}
                 source={selectedCamera.source}
                 streamType="preview"

@@ -19,6 +19,7 @@ interface SmartVideoPlayerProps {
   recordedToken?:   string;
   label?:           string;
   disableFullscreen?: boolean;  // Set true on wall-view tiles to prevent double-click fullscreen conflict
+  startDelay?:      number;
 }
 
 export default function SmartVideoPlayer({
@@ -30,6 +31,7 @@ export default function SmartVideoPlayer({
   recordedToken,
   label,
   disableFullscreen = false,
+  startDelay        = 0,
 }: SmartVideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef     = useRef<HTMLVideoElement>(null);
@@ -169,8 +171,9 @@ export default function SmartVideoPlayer({
   }, [accountId, cameraId, source, streamType, recordedUrl, recordedToken, retryCount]);
 
   useEffect(() => {
-    startStream();
+    const timer = setTimeout(startStream, startDelay);
     return () => {
+      clearTimeout(timer);
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
