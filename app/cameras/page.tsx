@@ -146,8 +146,8 @@ export default function CamerasPage() {
   const [doorOpening, setDoorOpening]         = useState(false);
   const [doorOpened, setDoorOpened]           = useState(false);
   const [doorError, setDoorError]             = useState<string | null>(null);
-  // Pre-fetched stream URLs (populated when camera wall opens)
-  const [preFetchedStreams, setPreFetchedStreams] = useState<Record<string, { hlsUrl: string; token: string }>>({});
+  // Snapshot wall: tick increments every 10s to force-refresh EEN JPEG thumbnails in View 2
+  const [snapTick, setSnapTick] = useState(0);
   // Primary camera state
   const [settingPrimary, setSettingPrimary]   = useState<string | null>(null); // cameraId being set
   // Raise alarm state
@@ -258,6 +258,7 @@ export default function CamerasPage() {
   const openAccount = useCallback(async (account: Account) => {
     setSelectedAccount(account);
     setView(2);
+    setSnapTick(0);    // reset so the first snap loads fresh
     setWallLoading(true);
     // account.id is the zone ID — load cameras for this specific zone
     const { data: cams } = await supabase
@@ -266,36 +267,15 @@ export default function CamerasPage() {
       .eq('zone_id', account.id)
       .order('name');
     setCameras((cams as CameraRow[]) ?? []);
-
-    // Pre-fetch all EEN stream URLs in parallel — eliminates per-camera sequential delay
-    // Stagger 80ms apart (tighter than playback stagger) to avoid EEN session lock
-    const streamsToFetch = ((cams as CameraRow[]) ?? [])
-      .filter(c => c.source === 'een' && c.een_camera_id);
-    const fetched: Record<string, { hlsUrl: string; token: string }> = {};
-    await Promise.allSettled(
-      streamsToFetch.map(async (cam, idx) => {
-        await new Promise(r => setTimeout(r, idx * 80));
-        try {
-          const res = await fetch('/api/cameras/stream', {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({
-              accountId:  account.accountId,
-              cameraId:   cam.een_camera_id,
-              streamType: 'preview',
-            }),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.hlsUrl) fetched[cam.id] = { hlsUrl: data.hlsUrl, token: data.token };
-          }
-        } catch { /* non-fatal — SmartVideoPlayer falls back to its own fetch */ }
-      })
-    );
-    setPreFetchedStreams(fetched);
-
     setWallLoading(false);
   }, []);
+
+  // Auto-refresh wall snapshots every 10s while in View 2
+  useEffect(() => {
+    if (view !== 2) return;
+    const id = setInterval(() => setSnapTick(t => t + 1), 10_000);
+    return () => clearInterval(id);
+  }, [view]);
   // ── View 3: Open single camera ────────────────────────────────────────────
   const openCamera = useCallback(async (cam: CameraRow) => {
     setSelectedCamera(cam);
@@ -686,27 +666,49 @@ export default function CamerasPage() {
             </div>
           ) : (
             <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
-              {cameras.map((cam, camIdx) => {
+              {cameras.map((cam) => {
                 const key = camKey(cam);
+                const eenId = cam.een_camera_id;
                 return (
                   <div
                     key={cam.id}
                     className="group relative aspect-video rounded border border-indigo-900/20 bg-[#040c1a] overflow-hidden cursor-pointer hover:border-indigo-500/40 transition-all"
-                    onDoubleClick={(e) => { e.stopPropagation(); openCamera(cam); }}
+                    onClick={() => openCamera(cam)}
                   >
-                    {/* pointer-events-none so hover actions and double-click on the tile work */}
-                    <div className="absolute inset-0 pointer-events-none">
-                      <SmartVideoPlayer
-                        accountId={selectedAccount.accountId}
-                        cameraId={key}
-                        source={cam.source}
-                        streamType="preview"
-                        disableFullscreen
-                        startDelay={camIdx * 200}
-                        snapshotUrl={cam.snapshot_url ?? undefined}
-                        prefetchedHlsUrl={preFetchedStreams[cam.id]?.hlsUrl}
-                        prefetchedToken={preFetchedStreams[cam.id]?.token}
-                      />
+                    {/* Snapshot thumbnail — refreshes every 10s via snapTick, no HLS session lock */}
+                    <div className="absolute inset-0">
+                      {/* Base layer: building icon always visible */}
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="w-8 h-8 text-slate-700"><Ic.Building /></div>
+                      </div>
+                      {eenId ? (
+                        <img
+                          key={`${cam.id}-${snapTick}`}
+                          src={`/api/een/image?accountId=${selectedAccount.accountId}&cameraId=${eenId}&t=${snapTick}`}
+                          alt={cam.name}
+                          className="absolute inset-0 w-full h-full object-cover"
+                          onError={(e) => {
+                            const t = e.target as HTMLImageElement;
+                            if (cam.snapshot_url && t.src !== cam.snapshot_url) {
+                              t.src = cam.snapshot_url;
+                            } else {
+                              t.style.display = 'none';
+                            }
+                          }}
+                        />
+                      ) : cam.snapshot_url ? (
+                        <img
+                          src={cam.snapshot_url}
+                          alt={cam.name}
+                          className="absolute inset-0 w-full h-full object-cover opacity-70"
+                        />
+                      ) : null}
+                      {/* Click-to-live hint */}
+                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/50">
+                        <span className="flex items-center gap-1.5 text-[10px] font-semibold text-white uppercase tracking-wider border border-white/40 rounded px-3 py-1 bg-black/40">
+                          <div className="w-3 h-3"><Ic.Play /></div> Go Live
+                        </span>
+                      </div>
                     </div>
                     {/* Label */}
                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 pointer-events-none">
