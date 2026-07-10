@@ -1174,6 +1174,32 @@ export default function SetupPage() {
     window.location.href = authUrl;
   };
 
+  // ── Re-authenticate EEN for an existing account (token refresh) ───────────
+  // Same OAuth flow as wizard Step 2, but for an existing account.
+  // The callback at /api/auth/een looks up account by name and overwrites tokens.
+  const reAuthEEN = (accountId: string) => {
+    const account = accounts.find(a => a.id === accountId);
+    if (!account) return;
+    const clientId = process.env.NEXT_PUBLIC_EEN_CLIENT_ID;
+    if (!clientId) {
+      alert("NEXT_PUBLIC_EEN_CLIENT_ID is not set. Add it in Vercel → Environment Variables.");
+      return;
+    }
+    const redirectUri =
+      process.env.NEXT_PUBLIC_EEN_REDIRECT_URI ||
+      "https://gateguard-dispatch-ui.vercel.app/callback";
+    const state = btoa(account.name.trim());
+    const authUrl = [
+      "https://auth.eagleeyenetworks.com/oauth2/authorize",
+      `?client_id=${encodeURIComponent(clientId)}`,
+      `&redirect_uri=${encodeURIComponent(redirectUri)}`,
+      `&response_type=code`,
+      `&scope=vms.all`,
+      `&state=${encodeURIComponent(state)}`,
+    ].join("");
+    window.location.href = authUrl;
+  };
+
   const wizScanTags = async () => {
     wizSet({ isLoading: true, error: "", discoveredTags: [], selectedTag: "__UNSET__" });
     try {
@@ -1841,6 +1867,14 @@ export default function SetupPage() {
                   >
                     <Ic d={I.refresh} className="w-3 h-3" />
                     {saving ? "Syncing…" : "Re-Sync EEN"}
+                  </button>
+                  <button
+                    onClick={() => reAuthEEN(zone.account_id)}
+                    className="flex items-center gap-1.5 text-[10px] text-amber-600 hover:text-amber-400 transition-all ml-3 shrink-0 whitespace-nowrap"
+                    title="Re-run EEN OAuth to refresh expired tokens"
+                  >
+                    <Ic d={I.excl} className="w-3 h-3" />
+                    Re-auth EEN
                   </button>
                 </div>
 
