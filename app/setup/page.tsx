@@ -1033,16 +1033,17 @@ export default function SetupPage() {
   };
 
   // ── Harvest cameras ───────────────────────────────────────────────────────
-  const harvestCameras = async (zoneId: string) => {
+  const harvestCameras = async (zoneId: string, ignoreTag = false) => {
     setSaving(true);
     try {
       const res = await fetch("/api/een/sync-hardware", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ zoneId }),
+        body: JSON.stringify({ zoneId, ignoreTag }),
       });
       const result = await res.json();
       if (result.success) await loadZoneCameras(zoneId);
+      else if (result.error) alert(`Sync error: ${result.error}`);
     } finally {
       setSaving(false);
     }
@@ -1867,14 +1868,24 @@ export default function SetupPage() {
                   <button
                     onClick={() => harvestCameras(zone.id)}
                     disabled={saving}
-                    className="flex items-center gap-1.5 text-[10px] text-slate-600 hover:text-slate-300 transition-all disabled:opacity-50 ml-3 shrink-0 whitespace-nowrap"
+                    className="flex items-center gap-1.5 text-[10px] text-slate-400 hover:text-white transition-all disabled:opacity-50 ml-3 shrink-0 whitespace-nowrap"
+                    title="Sync cameras that match this zone's EEN tag"
                   >
                     <Ic d={I.refresh} className="w-3 h-3" />
                     {saving ? "Syncing…" : "Re-Sync EEN"}
                   </button>
                   <button
+                    onClick={() => harvestCameras(zone.id, true)}
+                    disabled={saving}
+                    className="flex items-center gap-1.5 text-[10px] text-indigo-400 hover:text-indigo-200 transition-all disabled:opacity-50 ml-3 shrink-0 whitespace-nowrap"
+                    title="Pull ALL cameras on this EEN account regardless of tag — use when cameras aren't tagged in EEN"
+                  >
+                    <Ic d={I.refresh} className="w-3 h-3" />
+                    Sync All Cameras
+                  </button>
+                  <button
                     onClick={() => reAuthEEN(zone.account_id)}
-                    className="flex items-center gap-1.5 text-[10px] text-amber-600 hover:text-amber-400 transition-all ml-3 shrink-0 whitespace-nowrap"
+                    className="flex items-center gap-1.5 text-[10px] text-amber-500 hover:text-amber-300 transition-all ml-3 shrink-0 whitespace-nowrap"
                     title="Re-run EEN OAuth to refresh expired tokens"
                   >
                     <Ic d={I.excl} className="w-3 h-3" />

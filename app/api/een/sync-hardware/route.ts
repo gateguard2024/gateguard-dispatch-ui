@@ -28,7 +28,7 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const { zoneId } = body;
+    const { zoneId, ignoreTag = false } = body;
 
     if (!zoneId) {
       return NextResponse.json({ error: 'Missing required field: zoneId' }, { status: 400 });
@@ -46,7 +46,8 @@ export async function POST(request: Request) {
     }
 
     const { account_id: accountId, name: zoneName, een_tag: eenTag } = zone;
-    const isSingleSite = !eenTag || eenTag.trim() === '';
+    // ignoreTag=true → pull ALL cameras on the account regardless of tag (used when tag assignment is incomplete)
+    const isSingleSite = ignoreTag || !eenTag || eenTag.trim() === '';
 
     console.log(`[sync-hardware] Zone: "${zoneName}" | Account: ${accountId} | Tag: "${eenTag || 'ALL'}"`);
 
