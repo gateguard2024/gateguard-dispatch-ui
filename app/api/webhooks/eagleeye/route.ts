@@ -25,6 +25,7 @@
 import { NextResponse }               from 'next/server';
 import { createClient }               from '@supabase/supabase-js';
 import { isCameraWithinMonitoringHours } from '@/lib/schedule';
+import { getValidEENToken }           from '@/lib/een';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Priority = 'P1' | 'P2' | 'P3' | 'P4';
@@ -206,23 +207,89 @@ async function processEvent(supabase: any, event: EENEvent) {
 
   const siteName = [account?.name, zone?.name].filter(Boolean).join(' — ') || 'Unknown Site';
 
-  // Insert alarm
-  const { error: insertErr } = await supabase.from('alarms').insert({
-    priority,
-    event_type:  event.type,
-    event_label: labelFor(event.type),
-    site_name:   siteName,
-    camera_id:   camera.id,
-    zone_id:     camera.zone_id,
-    account_id:  camera.account_id,
-    source:      'een',
-    status:      'pending',
-    created_at:  event.startTimestamp ?? new Date().toISOString(),
-  });
+  // Insert alarm — select id so we can attach snapshot immediately after
+  const { data: inserted, error: insertErr } = await supabase
+    .from('alarms')
+    .insert({
+      priority,
+      event_type:  event.type,
+      event_label: labelFor(event.type),
+      site_name:   siteName,
+      camera_id:   camera.id,
+      zone_id:     camera.zone_id,
+      account_id:  camera.account_id,
+      source:      'een',
+      status:      'pending',
+      created_at:  event.startTimestamp ?? new Date().toISOString(),
+    })
+    .select('id')
+    .single();
 
-  if (insertErr) {
-    console.error(`[webhooks/eagleeye] Failed to insert alarm:`, insertErr.message);
-  } else {
-    console.log(`[webhooks/eagleeye] Alarm created — ${priority} ${labelFor(event.type)} @ ${siteName}`);
+  if (insertErr || !inserted) {
+    console.error(`[webhooks/eagleeye] Failed to insert alarm:`, insertErr?.message);
+    return;
   }
+
+  console.log(`[webhooks/eagleeye] Alarm created — ${priority} ${labelFor(event.type)} @ ${siteName}`);
+
+  // Capture JPEG snapshot from EEN and store in Supabase Storage.
+  // Fire-and-forget relative to alarm insert — alarm appears in queue immediately,
+  // snapshot_url populates ~1-2s later and triggers realtime update on the card.
+  captureAlarmSnapshot(supabase, inserted.id, esn, camera.account_id).catch(err =>
+    console.warn('[webhooks/eagleeye] Snapshot capture failed (non-fatal):', err.message)
+  );
+}
+
+// ─── Snapshot capture ─────────────────────────────────────────────────────────
+async function captureAlarmSnapshot(
+  supabase:  any,
+  alarmId:   string,
+  esn:       string,
+  accountId: string,
+): Promise<void> {
+  // 1. Get EEN token
+  const { token, cluster, apiKey } = await getValidEENToken(accountId);
+  if (!cluster || !token) {
+    console.warn(`[snapshot] No EEN token for account ${accountId} — skipping snapshot`);
+    return;
+  }
+
+  // 2. Fetch JPEG from EEN (8s timeout — don't hold up other events)
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    Accept:        'image/jpeg',
+  };
+  if (apiKey) headers['x-api-key'] = apiKey;
+
+  const imgRes = await fetch(
+    `https://${cluster}/api/v3.0/cameras/${encodeURIComponent(esn)}/image`,
+    { headers, signal: AbortSignal.timeout(8000) }
+  );
+
+  if (!imgRes.ok) {
+    console.warn(`[snapshot] EEN image fetch ${imgRes.status} for ESN ${esn} — skipping`);
+    return;
+  }
+
+  const imageBuffer = Buffer.from(await imgRes.arrayBuffer());
+
+  // 3. Upload to Supabase Storage bucket 'alarm-snapshots'
+  const path = `${alarmId}.jpg`;
+  const { error: uploadErr } = await supabase.storage
+    .from('alarm-snapshots')
+    .upload(path, imageBuffer, { contentType: 'image/jpeg', upsert: true });
+
+  if (uploadErr) {
+    // Most likely cause: bucket doesn't exist yet. Log clearly.
+    console.warn(`[snapshot] Storage upload failed — is 'alarm-snapshots' bucket created? Error: ${uploadErr.message}`);
+    return;
+  }
+
+  // 4. Get public URL and write back to alarm row
+  const { data: { publicUrl } } = supabase.storage
+    .from('alarm-snapshots')
+    .getPublicUrl(path);
+
+  await supabase.from('alarms').update({ snapshot_url: publicUrl }).eq('id', alarmId);
+  console.log(`[snapshot] ✓ Snapshot stored for alarm ${alarmId}`);
 }

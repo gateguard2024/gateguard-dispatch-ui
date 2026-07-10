@@ -53,12 +53,13 @@ interface Alarm {
   source:         'brivo' | 'een';
   status:         AlarmStatus;
   created_at:     string;
+  snapshot_url:   string | null;  // JPEG captured at alarm creation time (Supabase Storage)
   triage_status?: string | null;
   triage_result?: TriageResult | null;
   cameras?: {
     name: string;
     brivo_camera_id: string | null;
-    een_camera_id: string | null;
+    een_camera_id:   string | null;
   } | null;
   zones?: {
     name: string;
@@ -918,10 +919,36 @@ export default function AlarmsPage() {
                     }
                   `}
                 >
-                  <div className="flex items-center justify-between mb-1.5">
-                    <PriorityBadge p={alarm.priority} />
-                    <span className="text-[9px] text-slate-500">{timeAgo(alarm.created_at)}</span>
-                  </div>
+                  {/* Snapshot thumbnail — captured at alarm creation time */}
+                  {alarm.snapshot_url && (
+                    <div className="relative w-full h-24 mb-2 rounded overflow-hidden bg-black/40 -mx-0">
+                      <img
+                        src={alarm.snapshot_url}
+                        alt={alarm.event_label}
+                        className="w-full h-full object-cover"
+                        onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                      />
+                      {/* Priority badge overlaid on snapshot */}
+                      <div className="absolute top-1.5 left-1.5">
+                        <PriorityBadge p={alarm.priority} />
+                      </div>
+                      <div className="absolute bottom-1.5 right-1.5">
+                        <span className="text-[9px] text-white/70 bg-black/60 rounded px-1.5 py-0.5 font-mono">
+                          {timeAgo(alarm.created_at)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {/* Header row — only show when no snapshot (snapshot has overlaid badge) */}
+                  {!alarm.snapshot_url && (
+                    <div className="flex items-center justify-between mb-1.5">
+                      <PriorityBadge p={alarm.priority} />
+                      <span className="text-[9px] text-slate-500">{timeAgo(alarm.created_at)}</span>
+                    </div>
+                  )}
+                  {alarm.snapshot_url && (
+                    <div className="h-1" /> /* spacer after snapshot */
+                  )}
                   <p className="text-[11px] font-semibold text-white leading-tight mb-0.5 truncate">
                     {alarm.site_name}
                   </p>
