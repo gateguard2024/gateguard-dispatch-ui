@@ -113,50 +113,6 @@ function esnFromActor(actor: string): string | null {
   return match ? match[1] : null;
 }
 
-// ─── Portal bridge ────────────────────────────────────────────────────────────
-// Fire-and-forget: bridge a new alarm to the GateGuard Portal /incidents page.
-// Failures are logged but never block EEN acknowledgement.
-
-const SEVERITY_MAP: Record<Priority, string> = {
-  P1: 'critical',
-  P2: 'high',
-  P3: 'medium',
-  P4: 'low',
-};
-
-async function bridgeAlarmToPortal(opts: {
-  alarmId: string;
-  eventLabel: string;
-  eventType: string;
-  siteName: string;
-  priority: Priority;
-}) {
-  const portalUrl = process.env.PORTAL_URL ?? 'https://portal.gateguard.co';
-  try {
-    await fetch(`${portalUrl}/api/incidents/ingest`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title:         opts.eventLabel,
-        description:   `${opts.priority} alarm from GGSOC — ${opts.siteName}`,
-        severity:      SEVERITY_MAP[opts.priority] ?? 'medium',
-        source:        'ggsoc',
-        source_ext_id: opts.alarmId,
-        source_system: 'ggsoc',
-        metadata: {
-          alarmId:   opts.alarmId,
-          priority:  opts.priority,
-          eventType: opts.eventType,
-          siteName:  opts.siteName,
-        },
-      }),
-    });
-    console.log(`[webhooks/eagleeye] 🔗 Portal bridge: alarm ${opts.alarmId} → incident created`);
-  } catch (err: any) {
-    console.error(`[webhooks/eagleeye] Portal bridge failed for alarm ${opts.alarmId}:`, err.message);
-  }
-}
-
 // ─── Handler ──────────────────────────────────────────────────────────────────
 export async function POST(request: Request) {
   // Always return 200 first-thing to acknowledge receipt.
@@ -268,29 +224,5 @@ async function processEvent(supabase: any, event: EENEvent) {
     console.error(`[webhooks/eagleeye] Failed to insert alarm:`, insertErr.message);
   } else {
     console.log(`[webhooks/eagleeye] Alarm created — ${priority} ${labelFor(event.type)} @ ${siteName}`);
-
-    // Bridge all P1/P2/P3 alarms to Portal incidents (P4 is already skipped above)
-    {
-      // Get the inserted alarm ID for cross-referencing
-      const { data: inserted } = await supabase
-        .from('alarms')
-        .select('id')
-        .eq('source', 'een')
-        .eq('event_type', event.type)
-        .eq('camera_id', camera.id)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (inserted?.id) {
-        void bridgeAlarmToPortal({
-          alarmId:    inserted.id,
-          eventLabel: labelFor(event.type),
-          eventType:  event.type,
-          siteName,
-          priority,
-        });
-      }
-    }
   }
 }

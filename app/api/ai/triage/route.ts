@@ -258,7 +258,7 @@ Analyze this alarm and return your JSON decision.`.trim();
       })
       .eq('id', alarmId);
 
-    // ── 8. Auto-dismissed → write incident report + resolve portal incident ──────
+    // ── 8. Auto-dismissed → write incident report ─────────────────────────────
     if (decision === 'auto_dismiss') {
       await supabase
         .from('incident_reports')
@@ -276,22 +276,6 @@ Analyze this alarm and return your JSON decision.`.trim();
         });
 
       console.log(`[ai/triage] ✅ Auto-dismissed alarm ${alarmId}: ${triageResult.interpretation}`);
-
-      // Bridge auto-dismiss to Portal — resolve the incident if one was created
-      const portalUrl = process.env.PORTAL_URL ?? 'https://portal.gateguard.co';
-      void fetch(`${portalUrl}/api/incidents/ingest`, {
-        method:  'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source_ext_id:   alarmId,
-          source_system:   'ggsoc',
-          resolution_note: `AI auto-dismissed (${triageResult.confidence}% confidence): ${triageResult.interpretation}`,
-          resolved_by:     'GateGuard AI',
-        }),
-      }).catch((err: any) => {
-        console.error(`[ai/triage] Portal bridge resolve failed for alarm ${alarmId}:`, err.message);
-      });
-
     } else {
       console.log(`[ai/triage] 👤 Routed alarm ${alarmId} to human (${triageStatus}): ${triageResult.interpretation}`);
     }

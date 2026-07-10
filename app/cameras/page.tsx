@@ -15,10 +15,8 @@ const supabase = createClient(
 );
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Account {
-  id:               string;   // zone ID — tile key + camera loading
-  accountId:        string;   // parent account ID — EEN token, audit logs, Brivo
-  name:             string;   // zone name  e.g. "Marbella Place"
-  subtitle:         string;   // account/owner name  e.g. "Pegasus Properties"
+  id:               string;
+  name:             string;
   address?:         string;
   cameraCount:      number;
   onlineCount:      number;
@@ -107,34 +105,12 @@ const Ic = {
 function camKey(cam: CameraRow): string {
   return cam.brivo_camera_id ?? cam.een_camera_id ?? cam.id;
 }
-/** Returns a datetime-local string in the browser's local timezone (not UTC). */
-function toLocalDTString(d: Date): string {
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-}
 function fmtTime(iso: string): string {
   return new Date(iso).toLocaleString('en-US', {
     month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit', hour12: false,
   });
 }
-// ─── Reason → Priority map ────────────────────────────────────────────────────
-const REASON_PRIORITY: Record<string, 'P1' | 'P2' | 'P3'> = {
-  'Intrusion Detected':    'P1',
-  'Suspicious Person':     'P1',
-  'Fight / Altercation':   'P1',
-  'Weapon Observed':       'P1',
-  'Fire / Smoke':          'P1',
-  'Vandalism in Progress': 'P1',
-  'Loitering':             'P2',
-  'Unauthorized Access':   'P2',
-  'Gate Left Open':        'P2',
-  'Vehicle Blocking':      'P2',
-  'Package / Object Left': 'P2',
-  'Motion Detected':       'P3',
-  'Noise Complaint':       'P3',
-  'Welfare Check':         'P3',
-  'Other':                 'P3',
-};
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function CamerasPage() {
   // Clerk identity — used for audit logs and camera notes
@@ -157,9 +133,6 @@ export default function CamerasPage() {
   const [recordedToken, setRecordedToken]     = useState<string | null>(null);
   const [recordedLoading, setRecordedLoading] = useState(false);
   const [recordedError, setRecordedError]     = useState<string | null>(null);
-  const [recordedClips, setRecordedClips]     = useState<{ url: string; startTimestamp: string | null; endTimestamp: string | null }[]>([]);
-  const [activeClipIdx, setActiveClipIdx]     = useState(0);
-  const [playbackSec, setPlaybackSec]         = useState(0);   // video.currentTime of active clip
   const [startTime, setStartTime]             = useState('');
   const [endTime, setEndTime]                 = useState('');
   const [cameraNote, setCameraNote]           = useState('');
@@ -195,34 +168,43 @@ export default function CamerasPage() {
   async function loadAccounts() {
     setLoading(true);
     try {
-      // Load accounts for name lookup + saved primary camera selection
-      const { data: accts, error: acctErr } = await supabase
+      // Two flat queries instead of a nested join — more reliable across
+      // Supabase deployments where FK schema cache may not resolve chains.
+
+      // Try with primary camera columns first (requires migration 001m).
+      // If those columns don't exist yet, fall back to base columns so the
+      // page still renders while the migration is pending.
+      let accts: any[] | null = null;
+      let acctErr: any = null;
+
+      ({ data: accts, error: acctErr } = await supabase
         .from('accounts')
         .select('id, name, primary_camera_id, primary_camera_esn')
-        .order('name');
+        .order('name'));
+
+      if (acctErr) {
+        console.warn('[cameras] primary camera columns missing — falling back (run migration 001m):', acctErr.message);
+        ({ data: accts, error: acctErr } = await supabase
+          .from('accounts')
+          .select('id, name')
+          .order('name'));
+      }
+
       if (acctErr) { console.error('[cameras] accounts query error:', acctErr); return; }
       if (!accts || accts.length === 0) return;
 
-      const acctMap: Record<string, string> = {};
-      const acctPrimary: Record<string, { id: string | null; esn: string | null }> = {};
-      for (const a of accts) {
-        acctMap[a.id] = a.name;
-        acctPrimary[a.id] = { id: a.primary_camera_id ?? null, esn: a.primary_camera_esn ?? null };
-      }
-
-      // Load all zones — each zone becomes its own tile
+      // Pull all cameras for these accounts in one query via zones
       const accountIds = accts.map((a: any) => a.id);
+
       const { data: zones, error: zoneErr } = await supabase
         .from('zones')
-        .select('id, account_id, name')
-        .in('account_id', accountIds)
-        .order('name');
-      if (zoneErr) { console.error('[cameras] zones query error:', zoneErr); return; }
-      if (!zones || zones.length === 0) return;
+        .select('id, account_id')
+        .in('account_id', accountIds);
 
-      const zoneIds = zones.map((z: any) => z.id);
+      if (zoneErr) { console.error('[cameras] zones query error:', zoneErr); }
 
-      // Load cameras grouped by zone
+      const zoneIds = (zones ?? []).map((z: any) => z.id);
+
       let camRows: any[] = [];
       if (zoneIds.length > 0) {
         const { data: cams, error: camErr } = await supabase
@@ -233,34 +215,42 @@ export default function CamerasPage() {
         camRows = cams ?? [];
       }
 
-      const camsByZone: Record<string, any[]> = {};
+      // Build a zone_id → account_id lookup
+      const zoneToAccount: Record<string, string> = {};
+      for (const z of (zones ?? [])) zoneToAccount[z.id] = z.account_id;
+
+      // Group cameras by account_id
+      const camsByAccount: Record<string, any[]> = {};
       for (const cam of camRows) {
-        if (!camsByZone[cam.zone_id]) camsByZone[cam.zone_id] = [];
-        camsByZone[cam.zone_id].push(cam);
+        const acctId = zoneToAccount[cam.zone_id];
+        if (!acctId) continue;
+        if (!camsByAccount[acctId]) camsByAccount[acctId] = [];
+        camsByAccount[acctId].push(cam);
       }
 
-      // One tile per zone
-      const mapped: Account[] = zones.map((z: any) => {
-        const allCams    = camsByZone[z.id] ?? [];
-        const online     = allCams.filter((c: any) => c.is_monitored).length;
-        const snap       = allCams.find((c: any) => c.snapshot_url)?.snapshot_url ?? null;
+      const mapped: Account[] = accts.map((a: any) => {
+        const allCams     = camsByAccount[a.id] ?? [];
+        const online      = allCams.filter((c: any) => c.is_monitored).length;
+        const snap        = allCams.find((c: any) => c.snapshot_url)?.snapshot_url ?? null;
+        // Pick first monitored EEN camera as fallback thumbnail
         const firstEenCam = allCams.find((c: any) => c.source === 'een' && c.een_camera_id && c.is_monitored)
                          ?? allCams.find((c: any) => c.source === 'een' && c.een_camera_id);
+        // Resolve primary camera (user-selected) for thumbnail
+        const primaryCam  = a.primary_camera_id
+          ? allCams.find((c: any) => c.id === a.primary_camera_id) ?? null
+          : null;
         return {
-          id:                z.id,                      // zone ID
-          accountId:         z.account_id,              // parent account ID
-          name:              z.name,                    // zone name shown on tile
-          subtitle:          acctMap[z.account_id] ?? '', // account/owner name
+          id:                a.id,
+          name:              a.name,
           address:           undefined,
           cameraCount:       allCams.length,
           onlineCount:       online,
           hasAlert:          false,
           firstSnap:         snap,
           firstEenCamId:     firstEenCam?.een_camera_id ?? null,
-          // Restore saved primary camera — falls back to first EEN cam if none saved
-          primaryCameraId:   acctPrimary[z.account_id]?.id ?? null,
-          primaryCameraEsn:  firstEenCam?.een_camera_id ?? null,    // per-zone only — don't bleed account-level primary across zones
-          primaryCameraSnap: null,
+          primaryCameraId:   a.primary_camera_id   ?? null,
+          primaryCameraEsn:  a.primary_camera_esn  ?? primaryCam?.een_camera_id ?? null,
+          primaryCameraSnap: primaryCam?.snapshot_url ?? null,
         };
       });
 
@@ -269,16 +259,29 @@ export default function CamerasPage() {
       setLoading(false);
     }
   }
-  // ── View 2: Load cameras for zone (one zone = one tile) ──────────────────
+  // ── View 2: Load cameras for account ─────────────────────────────────────
   const openAccount = useCallback(async (account: Account) => {
     setSelectedAccount(account);
     setView(2);
     setWallLoading(true);
-    // account.id is the zone ID — load cameras for this zone only
+    // Get zone IDs for this account
+    const { data: zones } = await supabase
+      .from('zones')
+      .select('id')
+      .eq('account_id', account.id);
+
+    // Only select id — TypeScript infers { id: string }[] from the narrow select above
+    const zoneIds = (zones ?? []).map((z) => z.id);
+
+    if (zoneIds.length === 0) {
+      setCameras([]);
+      setWallLoading(false);
+      return;
+    }
     const { data: cams } = await supabase
       .from('cameras')
       .select('id, name, source, brivo_camera_id, een_camera_id, is_monitored, snapshot_url, zone_id, brivo_door_id')
-      .eq('zone_id', account.id)
+      .in('zone_id', zoneIds)
       .order('name');
     setCameras((cams as CameraRow[]) ?? []);
     setWallLoading(false);
@@ -287,9 +290,6 @@ export default function CamerasPage() {
   const openCamera = useCallback(async (cam: CameraRow) => {
     setSelectedCamera(cam);
     setRecordedUrl(null);
-    setRecordedToken(null);
-    setRecordedClips([]);
-    setActiveClipIdx(0);
     setRecordedError(null);
     setCameraNote('');
     setDoorOpened(false);
@@ -303,36 +303,31 @@ export default function CamerasPage() {
     setAlarmRaised(false);
     setAlarmReason('');
     setAlarmNotes('');
-    // Default hold end time: 2 hours from now (local time for datetime-local input)
+    // Default hold end time: 2 hours from now
     const twoHours = new Date(Date.now() + 2 * 60 * 60_000);
-    setHoldEndTime(toLocalDTString(twoHours));
+    setHoldEndTime(twoHours.toISOString().slice(0, 16));
     setView(3);
-    // Default time range: last 30 min (local time for datetime-local input)
-    const now  = new Date();
-    const minus = new Date(now.getTime() - 30 * 60_000);
-    setEndTime(toLocalDTString(now));
-    setStartTime(toLocalDTString(minus));
+    // Default time range: last 30 min
+    const now   = new Date();
+    const minus  = new Date(now.getTime() - 30 * 60_000);
+    setEndTime(now.toISOString().slice(0, 16));
+    setStartTime(minus.toISOString().slice(0, 16));
     // Load past notes and account doors in parallel
     const [{ data: notes }, { data: acct }] = await Promise.all([
       supabase
         .from('audit_logs')
         .select('id, details, created_at')
-        .eq('account_id', (selectedAccount as Account).accountId)
+        .eq('camera_id', cam.id)
         .eq('action', 'camera_note')
         .order('created_at', { ascending: false })
-        .limit(50),
+        .limit(5),
       supabase
         .from('accounts')
         .select('brivo_door_ids')
-        .eq('id', (selectedAccount as Account).accountId)
+        .eq('id', (selectedAccount as Account).id)
         .single(),
     ]);
-    const filtered = (notes ?? [])
-      .filter((n: any) => {
-        try { return JSON.parse(n.details).camera_id === cam.id; } catch { return false; }
-      })
-      .slice(0, 5);
-    setPastNotes(filtered);
+    setPastNotes(notes ?? []);
     setAvailableDoors((acct as any)?.brivo_door_ids ?? []);
   }, [selectedAccount]);
   // ── Fetch recorded clip ───────────────────────────────────────────────────
@@ -348,7 +343,7 @@ export default function CamerasPage() {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          accountId: selectedAccount.accountId,
+          accountId: selectedAccount.id,
           cameraId:  camKey(selectedCamera),
           startTime: new Date(startTime).toISOString(),
           endTime:   new Date(endTime).toISOString(),
@@ -356,12 +351,7 @@ export default function CamerasPage() {
       });
       const data = await res.json();
       if (!res.ok || !data.url) throw new Error(data.error ?? 'No recording found');
-      // Store all segments for the navigator — fall back to single-clip shape
-      const clips = data.clips ?? [{ url: data.url, startTimestamp: data.startTimestamp ?? null, endTimestamp: data.endTimestamp ?? null }];
-      setRecordedClips(clips);
-      setActiveClipIdx(0);
-      setPlaybackSec(0);
-      setRecordedUrl(clips[0].url);
+      setRecordedUrl(data.url);
       setRecordedToken(data.token ?? null);
     } catch (err: any) {
       setRecordedError(err.message);
@@ -373,18 +363,17 @@ export default function CamerasPage() {
   async function saveNote() {
     if (!selectedCamera || !cameraNote.trim()) return;
     setNotesSaving(true);
-    const noteDetails = JSON.stringify({ camera_id: selectedCamera.id, note: cameraNote.trim() });
     await supabase.from('audit_logs').insert({
-      account_id:  selectedAccount!.accountId,
+      camera_id:   selectedCamera.id,
       zone_id:     selectedCamera.zone_id,
       operator_id: operatorId,
       action:      'camera_note',
-      details:     noteDetails,
+      details:     cameraNote.trim(),
       created_at:  new Date().toISOString(),
     });
     setPastNotes(prev => [{
       id: Date.now().toString(),
-      details: noteDetails,
+      details: cameraNote.trim(),
       created_at: new Date().toISOString(),
     }, ...prev].slice(0, 5));
     setCameraNote('');
@@ -400,7 +389,7 @@ export default function CamerasPage() {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          accountId:    selectedAccount.accountId,
+          accountId:    selectedAccount.id,
           doorId:       linkedDoorId,
           operatorId,
           operatorName: operatorName,
@@ -438,7 +427,7 @@ export default function CamerasPage() {
     setHoldError(null);
     try {
       const body: any = {
-        accountId:    selectedAccount.accountId,
+        accountId:    selectedAccount.id,
         doorId:       linkedDoorId,
         mode:         holdMode,
         operatorId:   'operator-1',
@@ -470,7 +459,7 @@ export default function CamerasPage() {
         primary_camera_id:  cam.id,
         primary_camera_esn: cam.een_camera_id ?? null,
       })
-      .eq('id', selectedAccount.accountId);
+      .eq('id', selectedAccount.id);
     // Update local accounts list so tile updates immediately when going back
     setAccounts(prev => prev.map(a =>
       a.id === selectedAccount.id
@@ -491,7 +480,7 @@ export default function CamerasPage() {
         site_name:   selectedAccount.name,
         camera_id:   selectedCamera.id,
         zone_id:     selectedCamera.zone_id,
-        account_id:  selectedAccount.accountId,
+        account_id:  selectedAccount.id,
         source:      'manual',
         status:      'pending',
         created_at:  new Date().toISOString(),
@@ -501,16 +490,17 @@ export default function CamerasPage() {
       await supabase.from('audit_logs').insert({
         camera_id:   selectedCamera.id,
         zone_id:     selectedCamera.zone_id,
-        account_id:  selectedAccount.accountId,
+        account_id:  selectedAccount.id,
         operator_id: operatorId,
         action:      'manual_alarm_raised',
         details:     JSON.stringify({ priority: alarmPriority, reason: alarmReason, notes: alarmNotes }),
         created_at:  new Date().toISOString(),
       });
-      setAlarmRaised(true);    // persists until page refresh — user sees confirmation
+      setAlarmRaised(true);
       setRaiseAlarmOpen(false);
       setAlarmReason('');
       setAlarmNotes('');
+      setTimeout(() => setAlarmRaised(false), 6000);
     } catch (err: any) {
       console.error('[raiseAlarm]', err.message);
     } finally {
@@ -527,7 +517,7 @@ export default function CamerasPage() {
         method:  'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          accountId:    selectedAccount.accountId,
+          accountId:    selectedAccount.id,
           doorId:       linkedDoorId,
           operatorId,
           operatorName: operatorName,
@@ -547,14 +537,14 @@ export default function CamerasPage() {
   // ── VIEW 1: Site Tile Grid ────────────────────────────────────────────────
   if (view === 1) {
     return (
-      <div className="flex flex-col h-full bg-[#07111f] text-white overflow-auto">
+      <div className="flex flex-col h-full bg-[#030406] text-white overflow-auto">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-indigo-900/30 flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-4 h-4 text-indigo-400"><Ic.Camera /></div>
+            <div className="w-4 h-4 text-slate-400"><Ic.Camera /></div>
             <h1 className="text-[13px] font-semibold text-white uppercase tracking-[0.1em]">Camera Sites</h1>
           </div>
-          <span className="text-[10px] text-slate-500">{accounts.length} sites</span>
+          <span className="text-[10px] text-slate-600">{accounts.length} sites</span>
         </div>
         {/* Grid */}
         <div className="flex-1 p-6">
@@ -569,32 +559,42 @@ export default function CamerasPage() {
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {accounts.map((account, acctIdx) => (
+              {accounts.map((account) => (
                 <button
                   key={account.id}
                   onClick={() => openAccount(account)}
-                  className="group relative flex flex-col rounded border border-indigo-900/25 bg-indigo-950/20 hover:bg-indigo-900/15 hover:border-indigo-600/35 transition-all text-left overflow-hidden"
+                  className="group relative flex flex-col rounded border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.12] transition-all text-left overflow-hidden"
                 >
-                  {/* Thumbnail — static snapshot per zone (fast load, no stream lock) */}
-                  <div className="aspect-video bg-[#040c1a] relative overflow-hidden">
-                    {account.firstEenCamId ? (
-                      <img
-                        src={`/api/een/image?accountId=${account.accountId}&cameraId=${account.firstEenCamId}`}
-                        alt={account.name}
-                        className="w-full h-full object-cover"
-                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                      />
-                    ) : account.firstSnap ? (
-                      <img
-                        src={account.firstSnap}
-                        alt={account.name}
-                        className="w-full h-full object-cover opacity-60"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <div className="w-8 h-8 text-slate-700"><Ic.Building /></div>
-                      </div>
-                    )}
+                  {/* Thumbnail — live preview stream of primary/first EEN camera */}
+                  <div className="aspect-video bg-black relative overflow-hidden">
+                    {(() => {
+                      const esnToUse  = account.primaryCameraEsn ?? account.firstEenCamId;
+                      const snapToUse = account.primaryCameraSnap ?? account.firstSnap;
+                      if (esnToUse) return (
+                        /* pointer-events-none keeps the tile button clickable */
+                        <div className="absolute inset-0 pointer-events-none">
+                          <SmartVideoPlayer
+                            accountId={account.id}
+                            cameraId={esnToUse}
+                            source="een"
+                            streamType="preview"
+                            disableFullscreen
+                          />
+                        </div>
+                      );
+                      if (snapToUse) return (
+                        <img
+                          src={snapToUse}
+                          alt={account.name}
+                          className="w-full h-full object-cover opacity-60"
+                        />
+                      );
+                      return (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <div className="w-8 h-8 text-slate-700"><Ic.Building /></div>
+                        </div>
+                      );
+                    })()}
                     {/* Primary camera label */}
                     {account.primaryCameraId && (
                       <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-indigo-600/80 backdrop-blur-sm rounded px-1.5 py-0.5 pointer-events-none">
@@ -619,8 +619,8 @@ export default function CamerasPage() {
                   {/* Info */}
                   <div className="px-3 py-2.5">
                     <p className="text-[12px] font-semibold text-white truncate">{account.name}</p>
-                    {account.subtitle && (
-                      <p className="text-[10px] text-slate-500 truncate mt-0.5">{account.subtitle}</p>
+                    {account.address && (
+                      <p className="text-[10px] text-slate-500 truncate mt-0.5">{account.address}</p>
                     )}
                     <div className="flex items-center gap-2 mt-1.5">
                       <span className="text-[9px] text-slate-600">
@@ -639,23 +639,18 @@ export default function CamerasPage() {
   // ── VIEW 2: Camera Wall ───────────────────────────────────────────────────
   if (view === 2 && selectedAccount) {
     return (
-      <div className="flex flex-col h-full bg-[#07111f] text-white overflow-auto">
+      <div className="flex flex-col h-full bg-[#030406] text-white overflow-auto">
         {/* Header */}
-        <div className="px-4 py-3 border-b border-indigo-900/30 flex items-center gap-3">
+        <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-3">
           <button
             onClick={() => setView(1)}
             className="w-6 h-6 text-slate-500 hover:text-white transition-colors"
           >
             <Ic.ArrowLeft />
           </button>
-          <div className="w-px h-4 bg-indigo-900/40" />
-          <div className="w-3.5 h-3.5 text-indigo-400"><Ic.Camera /></div>
-          <div className="flex flex-col">
-            <span className="text-[13px] font-semibold text-white leading-tight">{selectedAccount.name}</span>
-            {selectedAccount.subtitle && (
-              <span className="text-[10px] text-slate-500 leading-tight">{selectedAccount.subtitle}</span>
-            )}
-          </div>
+          <div className="w-px h-4 bg-white/[0.08]" />
+          <div className="w-3.5 h-3.5 text-slate-400"><Ic.Camera /></div>
+          <span className="text-[13px] font-semibold text-white">{selectedAccount.name}</span>
           <span className="text-[10px] text-slate-600">
             {cameras.length} camera{cameras.length !== 1 ? 's' : ''}
           </span>
@@ -673,23 +668,22 @@ export default function CamerasPage() {
             </div>
           ) : (
             <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
-              {cameras.map((cam, camIdx) => {
+              {cameras.map((cam) => {
                 const key = camKey(cam);
                 return (
                   <div
                     key={cam.id}
-                    className="group relative aspect-video rounded border border-indigo-900/20 bg-[#040c1a] overflow-hidden cursor-pointer hover:border-indigo-500/40 transition-all"
+                    className="group relative aspect-video rounded border border-white/[0.06] bg-black overflow-hidden cursor-pointer hover:border-white/20 transition-all"
                     onDoubleClick={(e) => { e.stopPropagation(); openCamera(cam); }}
                   >
                     {/* pointer-events-none so hover actions and double-click on the tile work */}
                     <div className="absolute inset-0 pointer-events-none">
                       <SmartVideoPlayer
-                        accountId={selectedAccount.accountId}
+                        accountId={selectedAccount.id}
                         cameraId={key}
                         source={cam.source}
                         streamType="preview"
                         disableFullscreen
-                        startDelay={camIdx * 200}
                       />
                     </div>
                     {/* Label */}
@@ -754,22 +748,19 @@ export default function CamerasPage() {
   if (view === 3 && selectedCamera && selectedAccount) {
     const key = camKey(selectedCamera);
     return (
-      <div className="flex flex-col h-full bg-[#07111f] text-white overflow-hidden">
+      <div className="flex flex-col h-full bg-[#030406] text-white overflow-hidden">
         {/* Header */}
-        <div className="px-4 py-3 border-b border-indigo-900/30 flex items-center gap-3">
+        <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-3">
           <button
             onClick={() => setView(2)}
             className="w-6 h-6 text-slate-500 hover:text-white transition-colors"
           >
             <Ic.ArrowLeft />
           </button>
-          <div className="w-px h-4 bg-indigo-900/40" />
-          <div className="w-3.5 h-3.5 text-indigo-400"><Ic.Camera /></div>
+          <div className="w-px h-4 bg-white/[0.08]" />
+          <div className="w-3.5 h-3.5 text-slate-400"><Ic.Camera /></div>
           <span className="text-[13px] font-semibold text-white">{selectedCamera.name}</span>
-          <span className="text-[10px] text-slate-500">{selectedAccount.name}</span>
-          {selectedAccount.subtitle && (
-            <span className="text-[10px] text-slate-600">· {selectedAccount.subtitle}</span>
-          )}
+          <span className="text-[10px] text-slate-600">{selectedAccount.name}</span>
           <div className="ml-auto flex items-center gap-1.5">
             <span className={`block w-1.5 h-1.5 rounded-full ${selectedCamera.is_monitored ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
             <span className="text-[10px] text-slate-600">{selectedCamera.is_monitored ? 'Monitored' : 'Offline'}</span>
@@ -778,37 +769,21 @@ export default function CamerasPage() {
         {/* Main content */}
         <div className="flex-1 flex min-h-0">
           {/* LEFT: Main player (full-width top 60%) + scrubber */}
-          <div className="flex-1 flex flex-col min-w-0 border-r border-indigo-900/30">
+          <div className="flex-1 flex flex-col min-w-0 border-r border-white/[0.06]">
             {/* Player — 60% */}
-            <div className="bg-black relative" style={{ height: '60%' }}>
+            <div className="bg-black" style={{ height: '60%' }}>
               <SmartVideoPlayer
-                accountId={selectedAccount.accountId}
+                accountId={selectedAccount.id}
                 cameraId={key}
                 source={selectedCamera.source}
                 streamType="preview"
                 recordedUrl={recordedUrl ?? undefined}
                 recordedToken={recordedToken ?? undefined}
                 label={selectedCamera.name}
-                onTimeUpdate={setPlaybackSec}
               />
-              {/* Wall-clock timestamp overlay — shown during recorded playback */}
-              {recordedUrl && recordedClips[activeClipIdx]?.startTimestamp && (
-                <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-black/70 backdrop-blur-sm border border-white/10 rounded px-2 py-1 pointer-events-none">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-                  <span className="text-[10px] font-mono text-amber-300 tabular-nums">
-                    {new Date(
-                      new Date(recordedClips[activeClipIdx].startTimestamp!).getTime() + playbackSec * 1000
-                    ).toLocaleString('en-US', {
-                      month: 'short', day: 'numeric',
-                      hour: '2-digit', minute: '2-digit', second: '2-digit',
-                      hour12: true,
-                    })}
-                  </span>
-                </div>
-              )}
             </div>
             {/* Timeline scrubber — 40% */}
-            <div className="flex-1 overflow-y-auto p-4 border-t border-indigo-900/30">
+            <div className="flex-1 overflow-y-auto p-4 border-t border-white/[0.06]">
               <div className="flex items-center gap-2 mb-3">
                 <div className="w-3.5 h-3.5 text-slate-500"><Ic.Clock /></div>
                 <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Recorded Footage</span>
@@ -849,86 +824,15 @@ export default function CamerasPage() {
                 {recordedLoading ? 'Fetching...' : 'Load Recorded Clip'}
               </button>
               {recordedUrl && (
-                <div className="mt-2 flex flex-col gap-2">
-                  {/* Status bar */}
-                  <div className="flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
-                    <span className="text-[10px] text-amber-400">
-                      {recordedClips.length > 1
-                        ? `Segment ${activeClipIdx + 1} of ${recordedClips.length} — double-click player for fullscreen`
-                        : 'Playing recorded clip — double-click player for fullscreen'}
-                    </span>
-                    <button
-                      onClick={() => { setRecordedUrl(null); setRecordedClips([]); setActiveClipIdx(0); setPlaybackSec(0); }}
-                      className="text-[9px] text-slate-500 hover:text-white underline ml-auto shrink-0"
-                    >
-                      Back to live
-                    </button>
-                  </div>
-
-                  {/* Segment navigator — only shown when multiple clips */}
-                  {recordedClips.length > 1 && (
-                    <div className="flex flex-col gap-1.5">
-                      <p className="text-[9px] text-slate-500 uppercase tracking-wider">
-                        Segments — click to jump · {recordedClips.length} × ~30 min blocks
-                      </p>
-                      <div className="flex flex-wrap gap-1">
-                        {recordedClips.map((clip, idx) => {
-                          const label = clip.startTimestamp
-                            ? new Date(clip.startTimestamp).toLocaleString('en-US', {
-                                month: 'short', day: 'numeric',
-                                hour: '2-digit', minute: '2-digit', hour12: true,
-                              })
-                            : `Seg ${idx + 1}`;
-                          const isActive = idx === activeClipIdx;
-                          return (
-                            <button
-                              key={idx}
-                              onClick={() => {
-                                setActiveClipIdx(idx);
-                                setPlaybackSec(0);
-                                setRecordedUrl(clip.url);
-                              }}
-                              title={label}
-                              className={`px-2 py-1 rounded border text-[9px] font-medium transition-all whitespace-nowrap ${
-                                isActive
-                                  ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
-                                  : 'bg-white/[0.03] border-white/[0.08] text-slate-500 hover:text-slate-200 hover:border-white/20'
-                              }`}
-                            >
-                              {label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      {/* Prev / Next controls */}
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <button
-                          onClick={() => {
-                            const prev = activeClipIdx - 1;
-                            if (prev >= 0) { setActiveClipIdx(prev); setPlaybackSec(0); setRecordedUrl(recordedClips[prev].url); }
-                          }}
-                          disabled={activeClipIdx === 0}
-                          className="flex items-center gap-1 px-2.5 py-1 rounded border border-white/[0.08] text-[9px] text-slate-400 hover:text-white hover:border-white/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-                          ← Earlier
-                        </button>
-                        <span className="text-[9px] text-slate-600 flex-1 text-center">
-                          {activeClipIdx + 1} / {recordedClips.length}
-                        </span>
-                        <button
-                          onClick={() => {
-                            const next = activeClipIdx + 1;
-                            if (next < recordedClips.length) { setActiveClipIdx(next); setPlaybackSec(0); setRecordedUrl(recordedClips[next].url); }
-                          }}
-                          disabled={activeClipIdx === recordedClips.length - 1}
-                          className="flex items-center gap-1 px-2.5 py-1 rounded border border-white/[0.08] text-[9px] text-slate-400 hover:text-white hover:border-white/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-                          Later →
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                  <span className="text-[10px] text-amber-400">Playing recorded clip — double-click player for fullscreen</span>
+                  <button
+                    onClick={() => setRecordedUrl(null)}
+                    className="text-[9px] text-slate-500 hover:text-white underline ml-auto"
+                  >
+                    Back to live
+                  </button>
                 </div>
               )}
             </div>
@@ -937,19 +841,13 @@ export default function CamerasPage() {
           <div className="w-[280px] shrink-0 flex flex-col">
 
             {/* ── Raise Alarm ── */}
-            <div className="px-4 py-3 border-b border-indigo-900/25 flex items-center justify-between">
+            <div className="px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
               <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Raise Alarm</span>
-            </div>
-            <div className="px-4 py-3 border-b border-indigo-900/25 flex flex-col gap-2.5">
-              {/* Persistent confirmation — clears on page refresh */}
               {alarmRaised && (
-                <div className="flex items-center gap-2 py-2 px-3 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px] font-semibold">
-                  <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="m4.5 12.75 6 6 9-13.5" />
-                  </svg>
-                  Alarm raised — dispatching to queue
-                </div>
+                <span className="text-[9px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">✓ Alarm raised</span>
               )}
+            </div>
+            <div className="px-4 py-3 border-b border-white/[0.06] flex flex-col gap-2.5">
               {!raiseAlarmOpen ? (
                 <button
                   onClick={() => setRaiseAlarmOpen(true)}
@@ -958,18 +856,32 @@ export default function CamerasPage() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-3.5 h-3.5">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
                   </svg>
-                  {alarmRaised ? 'Raise Another Alarm' : 'Raise Alarm'}
+                  Raise Alarm
                 </button>
               ) : (
                 <div className="flex flex-col gap-2">
-                  {/* Reason — pick first; priority auto-fills below */}
+                  {/* Priority */}
+                  <div className="grid grid-cols-3 gap-1">
+                    {(['P1','P2','P3'] as const).map(p => (
+                      <button
+                        key={p}
+                        onClick={() => setAlarmPriority(p)}
+                        className={`py-1.5 rounded border text-[10px] font-semibold transition-all ${
+                          alarmPriority === p
+                            ? p === 'P1' ? 'bg-red-600/30 border-red-500/50 text-red-300'
+                              : p === 'P2' ? 'bg-amber-600/30 border-amber-500/50 text-amber-300'
+                              : 'bg-slate-600/30 border-slate-500/50 text-slate-300'
+                            : 'bg-white/[0.03] border-white/[0.06] text-slate-600 hover:text-slate-400'
+                        }`}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Reason */}
                   <select
                     value={alarmReason}
-                    onChange={e => {
-                      const reason = e.target.value;
-                      setAlarmReason(reason);
-                      if (reason && REASON_PRIORITY[reason]) setAlarmPriority(REASON_PRIORITY[reason]);
-                    }}
+                    onChange={e => setAlarmReason(e.target.value)}
                     className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2.5 py-1.5 text-[11px] text-slate-300 focus:outline-none focus:border-red-500/50 [color-scheme:dark]"
                   >
                     <option value="">— Select reason —</option>
@@ -995,39 +907,13 @@ export default function CamerasPage() {
                       <option value="Other">Other</option>
                     </optgroup>
                   </select>
-                  {/* Priority — auto-filled from reason, click to override */}
-                  <div>
-                    <p className="text-[9px] text-slate-600 mb-1 uppercase tracking-wider">
-                      Priority
-                      {alarmReason && REASON_PRIORITY[alarmReason] && alarmPriority !== REASON_PRIORITY[alarmReason] && (
-                        <span className="ml-1.5 text-amber-500">· overridden</span>
-                      )}
-                    </p>
-                    <div className="grid grid-cols-3 gap-1">
-                      {(['P1','P2','P3'] as const).map(p => (
-                        <button
-                          key={p}
-                          onClick={() => setAlarmPriority(p)}
-                          className={`py-1.5 rounded border text-[10px] font-semibold transition-all ${
-                            alarmPriority === p
-                              ? p === 'P1' ? 'bg-red-600/30 border-red-500/50 text-red-300'
-                                : p === 'P2' ? 'bg-amber-600/30 border-amber-500/50 text-amber-300'
-                                : 'bg-slate-600/30 border-slate-500/50 text-slate-300'
-                              : 'bg-white/[0.03] border-indigo-900/25 text-slate-600 hover:text-slate-400'
-                          }`}
-                        >
-                          {p}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
                   {/* Notes */}
                   <textarea
                     value={alarmNotes}
                     onChange={e => setAlarmNotes(e.target.value)}
                     placeholder="Optional notes..."
                     rows={2}
-                    className="w-full bg-white/[0.03] border border-indigo-900/25 rounded px-2.5 py-1.5 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-red-500/40"
+                    className="w-full bg-white/[0.03] border border-white/[0.06] rounded px-2.5 py-1.5 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-red-500/40"
                   />
                   <div className="flex gap-2">
                     <button
@@ -1052,10 +938,10 @@ export default function CamerasPage() {
             </div>
 
             {/* ── Door Access ── */}
-            <div className="px-4 py-3 border-b border-indigo-900/25">
+            <div className="px-4 py-3 border-b border-white/[0.06]">
               <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Door Access</span>
             </div>
-            <div className="px-4 py-4 border-b border-indigo-900/25 flex flex-col gap-2.5">
+            <div className="px-4 py-4 border-b border-white/[0.06] flex flex-col gap-2.5">
               {availableDoors.length === 0 ? (
                 <p className="text-[10px] text-slate-600 leading-relaxed">
                   No doors configured for this site. Add them in Setup → Brivo.
@@ -1106,7 +992,7 @@ export default function CamerasPage() {
 
                   {/* ── Hold Open ── */}
                   {linkedDoorId && (
-                    <div className="mt-1 pt-3 border-t border-indigo-900/25 flex flex-col gap-2">
+                    <div className="mt-1 pt-3 border-t border-white/[0.06] flex flex-col gap-2">
                       <span className="text-[9px] text-slate-500 uppercase tracking-wider">Hold Open</span>
 
                       {holdActive ? (
@@ -1143,7 +1029,7 @@ export default function CamerasPage() {
                                 className={`py-1.5 rounded border text-[10px] font-medium transition-all ${
                                   holdMode === m
                                     ? 'bg-indigo-600/30 border-indigo-500/40 text-indigo-300'
-                                    : 'bg-white/[0.03] border-indigo-900/25 text-slate-500 hover:text-slate-300'
+                                    : 'bg-white/[0.03] border-white/[0.06] text-slate-500 hover:text-slate-300'
                                 }`}
                               >
                                 {m === 'indefinite' ? 'Indefinite' : 'Until Time'}
@@ -1187,7 +1073,7 @@ export default function CamerasPage() {
             </div>
 
             {/* ── Camera Notes ── */}
-            <div className="px-4 py-3 border-b border-indigo-900/25">
+            <div className="px-4 py-3 border-b border-white/[0.06]">
               <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Camera Notes</span>
             </div>
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
@@ -1197,7 +1083,7 @@ export default function CamerasPage() {
                 onChange={e => setCameraNote(e.target.value)}
                 placeholder="Add a note about this camera..."
                 rows={4}
-                className="w-full bg-white/[0.03] border border-indigo-900/25 rounded px-3 py-2 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500/50"
+                className="w-full bg-white/[0.03] border border-white/[0.06] rounded px-3 py-2 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500/50"
               />
               <button
                 onClick={saveNote}
@@ -1209,16 +1095,14 @@ export default function CamerasPage() {
               </button>
               {/* Past notes */}
               {pastNotes.length > 0 && (
-                <div className="space-y-2 pt-2 border-t border-indigo-900/25">
+                <div className="space-y-2 pt-2 border-t border-white/[0.06]">
                   <p className="text-[9px] text-slate-600 uppercase tracking-wider">Recent Notes</p>
                   {pastNotes.map((note) => (
                     <div
                       key={note.id}
                       className="px-2.5 py-2 rounded bg-white/[0.02] border border-white/[0.05]"
                     >
-                      <p className="text-[10px] text-slate-300 leading-relaxed">
-                        {(() => { try { return JSON.parse(note.details).note ?? note.details; } catch { return note.details; } })()}
-                      </p>
+                      <p className="text-[10px] text-slate-300 leading-relaxed">{note.details}</p>
                       <p className="text-[9px] text-slate-600 mt-1">{fmtTime(note.created_at)}</p>
                     </div>
                   ))}

@@ -18,22 +18,6 @@ interface KpiData {
   resolutionRate:   number | null;
 }
 
-interface GateStatusRow {
-  id:               string;
-  name:             string;
-  gate_type:        string;
-  status:           string;
-  status_updated_at: string | null;
-  status_updated_by: string | null;
-  accounts?: { name: string } | null;
-}
-
-interface GateStats {
-  operational:  number;
-  total:        number;
-  needsService: GateStatusRow[];
-}
-
 interface SlaRow   { label: string; pct: number; color: string; }
 interface HourPt   { hour: string; current: number; previous: number; }
 interface OperatorRow { name: string; count: number; }
@@ -42,15 +26,6 @@ interface RecentAlarm {
   priority: string;
   event_label: string;
   site_name: string;
-  status: string;
-  created_at: string;
-}
-
-interface RecentCall {
-  id: string;
-  to_number: string;
-  site_name: string;
-  operator_name: string;
   status: string;
   created_at: string;
 }
@@ -74,7 +49,7 @@ function KpiCard({ label, value, sub, accent, pulse }: {
   pulse?: boolean;
 }) {
   return (
-    <div className="bg-[#0d0f14] border border-white/[0.06] rounded px-4 py-3.5 flex flex-col gap-1.5">
+    <div className="bg-white/[0.02] border border-white/[0.06] rounded px-4 py-3.5 flex flex-col gap-1.5">
       <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">{label}</p>
       <div className="flex items-center gap-2">
         <span className={`text-2xl font-bold leading-none ${accent ?? 'text-white'}`}>{value}</span>
@@ -219,13 +194,11 @@ export default function DashboardPage() {
   const [daily,     setDaily]     = useState<number[]>([]);
   const [hourData,  setHourData]  = useState<HourPt[]>([]);
   const [operators, setOperators] = useState<OperatorRow[]>([]);
-  const [recent,      setRecent]      = useState<RecentAlarm[]>([]);
-  const [recentCalls, setRecentCalls] = useState<RecentCall[]>([]);
-  const [trendPct,    setTrendPct]    = useState<number | null>(null);
+  const [recent,    setRecent]    = useState<RecentAlarm[]>([]);
+  const [trendPct,  setTrendPct]  = useState<number | null>(null);
   const [loading,   setLoading]   = useState(true);
   const [liveOn,    setLiveOn]    = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
-  const [gateStats, setGateStats] = useState<GateStats | null>(null);
 
   const loadKpis = useCallback(async () => {
     const todayStart = new Date();
@@ -350,46 +323,11 @@ export default function DashboardPage() {
     setRecent(data ?? []);
   }, []);
 
-  const loadRecentCalls = useCallback(async () => {
-    const { data } = await supabase
-      .from('calls')
-      .select('id, to_number, site_name, operator_name, status, created_at')
-      .order('created_at', { ascending: false })
-      .limit(10);
-    setRecentCalls(data ?? []);
-  }, []);
-
-  const loadGates = useCallback(async () => {
-    // Two-step: avoid FK join dependency on gates.account_id → accounts.id
-    const [{ data: gateData, error }, { data: accountData }] = await Promise.all([
-      supabase.from('gates').select('id, name, gate_type, status, status_updated_at, status_updated_by, account_id').order('name'),
-      supabase.from('accounts').select('id, name').order('name'),
-    ]);
-    if (error) {
-      // gates table may not exist yet — show empty state gracefully
-      setGateStats({ total: 0, operational: 0, needsService: [] });
-      return;
-    }
-    const accountMap: Record<string, string> = Object.fromEntries(
-      (accountData ?? []).map((a: any) => [a.id, a.name])
-    );
-    const rows = (gateData ?? []).map((g: any) => ({
-      ...g,
-      accounts: accountMap[g.account_id] ? { name: accountMap[g.account_id] } : null,
-    })) as unknown as GateStatusRow[];
-    const needsService = rows.filter(g => g.status === 'needs_service');
-    setGateStats({
-      total:        rows.length,
-      operational:  rows.filter(g => g.status === 'operational').length,
-      needsService,
-    });
-  }, []);
-
   const loadAll = useCallback(async () => {
-    await Promise.all([loadKpis(), loadSla(), loadDaily(), loadHour(), loadOperators(), loadRecent(), loadGates(), loadRecentCalls()]);
+    await Promise.all([loadKpis(), loadSla(), loadDaily(), loadHour(), loadOperators(), loadRecent()]);
     setLastUpdate(new Date());
     setLoading(false);
-  }, [loadKpis, loadSla, loadDaily, loadHour, loadOperators, loadRecent, loadGates, loadRecentCalls]);
+  }, [loadKpis, loadSla, loadDaily, loadHour, loadOperators, loadRecent]);
 
   useEffect(() => {
     loadAll();
@@ -397,11 +335,9 @@ export default function DashboardPage() {
     const ch = supabase.channel('dashboard')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'alarms' }, () => { loadKpis(); loadHour(); loadRecent(); })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'incident_reports' }, () => { loadSla(); loadOperators(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'gates' }, () => { loadGates(); })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'calls' }, () => { loadRecentCalls(); })
       .subscribe(s => setLiveOn(s === 'SUBSCRIBED'));
     return () => { clearInterval(poll); supabase.removeChannel(ch); };
-  }, [loadAll, loadKpis, loadHour, loadRecent, loadSla, loadOperators, loadGates, loadRecentCalls]);
+  }, [loadAll, loadKpis, loadHour, loadRecent, loadSla, loadOperators]);
 
   if (loading) {
     return (
@@ -427,7 +363,7 @@ export default function DashboardPage() {
             {lastUpdate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}
           </span>
           <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded border text-[10px] font-bold uppercase tracking-widest ${
-            liveOn ? 'bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400' : 'bg-[#0d0f14] border-white/[0.06] text-slate-600'
+            liveOn ? 'bg-emerald-500/[0.08] border-emerald-500/20 text-emerald-400' : 'bg-white/[0.02] border-white/[0.06] text-slate-600'
           }`}>
             <span className={`w-1.5 h-1.5 rounded-full ${liveOn ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
             {liveOn ? 'Live' : 'Polling'}
@@ -471,100 +407,11 @@ export default function DashboardPage() {
           />
         </div>
 
-        {/* ── Gate Status Panel ── */}
-        <div className={`rounded border px-4 py-3.5 ${
-          gateStats && gateStats.needsService.length > 0
-            ? 'border-amber-500/25 bg-amber-500/[0.03]'
-            : 'border-white/[0.06] bg-[#0d0f14]'
-        }`}>
-          {/* Panel header */}
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-3">
-              <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Gate Status</p>
-              {gateStats && gateStats.total > 0 && (
-                <div className="flex items-center gap-3">
-                  <span className="text-[10px] font-semibold text-emerald-400">
-                    {gateStats.operational} operational
-                  </span>
-                  {gateStats.needsService.length > 0 && (
-                    <>
-                      <span className="text-slate-700">·</span>
-                      <span className="flex items-center gap-1 text-[10px] font-bold text-amber-400">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                        {gateStats.needsService.length} need{gateStats.needsService.length === 1 ? 's' : ''} service
-                      </span>
-                    </>
-                  )}
-                  <span className="text-slate-700">·</span>
-                  <span className="text-[10px] text-slate-600">{gateStats.total} total</span>
-                </div>
-              )}
-            </div>
-            <a
-              href="/reports"
-              className="text-[9px] text-slate-600 hover:text-indigo-400 font-semibold border border-white/[0.06] hover:border-indigo-500/30 rounded px-2.5 py-1 transition-colors"
-            >
-              Manage in Reports →
-            </a>
-          </div>
-
-          {/* Content */}
-          {!gateStats || gateStats.total === 0 ? (
-            <p className="text-[10px] text-slate-700 py-1">
-              {!gateStats ? 'Loading…' : 'No gates configured — add gates in Setup → select zone → Gates tab'}
-            </p>
-          ) : gateStats.needsService.length === 0 ? (
-            /* All clear state */
-            <div className="flex items-center gap-3 px-4 py-3.5 rounded border border-emerald-500/15 bg-emerald-500/[0.03]">
-              <div className="w-6 h-6 rounded-full bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center shrink-0">
-                <svg className="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="m4.5 12.75 6 6 9-13.5" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-[12px] text-emerald-400 font-semibold">All {gateStats.total} gates operational</p>
-                <p className="text-[9px] text-emerald-600/70 mt-0.5">No service flags — all systems nominal</p>
-              </div>
-            </div>
-          ) : (
-            /* Needs service list */
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-              {gateStats.needsService.map(g => (
-                <div key={g.id} className="flex items-start gap-3 px-4 py-3.5 rounded border border-amber-500/20 bg-amber-500/[0.05]">
-                  <span className="text-amber-400 text-[16px] leading-none mt-0.5 shrink-0">⚠</span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[12px] font-semibold text-white truncate">{g.name}</p>
-                    <p className="text-[10px] text-slate-500 truncate mt-0.5">
-                      {(g.accounts as any)?.name ?? 'Unknown site'}
-                      {g.gate_type ? ` · ${g.gate_type}` : ''}
-                    </p>
-                    {g.status_updated_by && (
-                      <p className="text-[9px] text-slate-600 mt-1">
-                        Flagged by {g.status_updated_by.split(' ')[0]}
-                        {g.status_updated_at ? ` · ${fmtAgo(g.status_updated_at)}` : ''}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ))}
-              {/* Filler card showing operational count */}
-              <div className="flex items-center gap-3 px-4 py-3.5 rounded border border-emerald-500/15 bg-emerald-500/[0.03]">
-                <svg className="w-4 h-4 text-emerald-500/60 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m4.5 12.75 6 6 9-13.5" />
-                </svg>
-                <p className="text-[11px] text-emerald-600 font-medium">
-                  {gateStats.operational} gate{gateStats.operational !== 1 ? 's' : ''} operational
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-
         {/* ── Middle row: trend + SLA ── */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
           {/* 14-day sparkline */}
-          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
+          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
             <SectionLabel>Alarms — Last 14 Days</SectionLabel>
             <Sparkline data={daily} />
             <div className="flex items-center justify-between mt-2">
@@ -584,7 +431,7 @@ export default function DashboardPage() {
           </div>
 
           {/* SLA bars */}
-          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
+          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
             <SectionLabel>Response Time SLA — 7 Days</SectionLabel>
             {sla.every(s => s.pct === 0) ? (
               <p className="text-[10px] text-slate-700 py-4 text-center">No response data yet</p>
@@ -609,7 +456,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Alarms per operator */}
-          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
+          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
             <SectionLabel>Alarms Per Operator — 24h</SectionLabel>
             {operators.length === 0 ? (
               <p className="text-[10px] text-slate-700 py-4 text-center">No activity yet</p>
@@ -635,60 +482,31 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* ── Bottom row: hour chart + recent events + recent calls ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        {/* ── Bottom row: hour chart + recent feed ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
-          {/* Hour chart — wider */}
-          <div className="lg:col-span-3 bg-[#0d0f14] border border-white/[0.06] rounded p-4">
+          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
             <SectionLabel>Alarms by Hour</SectionLabel>
             <HourChart data={hourData} trendPct={trendPct} />
           </div>
 
-          {/* Recent Events */}
-          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
+          <div className="bg-white/[0.02] border border-white/[0.06] rounded p-4">
             <SectionLabel>Recent Events</SectionLabel>
             {recent.length === 0 ? (
-              <p className="text-[10px] text-slate-700 py-4 text-center">No alarms yet</p>
+              <p className="text-[10px] text-slate-700 py-4 text-center">No alarms recorded yet</p>
             ) : (
-              <div className="space-y-1.5 max-h-56 overflow-y-auto pr-0.5">
+              <div className="space-y-1.5 max-h-64 overflow-y-auto pr-0.5">
                 {recent.map(a => (
-                  <div key={a.id} className="flex items-center gap-2 px-2.5 py-1.5 rounded border border-white/[0.04] hover:bg-white/[0.02] transition-all">
+                  <div key={a.id} className="flex items-center gap-2.5 px-2.5 py-2 rounded border border-white/[0.04] hover:bg-white/[0.02] transition-all">
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                       a.status === 'pending' ? 'bg-red-400' : a.status === 'processing' ? 'bg-amber-400' : 'bg-emerald-400'
                     }`} />
                     <PBadge p={a.priority} />
                     <div className="flex-1 min-w-0">
-                      <p className="text-[10px] text-slate-200 truncate">{a.event_label ?? a.priority}</p>
-                      <p className="text-[9px] text-slate-600 truncate">{a.site_name ?? '—'}</p>
+                      <p className="text-[11px] text-slate-200 truncate">{a.event_label ?? a.priority}</p>
+                      <p className="text-[10px] text-slate-600 truncate">{a.site_name ?? '—'}</p>
                     </div>
                     <span className="text-[9px] text-slate-700 shrink-0">{fmtAgo(a.created_at)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Recent Calls */}
-          <div className="bg-[#0d0f14] border border-white/[0.06] rounded p-4">
-            <div className="flex items-center justify-between mb-3">
-              <SectionLabel>Recent Calls</SectionLabel>
-            </div>
-            {recentCalls.length === 0 ? (
-              <p className="text-[10px] text-slate-700 py-4 text-center">No calls yet</p>
-            ) : (
-              <div className="space-y-1.5 max-h-56 overflow-y-auto pr-0.5">
-                {recentCalls.map(c => (
-                  <div key={c.id} className="flex items-start gap-2 px-2.5 py-1.5 rounded border border-white/[0.04] hover:bg-white/[0.02] transition-all">
-                    {/* phone icon */}
-                    <svg className="w-3 h-3 text-emerald-500/60 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                        d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
-                    </svg>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[10px] text-slate-200 font-mono truncate">{c.to_number}</p>
-                      <p className="text-[9px] text-slate-600 truncate">{c.site_name || c.operator_name || '—'}</p>
-                    </div>
-                    <span className="text-[9px] text-slate-700 shrink-0">{fmtAgo(c.created_at)}</span>
                   </div>
                 ))}
               </div>

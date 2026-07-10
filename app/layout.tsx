@@ -18,16 +18,9 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "GateGuard OS | Monitoring Station",
   description: "Next-Gen Video Management & Access Control",
-  icons: {
-    icon: [
-      { url: '/favicon.ico',    sizes: '48x48' },
-      { url: '/favicon-192.png', sizes: '192x192', type: 'image/png' },
-    ],
-    apple: '/favicon-192.png',
-  },
 };
 
-type UserRole = "admin" | "supervisor" | "agent" | "dealer";
+type UserRole = "admin" | "supervisor" | "agent";
 
 const NAV_ITEMS = [
   {
@@ -61,58 +54,23 @@ const NAV_ITEMS = [
     icon: "M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
   },
   {
-    label: "COMMS",
-    path: "/comms",
-    roles: ["admin", "supervisor", "agent"] as UserRole[],
-    icon: "M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z",
-  },
-  {
     label: "SETUP",
     path: "/setup",
     roles: ["admin", "supervisor"] as UserRole[],
     icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z",
   },
-  {
-    label: "IDEAS",
-    path: "/feedback",
-    roles: ["admin", "supervisor", "agent"] as UserRole[],
-    icon: "M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z",
-  },
-  {
-    label: "TRAINING",
-    path: "/training",
-    roles: ["admin", "supervisor", "agent"] as UserRole[],
-    icon: "M12 14l9-5-9-5-9 5 9 5zm0 7c-4.97 0-9-2.686-9-6v-1m18 1v1c0 3.314-4.03 6-9 6m0-13V3m0 4l-3 2m3-2l3 2",
-  },
-  // ── Dealer portal ──────────────────────────────────────────────────────────
-  {
-    label: "EQUIPMENT",
-    path: "/dealer/equipment",
-    roles: ["admin", "dealer"] as UserRole[],
-    icon: "M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z",
-    group: "dealer",
-  },
-  {
-    label: "FIX IT",
-    path: "/dealer/troubleshoot",
-    roles: ["admin", "dealer"] as UserRole[],
-    icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z",
-    group: "dealer",
-  },
 ];
 
 const ROLE_LABEL: Record<UserRole, string> = {
-  admin:      "ADMIN",
+  admin: "ADMIN",
   supervisor: "SUPERVISOR",
-  agent:      "AGENT",
-  dealer:     "DEALER",
+  agent: "AGENT",
 };
 
 const ROLE_COLOR: Record<UserRole, string> = {
-  admin:      "text-indigo-400",
+  admin: "text-indigo-400",
   supervisor: "text-amber-400",
-  agent:      "text-slate-500",
-  dealer:     "text-amber-500",
+  agent: "text-slate-500",
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
@@ -126,11 +84,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
   return (
     <ClerkProvider>
-      <html lang="en" className="h-full bg-[#07111f] text-slate-200 antialiased">
+      <html lang="en" className="h-full bg-[#030406] text-slate-200 antialiased">
         <body className={`${inter.className} h-full overflow-hidden flex`}>
 
           {/* SIDEBAR */}
-          <aside className="w-24 lg:w-[104px] flex flex-col items-center py-6 bg-[#040c1a] border-r border-indigo-900/30 z-50 shadow-[10px_0_40px_rgba(4,12,26,0.8)] shrink-0">
+          <aside className="w-24 lg:w-[104px] flex flex-col items-center py-6 bg-[#0a0c10] border-r border-white/5 z-50 shadow-[10px_0_30px_rgba(0,0,0,0.5)] shrink-0">
 
             {/* Logo */}
             <div className="mb-10 w-full flex justify-center">
@@ -182,15 +140,8 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             </div>
           </aside>
 
-          {/* MAIN — dark gray with subtle dot-grid pattern for depth */}
-          <main
-            className="flex-1 h-full overflow-hidden relative"
-            style={{
-              backgroundColor: '#07111f',
-              backgroundImage: 'radial-gradient(circle, rgba(99,102,241,0.06) 1px, transparent 1px)',
-              backgroundSize: '24px 24px',
-            }}
-          >
+          {/* MAIN */}
+          <main className="flex-1 h-full overflow-hidden relative bg-[#030406]">
             {children}
           </main>
 

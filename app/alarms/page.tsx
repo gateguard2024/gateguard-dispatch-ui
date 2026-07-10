@@ -15,10 +15,8 @@ import React, {
 } from 'react';
 import { useUser } from '@clerk/nextjs';
 import { createClient } from '@supabase/supabase-js';
-import SmartVideoPlayer   from '@/components/SmartVideoPlayer';
-import CommunicationHub   from '@/components/CommunicationHub';
-import DialerModal, { DialerTarget } from '@/components/DialerModal';
-import { pushToPortal } from '@/lib/portalIngest';
+import SmartVideoPlayer  from '@/components/SmartVideoPlayer';
+import CommunicationHub  from '@/components/CommunicationHub';
 
 // ─── Supabase client ─────────────────────────────────────────────────────────
 const supabase = createClient(
@@ -29,8 +27,8 @@ const supabase = createClient(
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Priority = 'P1' | 'P2' | 'P3' | 'P4';
 type AlarmStatus = 'pending' | 'processing' | 'resolved';
-type ActionTaken = 'authorized' | 'unauthorized' | 'false_alarm' | 'police_dispatched' | 'emergency_services_on_site' | 'property_violation' | 'gate_service_needed' | 'door_service_needed' | 'other' | '';
-type TabName = 'cameras' | 'history' | 'scripts' | 'notes' | 'comms';
+type ActionTaken = 'authorized' | 'unauthorized' | 'false_alarm' | 'police_dispatched' | 'emergency_services_on_site' | 'property_violation' | 'other' | '';
+type TabName = 'cameras' | 'history' | 'scripts' | 'notes';
 
 interface TriageResult {
   decision:        'auto_dismiss' | 'route_to_human' | 'escalate' | string;
@@ -134,8 +132,6 @@ const ACTION_OPTIONS: { value: ActionTaken; label: string }[] = [
   { value: 'police_dispatched',         label: 'Police Dispatched' },
   { value: 'emergency_services_on_site',label: 'Emergency Services On Site' },
   { value: 'property_violation',        label: 'Property Violation (Dumping / Loitering)' },
-  { value: 'gate_service_needed',       label: '🔧 Gate Service Needed' },
-  { value: 'door_service_needed',       label: '🔧 Door / Access Service Needed' },
   { value: 'other',                     label: 'Other' },
 ];
 
@@ -268,8 +264,9 @@ function ScriptCard({ label, color, text }: { label: string; color: string; text
 export default function AlarmsPage() {
   // Clerk identity — used for audit logs and incident reports
   const { user } = useUser();
-  const operatorId   = user?.id ?? 'unknown';
-  const operatorName = user?.fullName ?? user?.firstName ?? 'Operator';
+  const operatorId    = user?.id ?? 'unknown';
+  const operatorName  = user?.fullName ?? user?.firstName ?? 'Operator';
+  const operatorEmail = user?.primaryEmailAddress?.emailAddress ?? operatorId;
 
   // Queue state
   const [queue, setQueue]             = useState<Alarm[]>([]);
@@ -327,21 +324,12 @@ export default function AlarmsPage() {
   const [notes, setNotes]             = useState('');
   const [activeCameraId, setActiveCameraId] = useState<string | null>(null);
 
-  // Site contact for CommunicationHub — loaded when alarm is processed
-  const [siteContactPhone, setSiteContactPhone] = useState<string | null>(null);
-  const [siteContactEmail, setSiteContactEmail] = useState<string | null>(null);
-
-  // In-app dialer modal
-  const [dialerTarget, setDialerTarget] = useState<DialerTarget | null>(null);
-
   // Video panel state
   // preAlarmUrl: undefined = fetching, null = no clip found, string = URL ready
   const [preAlarmUrl, setPreAlarmUrl]         = useState<string | null | undefined>(undefined);
   const [preAlarmToken, setPreAlarmToken]     = useState<string | null>(null);
   const [liveOffset, setLiveOffset]           = useState<number>(0);
   const [liveOffsetUrl, setLiveOffsetUrl]     = useState<string | null>(null);
-  const [liveOffsetToken, setLiveOffsetToken] = useState<string | null>(null);  // EEN auth token for recorded HLS
-  const [liveOffsetTs, setLiveOffsetTs]       = useState<Date | null>(null);    // local clock time of offset window
   const [fetchingClip, setFetchingClip]       = useState(false);
   // expandedPanel: null = dual view, 'pre-alarm' | 'live' = that panel fills the top section
   const [expandedPanel, setExpandedPanel]     = useState<'pre-alarm' | 'live' | null>(null);
@@ -362,50 +350,16 @@ export default function AlarmsPage() {
   const [resolving, setResolving]       = useState(false);
   const [resolveError, setResolveError] = useState<string | null>(null);
 
-  // Gate picker for service-needed resolution
-  const [allGates, setAllGates]         = useState<{ id: string; name: string; account_id: string; gate_type: string }[]>([]);
-  const [selectedGateId, setSelectedGateId] = useState<string>('');
-
   // ── Supabase realtime subscription ─────────────────────────────────────────
   useEffect(() => {
     // Initial load
     fetchQueue();
-    // Load gate inventory for service-needed picker
-    supabase.from('gates').select('id, name, account_id, gate_type').then(({ data }) => {
-      if (data) setAllGates(data);
-    });
 
     const channel = supabase
       .channel('alarms-realtime')
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'alarms' },
-        (payload) => {
-          fetchQueue();
-          // Push new alarm to Portal incidents immediately on creation
-          const a = payload.new as any;
-          pushToPortal({
-            source:          'soc_alarm',
-            source_id:       a.id,
-            incident_status: 'open',
-            site_name:       a.site_name ?? '',
-            een_account_id:  a.source === 'brivo' ? undefined : a.account_id,
-            brivo_account_id: a.source === 'brivo' ? a.account_id : undefined,
-            event_type:      a.event_type,
-            event_label:     a.event_label,
-            priority:        a.priority,
-            operator_name:   a.operator_name ?? undefined,
-          });
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'alarms' },
-        () => fetchQueue()
-      )
-      .on(
-        'postgres_changes',
-        { event: 'DELETE', schema: 'public', table: 'alarms' },
+        { event: '*', schema: 'public', table: 'alarms' },
         () => fetchQueue()
       )
       .subscribe();
@@ -459,8 +413,6 @@ export default function AlarmsPage() {
     setLiveOffsetUrl(null);
     setExpandedPanel(null);
     setResolvedEenCamId(null);
-    setLiveOffsetToken(null);
-    setLiveOffsetTs(null);
     setHoldExpandedId(null);
     setHoldActiveIds({});
     setHoldError(null);
@@ -470,25 +422,6 @@ export default function AlarmsPage() {
 
     const accountId = alarm.account_id ?? alarm.zones?.account_id;
     const zoneId    = alarm.zone_id;
-
-    // Reset + load site contact for CommunicationHub
-    setSiteContactPhone(null);
-    setSiteContactEmail(null);
-    if (accountId) {
-      supabase
-        .from('zone_contacts')
-        .select('phone, email')
-        .eq('account_id', accountId)
-        .order('priority', { ascending: true })
-        .limit(1)
-        .maybeSingle()
-        .then(({ data: contact }) => {
-          if (contact) {
-            setSiteContactPhone(contact.phone ?? null);
-            setSiteContactEmail(contact.email ?? null);
-          }
-        });
-    }
 
     // Set initial live camera
     const camId = alarm.cameras?.brivo_camera_id ?? alarm.cameras?.een_camera_id ?? null;
@@ -725,8 +658,6 @@ export default function AlarmsPage() {
     if (offsetMinutes === 0) {
       setLiveOffset(0);
       setLiveOffsetUrl(null);
-      setLiveOffsetToken(null);
-      setLiveOffsetTs(null);
       return;
     }
     setFetchingClip(true);
@@ -739,12 +670,11 @@ export default function AlarmsPage() {
       return;
     }
 
-    const now         = Date.now();
-    // offsetMinutes is negative (e.g. -60 = 1 hour ago)
+    const now       = Date.now();
+    // offsetMinutes is negative (e.g. -5 = 5 minutes ago)
     const windowStart = now + offsetMinutes * 60_000;
-    const windowDate  = new Date(windowStart);  // local-time anchor for display label
-    const startTime   = windowDate.toISOString().replace(/Z$/, '+00:00');
-    const endTime     = new Date(windowStart + 150_000).toISOString().replace(/Z$/, '+00:00'); // 2.5 min window
+    const startTime = new Date(windowStart).toISOString().replace(/Z$/, '+00:00');
+    const endTime   = new Date(windowStart + 150_000).toISOString().replace(/Z$/, '+00:00'); // 2.5 min window
     try {
       const res = await fetch('/api/een/recorded', {
         method:  'POST',
@@ -753,9 +683,7 @@ export default function AlarmsPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        setLiveOffsetUrl(data.url     ?? null);
-        setLiveOffsetToken(data.token ?? null);  // required for HLS auth — was being discarded
-        setLiveOffsetTs(windowDate);             // local clock time shown in label
+        setLiveOffsetUrl(data.url ?? null);
         setLiveOffset(offsetMinutes);
       } else {
         console.warn('[fetchOffsetClip] No clip found for offset', offsetMinutes);
@@ -891,50 +819,7 @@ export default function AlarmsPage() {
         generated_at:  new Date().toISOString(),
       });
 
-      // 3b. Push resolved status to Portal — upserts the incident created on alarm arrival
-      pushToPortal({
-        source:           'soc_alarm',
-        source_id:        activeAlarm.id,
-        incident_status:  'resolved',
-        site_name:        activeAlarm.site_name,
-        een_account_id:   activeAlarm.source === 'brivo' ? undefined : (accountId ?? undefined),
-        brivo_account_id: activeAlarm.source === 'brivo' ? (accountId ?? undefined) : undefined,
-        event_type:       activeAlarm.event_type,
-        event_label:      activeAlarm.event_label,
-        priority:         activeAlarm.priority,
-        operator_name:    operatorName,
-        action_taken:     actionTaken,
-        notes,
-      });
-
-      // 4a. Mark specific gate as needs_service if operator selected one
-      if ((actionTaken === 'gate_service_needed' || actionTaken === 'door_service_needed') && selectedGateId) {
-        await supabase.from('gates').update({
-          status:            'needs_service',
-          status_updated_at: new Date().toISOString(),
-          status_updated_by: operatorName,
-        }).eq('id', selectedGateId);
-        setSelectedGateId('');
-      }
-
-      // 4b. Service notification — dual email for gate/door service needed
-      if (actionTaken === 'gate_service_needed' || actionTaken === 'door_service_needed') {
-        const siteContactEmail = contacts.find(c => c.email)?.email ?? null;
-        fetch('/api/alarms/service-notification', {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({
-            siteName:         activeAlarm.site_name,
-            actionTaken,
-            notes,
-            operatorName,
-            siteContactEmail,
-            alarmId:          activeAlarm.id,
-          }),
-        }).catch(err => console.warn('[service-notification] fetch failed:', err));
-      }
-
-      // 5. Clear active alarm
+      // 4. Clear active alarm
       setActiveAlarm(null);
       setDoors([]);
       setContacts([]);
@@ -1170,24 +1055,14 @@ export default function AlarmsPage() {
                       </span>
                     ) : (
                       <span className="flex items-center gap-1 bg-slate-700/80 border border-slate-500/30 px-2 py-0.5 rounded text-[9px] font-bold text-slate-200 uppercase tracking-wider">
-                        {liveOffsetTs
-                          ? liveOffsetTs.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })
-                          : `${Math.abs(liveOffset)}m ago`}
+                        -{Math.abs(liveOffset)}m ago
                       </span>
                     )}
                   </div>
 
-                  {/* Time navigation — Live | 5m | 15m | 30m | 1h | 2h | 4h */}
-                  <div className="absolute top-2 right-2 z-10 flex items-center gap-1" onDoubleClick={e => e.stopPropagation()}>
-                    {([
-                      { offset: 0,    label: 'Live' },
-                      { offset: -5,   label: '5m'   },
-                      { offset: -15,  label: '15m'  },
-                      { offset: -30,  label: '30m'  },
-                      { offset: -60,  label: '1h'   },
-                      { offset: -120, label: '2h'   },
-                      { offset: -240, label: '4h'   },
-                    ]).map(({ offset, label }) => (
+                  {/* Time navigation + expand indicator */}
+                  <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5" onDoubleClick={e => e.stopPropagation()}>
+                    {([0, -5, -15, -30] as const).map((offset) => (
                       <button
                         key={offset}
                         onClick={(e) => { e.stopPropagation(); fetchOffsetClip(offset); }}
@@ -1198,10 +1073,10 @@ export default function AlarmsPage() {
                             : 'bg-black/50 border-white/[0.12] text-slate-400 hover:text-white hover:border-white/30'
                           } ${fetchingClip ? 'opacity-40 cursor-wait' : ''}`}
                       >
-                        {label}
+                        {offset === 0 ? 'Live' : `${Math.abs(offset)}m`}
                       </button>
                     ))}
-                    <span className="text-[8px] text-white/25 bg-black/40 px-1 py-0.5 rounded pointer-events-none ml-0.5">
+                    <span className="text-[8px] text-white/25 bg-black/40 px-1 py-0.5 rounded pointer-events-none">
                       {expandedPanel === 'live' ? '⊡ dbl-click collapse' : '⤢ dbl-click expand'}
                     </span>
                   </div>
@@ -1214,7 +1089,6 @@ export default function AlarmsPage() {
                         source={activeCameraSource as 'brivo' | 'een'}
                         streamType="preview"
                         recordedUrl={liveOffsetUrl}
-                        recordedToken={liveOffsetToken ?? undefined}
                         label=""
                       />
                     ) : (
@@ -1284,19 +1158,17 @@ export default function AlarmsPage() {
             <div className="flex-1 flex flex-col min-h-0">
               {/* Tab bar */}
               <div className="flex border-b border-white/[0.06] px-2 pt-1 gap-1 items-end">
-                {(['cameras', 'history', 'scripts', 'notes', 'comms'] as const).map((tab) => (
+                {(['cameras', 'history', 'scripts', 'notes'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
                     className={`px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider rounded-t transition-all ${
                       activeTab === tab
-                        ? tab === 'comms'
-                          ? 'text-white border-b-2 border-violet-500'
-                          : 'text-white border-b-2 border-indigo-500'
+                        ? 'text-white border-b-2 border-indigo-500'
                         : 'text-slate-500 hover:text-slate-300'
                     }`}
                   >
-                    {tab === 'cameras' ? `Cameras (${siteCameras.length})` : tab === 'history' ? 'History' : tab === 'scripts' ? 'Scripts' : tab === 'notes' ? 'Notes' : '📞 Comms'}
+                    {tab === 'cameras' ? `Cameras (${siteCameras.length})` : tab === 'history' ? 'History' : tab === 'scripts' ? 'Scripts' : 'Notes'}
                   </button>
                 ))}
                 {/* Grid/List toggle — only visible on cameras tab */}
@@ -1475,19 +1347,6 @@ export default function AlarmsPage() {
                     className="w-full h-full min-h-[120px] bg-white/[0.02] border border-white/[0.06] rounded px-3 py-2 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500/50"
                   />
                 )}
-
-                {/* Communications Hub */}
-                {activeTab === 'comms' && activeAlarm && (
-                  <CommunicationHub
-                    alarmId={activeAlarm.id}
-                    siteName={activeAlarm.site_name}
-                    siteContactPhone={siteContactPhone}
-                    siteContactEmail={siteContactEmail}
-                    operatorId={operatorId}
-                    operatorName={operatorName}
-                    priority={activeAlarm.priority}
-                  />
-                )}
               </div>
             </div>
           </>
@@ -1517,42 +1376,6 @@ export default function AlarmsPage() {
           ) : (
             <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-4 text-center">
               <p className="text-[10px] text-slate-600 uppercase tracking-wider">No active alarm</p>
-            </div>
-          )}
-
-          {/* ── Quick Dial strip — visible contacts without leaving alarm ── */}
-          {activeAlarm && contacts.filter(c => c.phone).length > 0 && (
-            <div className="rounded-lg border border-white/[0.06] bg-[#0a0c10] px-3 py-2.5">
-              <p className="text-[8px] font-bold uppercase tracking-widest text-slate-600 mb-2 flex items-center gap-1.5">
-                <span className="text-emerald-500/60">
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
-                  </svg>
-                </span>
-                Quick Dial
-              </p>
-              <div className="space-y-1.5">
-                {contacts.filter(c => c.phone).slice(0, 4).map(c => (
-                  <button
-                    key={c.id}
-                    onClick={() => setDialerTarget({ phone: c.phone!, name: c.name, siteName: activeAlarm.site_name, alarmId: activeAlarm.id })}
-                    className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded border border-white/[0.06] hover:border-emerald-500/30 hover:bg-emerald-500/[0.06] transition-all group text-left"
-                  >
-                    <div className="w-5 h-5 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0 group-hover:bg-emerald-500/20 transition-colors">
-                      <svg className="w-2.5 h-2.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                          d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
-                      </svg>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[10px] font-semibold text-white truncate">{c.name}</p>
-                      <p className="text-[8px] text-slate-600 font-mono">{c.phone}</p>
-                    </div>
-                    <span className="text-[8px] font-bold uppercase tracking-wider text-slate-600 group-hover:text-emerald-400 transition-colors shrink-0">Call</span>
-                  </button>
-                ))}
-              </div>
             </div>
           )}
 
@@ -1852,13 +1675,12 @@ export default function AlarmsPage() {
                       )}
                     </div>
                     {c.phone && (
-                      <button
-                        onClick={() => setDialerTarget({ phone: c.phone!, name: c.name, siteName: activeAlarm?.site_name, alarmId: activeAlarm?.id })}
-                        className="shrink-0 ml-2 w-7 h-7 flex items-center justify-center rounded border border-white/[0.08] bg-white/[0.03] hover:bg-emerald-500/20 hover:border-emerald-500/40 text-slate-400 hover:text-emerald-300 transition-all"
-                        title="Call via GateGuard"
+                      <a
+                        href={`tel:${c.phone}`}
+                        className="shrink-0 ml-2 w-7 h-7 flex items-center justify-center rounded border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.08] text-slate-400 hover:text-white transition-all"
                       >
                         <div className="w-3.5 h-3.5"><Ic.Phone /></div>
-                      </button>
+                      </a>
                     )}
                   </div>
                 ))}
@@ -1866,7 +1688,23 @@ export default function AlarmsPage() {
             )}
           </section>
 
-          {/* ── 4. Clearance Protocol ── */}
+          {/* ── 4. Communications (Dial / Email / Log) ── */}
+          <section>
+            <SectionHeader icon={<Ic.Phone />} label="Communications" />
+            <div className="rounded border border-white/[0.06] overflow-hidden" style={{ height: '340px' }}>
+              <CommunicationHub
+                incidentId={activeAlarm?.id ?? null}
+                patrolId={null}
+                zoneId={activeAlarm?.zone_id ?? null}
+                contacts={contacts}
+                agentEmail={operatorEmail}
+                agentName={operatorName}
+                isLocked={!activeAlarm}
+              />
+            </div>
+          </section>
+
+          {/* ── 5. Clearance Protocol ── */}
           <section>
             <SectionHeader icon={<Ic.Shield />} label="Clearance Protocol" />
             <div className="space-y-1">
@@ -1919,25 +1757,6 @@ export default function AlarmsPage() {
                 ))}
               </select>
 
-              {/* Gate picker — shown when action is service-needed */}
-              {(actionTaken === 'gate_service_needed' || actionTaken === 'door_service_needed') && activeAlarm && (() => {
-                const accountId = activeAlarm.account_id ?? activeAlarm.zones?.account_id;
-                const siteGates = allGates.filter(g => g.account_id === accountId);
-                if (siteGates.length === 0) return null;
-                return (
-                  <select
-                    value={selectedGateId}
-                    onChange={e => setSelectedGateId(e.target.value)}
-                    className="w-full bg-amber-500/[0.06] border border-amber-500/30 rounded px-2.5 py-2 text-[11px] text-slate-300 focus:outline-none focus:border-amber-500/60 [color-scheme:dark]"
-                  >
-                    <option value="">— Select gate to flag (optional) —</option>
-                    {siteGates.map(g => (
-                      <option key={g.id} value={g.id}>{g.name}</option>
-                    ))}
-                  </select>
-                );
-              })()}
-
               {/* Resolution notes — police called, courtesy officer notified, etc. */}
               <textarea
                 value={notes}
@@ -1976,16 +1795,6 @@ export default function AlarmsPage() {
 
         </div>
       </aside>
-
-      {/* In-app dialer modal — replaces tel: system phone handoff */}
-      {dialerTarget && (
-        <DialerModal
-          {...dialerTarget}
-          operatorName={operatorName}
-          operatorId={operatorId ?? undefined}
-          onClose={() => setDialerTarget(null)}
-        />
-      )}
     </div>
   );
 }

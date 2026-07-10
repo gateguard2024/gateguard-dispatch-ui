@@ -11,8 +11,6 @@ import { useUser } from '@clerk/nextjs';
 import { createClient } from '@supabase/supabase-js';
 import SmartVideoPlayer  from '@/components/SmartVideoPlayer';
 import CommunicationHub  from '@/components/CommunicationHub';
-import DialerModal, { DialerTarget } from '@/components/DialerModal';
-import { pushToPortal } from '@/lib/portalIngest';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -52,18 +50,15 @@ interface SiteChecklist {
   common_areas_clear:      boolean;
   no_loitering:            boolean;
   no_dumping:              boolean;
-  cameras_operational:     boolean;
 }
 
 interface SiteResult {
-  account_id:   string;
-  site_name:    string;
-  status:       'clear' | 'issue' | 'pending';
-  checklist:    SiteChecklist;
-  notes:        string;
-  issue_detail: string;   // free-text description when status = 'issue'
-  acknowledged: boolean;  // true once ops acknowledges in Reports
-  checked_at:   string | null;
+  account_id: string;
+  site_name:  string;
+  status:     'clear' | 'issue' | 'pending';
+  checklist:  SiteChecklist;
+  notes:      string;
+  checked_at: string | null;
 }
 
 interface PatrolLog {
@@ -90,7 +85,6 @@ const CHECKLIST_LABELS: Record<keyof SiteChecklist, string> = {
   common_areas_clear:      'Common areas clear (pool, mailroom, leasing office)',
   no_loitering:            'No loitering near dumpsters or main gate',
   no_dumping:              'No trash / dumping violations visible',
-  cameras_operational:     'Cameras operational / video feed available',
 };
 
 const EMPTY_CHECKLIST: SiteChecklist = {
@@ -99,7 +93,6 @@ const EMPTY_CHECKLIST: SiteChecklist = {
   common_areas_clear:      false,
   no_loitering:            false,
   no_dumping:              false,
-  cameras_operational:     false,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -124,29 +117,12 @@ function nextPatrolInfo(): { slot: typeof PATROL_SLOTS[0]; minutesUntil: number 
   return { slot: PATROL_SLOTS[0], minutesUntil: 0 };
 }
 
-// ─── Reason → Priority map ────────────────────────────────────────────────────
-const REASON_PRIORITY: Record<string, 'P1' | 'P2' | 'P3'> = {
-  'Intrusion Detected':    'P1',
-  'Suspicious Person':     'P1',
-  'Fight / Altercation':   'P1',
-  'Weapon Observed':       'P1',
-  'Fire / Smoke':          'P1',
-  'Vandalism in Progress': 'P1',
-  'Loitering':             'P2',
-  'Unauthorized Access':   'P2',
-  'Gate Left Open':        'P2',
-  'Vehicle Blocking':      'P2',
-  'Package / Object Left': 'P2',
-  'Motion Detected':       'P3',
-  'Noise Complaint':       'P3',
-  'Welfare Check':         'P3',
-  'Other':                 'P3',
-};
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function PatrolPage() {
   const { user }    = useUser();
-  const operatorId  = user?.id ?? 'unknown';
-  const operatorName = user?.fullName ?? user?.firstName ?? 'Operator';
+  const operatorId    = user?.id ?? 'unknown';
+  const operatorName  = user?.fullName ?? user?.firstName ?? 'Operator';
+  const operatorEmail = user?.primaryEmailAddress?.emailAddress ?? operatorId;
 
   // ── Site / camera state ────────────────────────────────────────────────────
   const [sites, setSites]         = useState<Site[]>([]);
@@ -171,7 +147,6 @@ export default function PatrolPage() {
   // ── History ────────────────────────────────────────────────────────────────
   const [history, setHistory]           = useState<PatrolLog[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [selectedLog, setSelectedLog]   = useState<PatrolLog | null>(null);
 
   // ── Load sites via accounts → zones → cameras ─────────────────────────────
   useEffect(() => {
@@ -225,10 +200,6 @@ export default function PatrolPage() {
     }
     load();
     loadHistory();
-    // Load all gates for pre-patrol banner + issue picker
-    supabase.from('gates').select('id, name, gate_type, account_id, status').then(({ data }) => {
-      if (data) setAllGates(data);
-    });
   }, []);
 
   async function loadHistory() {
@@ -249,27 +220,16 @@ export default function PatrolPage() {
     }
   }
 
-  // ── Gate-ack interceptor — show modal if gates need service, else start immediately ──
-  function requestStartPatrol() {
-    if (gatesNeedingService.length > 0) {
-      setGateAckOpen(true);
-    } else {
-      startPatrol();
-    }
-  }
-
   // ── Start patrol ───────────────────────────────────────────────────────────
   function startPatrol() {
     const now = new Date().toISOString();
     setResults(sites.map(s => ({
-      account_id:   s.id,
-      site_name:    s.name,
-      status:       'pending',
-      checklist:    { ...EMPTY_CHECKLIST },
-      notes:        '',
-      issue_detail: '',
-      acknowledged: false,
-      checked_at:   null,
+      account_id: s.id,
+      site_name:  s.name,
+      status:     'pending',
+      checklist:  { ...EMPTY_CHECKLIST },
+      notes:      '',
+      checked_at: null,
     })));
     setCurrentSiteIdx(0);
     setStartedAt(now);
@@ -289,63 +249,17 @@ export default function PatrolPage() {
     setResults(prev => prev.map((r, i) => i !== currentSiteIdx ? r : { ...r, notes: val }));
   }
 
-  function setIssueDetailForCurrent(val: string) {
-    setResults(prev => prev.map((r, i) => i !== currentSiteIdx ? r : { ...r, issue_detail: val }));
-  }
-
   function markSite(status: 'clear' | 'issue') {
     const now = new Date().toISOString();
     setResults(prev => prev.map((r, i) =>
       i !== currentSiteIdx ? r : { ...r, status, checked_at: now }
     ));
-    setIssueConfirming(false);
     // Auto-advance to next unreviewed site
     const nextPending = results.findIndex((r, i) => i > currentSiteIdx && r.status === 'pending');
     if (nextPending !== -1) setCurrentSiteIdx(nextPending);
   }
 
   // ── Submit ─────────────────────────────────────────────────────────────────
-  // ── Raise alarm from patrol ────────────────────────────────────────────────
-  async function raisePatrolAlarm() {
-    if (!currentSite || !alarmReason) return;
-    setAlarmRaising(true);
-    const { data: newAlarm, error } = await supabase.from('alarms').insert({
-      priority:    alarmPri,
-      event_type:  'manual.operatorRaisedEvent.v1',
-      event_label: alarmReason,
-      site_name:   currentSite.name,
-      zone_id:     currentSite.zone_id,
-      account_id:  currentSite.id,
-      source:      'patrol',
-      status:      'pending',
-      operator_id: operatorId,
-      notes:       alarmNotes || null,
-      created_at:  new Date().toISOString(),
-    }).select('id').single();
-    setAlarmRaising(false);
-    if (error) {
-      setAlarmError(error.message);
-    } else {
-      // Push alarm creation to portal (non-blocking)
-      pushToPortal({
-        source:          'soc_alarm',
-        source_id:       newAlarm?.id ?? `patrol-alarm-${Date.now()}`,
-        incident_status: 'open',
-        site_name:       currentSite.name,
-        een_account_id:  currentSite.id,
-        event_type:      'manual.operatorRaisedEvent.v1',
-        event_label:     alarmReason,
-        priority:        alarmPri,
-        operator_name:   operatorName,
-      });
-      setAlarmRaised(true);   // persists until page refresh
-      setAlarmOpen(false);
-      setAlarmReason('');
-      setAlarmNotes('');
-      setAlarmPri('P2');
-      setAlarmError(null);
-    }
-  }
   async function submitPatrol() {
     setSubmitting(true);
     setSubmitError(null);
@@ -354,24 +268,15 @@ export default function PatrolPage() {
       r.status === 'pending' ? { ...r, status: 'clear' as const, checked_at: completedAt } : r
     );
     try {
-      const patrolType = selectedSlot === 'spot-check'
-        ? `Spot Check — ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}`
-        : selectedSlot;
-
-      const { data: patrolRow, error } = await supabase
-        .from('patrol_logs')
-        .insert({
-          operator_id:   operatorId,
-          operator_name: operatorName,
-          started_at:    startedAt,
-          completed_at:  completedAt,
-          site_results:  finalResults,
-          status:        'completed',
-          patrol_type:   patrolType,
-        })
-        .select('id')
-        .single();
-
+      const { error } = await supabase.from('patrol_logs').insert({
+        operator_id:   operatorId,
+        operator_name: operatorName,
+        started_at:    startedAt,
+        completed_at:  completedAt,
+        site_results:  finalResults,
+        status:        'completed',
+        patrol_type:   selectedSlot,
+      });
       if (error) {
         setSubmitError(error.message.includes('does not exist')
           ? 'patrol_logs table not yet created — run migration SQL below.'
@@ -380,24 +285,6 @@ export default function PatrolPage() {
         setSubmitting(false);
         return;
       }
-
-      // Push each issue to GateGuard Portal incidents (non-blocking)
-      if (patrolRow?.id) {
-        const issueResults = finalResults.filter(r => r.status === 'issue');
-        for (const r of issueResults) {
-          pushToPortal({
-            source:          'soc_patrol',
-            source_id:       `${patrolRow.id}::${r.account_id}`,
-            incident_status: 'open',
-            site_name:       r.site_name,
-            een_account_id:  r.account_id,
-            issue_detail:    r.issue_detail,
-            operator_name:   operatorName,
-            patrol_type:     patrolType,
-          });
-        }
-      }
-
       setPatrolActive(false);
       setPatrolComplete(true);
       loadHistory();
@@ -413,50 +300,11 @@ export default function PatrolPage() {
   const issueCount    = results.filter(r => r.status === 'issue').length;
   const allSitesDone  = results.length > 0 && results.every(r => r.status !== 'pending');
 
-  // Mark a specific gate as needs_service when operator flags an issue
-  async function markGateNeedsService(gateId: string) {
-    if (!gateId) return;
-    setMarkingGate(true);
-    await supabase.from('gates').update({
-      status:            'needs_service',
-      status_updated_at: new Date().toISOString(),
-      status_updated_by: operatorName,
-    }).eq('id', gateId);
-    setAllGates(prev => prev.map(g => g.id === gateId ? { ...g, status: 'needs_service' } : g));
-    setMarkingGate(false);
-  }
-
   // Expanded camera modal (double-click → main stream)
   const [expandedCam, setExpandedCam] = useState<{ accountId: string; cameraId: string; name: string } | null>(null);
 
-  // Issue Found — confirm flow (show detail field + gate picker before marking)
-  const [issueConfirming, setIssueConfirming] = useState(false);
-
-  // Live gate status — loaded once, used for pre-patrol banner + issue picker
-  const [allGates,     setAllGates]     = useState<{ id: string; name: string; gate_type: string; account_id: string; status: string }[]>([]);
-  const [selectedGateId, setSelectedGateId] = useState<string>('');
-  const [markingGate,  setMarkingGate]  = useState(false);
-
-  // Raise alarm from patrol
-  const [alarmOpen,    setAlarmOpen]    = useState(false);
-  const [alarmPri,     setAlarmPri]     = useState<'P1' | 'P2' | 'P3'>('P2');
-  const [alarmReason,  setAlarmReason]  = useState('');
-  const [alarmNotes,   setAlarmNotes]   = useState('');
-  const [alarmRaising, setAlarmRaising] = useState(false);
-  const [alarmRaised,  setAlarmRaised]  = useState(false);
-  const [alarmError,   setAlarmError]   = useState<string | null>(null);
-
   // Right panel tab
   const [rightTab, setRightTab] = useState<'checklist' | 'site-brief' | 'contacts' | 'comms'>('checklist');
-
-  // Gates currently needing service — derived after allGates state is declared
-  const gatesNeedingService = allGates.filter(g => g.status === 'needs_service');
-
-  // Gate acknowledgment modal — shown before patrol starts if any gates need service
-  const [gateAckOpen, setGateAckOpen] = useState(false);
-
-  // In-app dialer modal
-  const [dialerTarget, setDialerTarget] = useState<DialerTarget | null>(null);
 
   // Grid columns based on camera count
   function gridCols(n: number) {
@@ -571,11 +419,7 @@ export default function PatrolPage() {
               {history.map(h => {
                 const issues = (h.site_results ?? []).filter((r: SiteResult) => r.status === 'issue').length;
                 return (
-                  <div
-                    key={h.id}
-                    onClick={() => setSelectedLog(h)}
-                    className="px-2 py-1.5 rounded border border-white/[0.04] bg-white/[0.01] cursor-pointer hover:bg-white/[0.04] hover:border-indigo-500/20 transition-colors group"
-                  >
+                  <div key={h.id} className="px-2 py-1.5 rounded border border-white/[0.04] bg-white/[0.01]">
                     <div className="flex items-center justify-between gap-1">
                       <span className="text-[9px] font-mono text-slate-400 truncate">{fmtDateTime(h.started_at)}</span>
                       {issues > 0
@@ -585,7 +429,9 @@ export default function PatrolPage() {
                     </div>
                     <div className="flex items-center justify-between mt-0.5">
                       <p className="text-[9px] text-slate-600 truncate">{h.operator_name}</p>
-                      <span className="text-[8px] text-slate-700 group-hover:text-indigo-400 shrink-0 transition-colors">View →</span>
+                      {h.patrol_type && h.patrol_type !== 'scheduled' && (
+                        <span className="text-[8px] font-mono text-slate-600 shrink-0">{h.patrol_type}</span>
+                      )}
                     </div>
                   </div>
                 );
@@ -609,9 +455,7 @@ export default function PatrolPage() {
                   </svg>
                 </div>
                 <div className="text-center">
-                  <p className="text-[15px] font-bold text-white">
-                    {selectedSlot === 'spot-check' ? 'Spot Check Complete' : `Patrol Complete — ${selectedSlot} EST`}
-                  </p>
+                  <p className="text-[15px] font-bold text-white">Patrol Complete — {selectedSlot} EST</p>
                   <p className="text-[11px] text-slate-400 mt-1">
                     {issueCount > 0
                       ? `${issueCount} issue${issueCount > 1 ? 's' : ''} found — raise alarms from Cameras page`
@@ -619,7 +463,7 @@ export default function PatrolPage() {
                   </p>
                 </div>
                 <button
-                  onClick={requestStartPatrol}
+                  onClick={startPatrol}
                   disabled={loading || sites.length === 0}
                   className="px-6 py-2.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 text-indigo-300 text-[11px] font-semibold uppercase tracking-wider transition-all"
                 >
@@ -666,55 +510,10 @@ export default function PatrolPage() {
                       </button>
                     ))}
                   </div>
-                  {/* Spot check / random patrol */}
-                  <button
-                    onClick={() => setSelectedSlot('spot-check')}
-                    className={`w-full px-4 py-2.5 rounded border text-left transition-all ${
-                      selectedSlot === 'spot-check'
-                        ? 'border-violet-500/60 bg-violet-600/20 text-white'
-                        : 'border-dashed border-white/[0.12] bg-white/[0.01] text-slate-500 hover:border-white/25 hover:text-slate-400'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.348 14.651a3.75 3.75 0 010-5.303m5.304-.001a3.75 3.75 0 010 5.304m-7.425 2.122a6.75 6.75 0 010-9.546m9.546 0a6.75 6.75 0 010 9.546M5.106 18.894c-3.808-3.808-3.808-9.98 0-13.789m13.788 0c3.808 3.808 3.808 9.981 0 13.79M12 12h.008v.008H12V12z" />
-                      </svg>
-                      <div>
-                        <p className="text-[11px] font-bold">Spot Check / Random</p>
-                        <p className="text-[9px] text-slate-600 mt-0.5">Unscheduled patrol — logged with current time</p>
-                      </div>
-                    </div>
-                  </button>
                 </div>
 
-                {/* ── Gates needing service banner (live from DB) ── */}
-                {gatesNeedingService.length > 0 && (
-                  <div className="w-full max-w-sm rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-3 space-y-2">
-                    <p className="text-[9px] font-bold text-amber-400 uppercase tracking-[0.12em] flex items-center gap-1.5">
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                      </svg>
-                      {gatesNeedingService.length} Gate{gatesNeedingService.length > 1 ? 's' : ''} Need Service
-                    </p>
-                    {gatesNeedingService.map(gate => {
-                      const site = sites.find(s => s.id === gate.account_id);
-                      return (
-                        <div key={gate.id} className="flex items-center gap-2 px-2 py-1.5 rounded bg-amber-500/[0.06] border border-amber-500/10">
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-[10px] font-semibold text-white truncate">{gate.name}</p>
-                            {site && <p className="text-[9px] text-slate-600">{site.name}</p>}
-                          </div>
-                          <span className="text-[8px] text-amber-400 font-semibold uppercase">⚠ Service</span>
-                        </div>
-                      );
-                    })}
-                    <p className="text-[8px] text-slate-600">Mark resolved in Reports → Gates once tech confirms fix.</p>
-                  </div>
-                )}
-
                 <button
-                  onClick={requestStartPatrol}
+                  onClick={startPatrol}
                   disabled={loading || sites.length === 0}
                   className={`px-8 py-3 rounded-lg font-bold text-[12px] uppercase tracking-wider transition-all disabled:opacity-30 ${
                     patrolDue
@@ -722,7 +521,7 @@ export default function PatrolPage() {
                       : 'bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-slate-300'
                   }`}
                 >
-                  {loading ? 'Loading sites…' : sites.length === 0 ? 'No sites configured' : selectedSlot === 'spot-check' ? 'Start Spot Check' : `Start ${selectedSlot} Patrol`}
+                  {loading ? 'Loading sites…' : sites.length === 0 ? 'No sites configured' : `Start ${selectedSlot} Patrol`}
                 </button>
 
                 {tableError && (
@@ -797,91 +596,98 @@ export default function PatrolPage() {
 
             <div className="flex flex-1 min-h-0 overflow-hidden">
 
-              {/* ── Camera grid (substream) ── */}
+              {/* ── Camera area: grid OR single expanded camera ── */}
               <div className="flex-1 flex flex-col bg-black overflow-hidden relative">
 
-                {currentSite.cameras.length === 0 ? (
-                  <div className="flex-1 flex flex-col items-center justify-center gap-2">
-                    <p className="text-[11px] text-slate-600">No cameras found for this site</p>
-                    <p className="text-[9px] text-slate-700">Configure cameras in Setup → zone → cameras</p>
+                {expandedCam ? (
+                  /* ── Single camera fills center (main stream) — right panel stays visible ── */
+                  <div className="flex-1 flex flex-col">
+                    {/* Header bar */}
+                    <div className="flex items-center gap-3 px-3 py-2 border-b border-white/[0.08] shrink-0">
+                      <button
+                        onClick={() => setExpandedCam(null)}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-white/10 bg-white/[0.04] hover:bg-white/[0.1] text-slate-400 hover:text-white transition-all text-[9px] font-semibold uppercase tracking-wider shrink-0"
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                        Grid
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[11px] font-bold text-white truncate">{expandedCam.name}</p>
+                        <p className="text-[9px] text-slate-500">Main stream · double-click to return to grid</p>
+                      </div>
+                    </div>
+                    {/* Video — double-click anywhere on the player to go back to grid */}
+                    <div
+                      className="flex-1 min-h-0 cursor-pointer"
+                      onDoubleClick={() => setExpandedCam(null)}
+                      title="Double-click to return to grid"
+                    >
+                      <SmartVideoPlayer
+                        accountId={expandedCam.accountId}
+                        cameraId={expandedCam.cameraId}
+                        source="een"
+                        streamType="main"
+                        label={expandedCam.name}
+                        disableFullscreen
+                      />
+                    </div>
                   </div>
                 ) : (
-                  <div className={`flex-1 grid ${gridCols(currentSite.cameras.length)} gap-0.5 p-0.5 overflow-hidden`}>
-                    {currentSite.cameras.map(cam => (
-                      <div
-                        key={cam.id}
-                        className="group relative bg-black overflow-hidden cursor-pointer"
-                        onDoubleClick={() => setExpandedCam({
-                          accountId: currentSite.id,
-                          cameraId:  cam.een_camera_id,
-                          name:      cam.name,
-                        })}
-                        title="Double-click to expand (main stream)"
-                      >
-                        {/* Substream tile — pointer-events-none so double-click on tile registers */}
-                        <div className="absolute inset-0 pointer-events-none">
-                          <SmartVideoPlayer
-                            accountId={currentSite.id}
-                            cameraId={cam.een_camera_id}
-                            source="een"
-                            streamType="preview"
-                            disableFullscreen
-                          />
-                        </div>
-                        {/* Camera name label */}
-                        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 pointer-events-none">
-                          <p className="text-[9px] font-semibold text-white truncate">{cam.name}</p>
-                        </div>
-                        {/* Double-click hint on hover */}
-                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                          <div className="bg-black/60 backdrop-blur-sm rounded px-2 py-1 border border-white/10">
-                            <p className="text-[8px] text-slate-300">Double-click for main stream</p>
-                          </div>
-                        </div>
+                  /* ── Camera grid (substream) ── */
+                  <>
+                    {currentSite.cameras.length === 0 ? (
+                      <div className="flex-1 flex flex-col items-center justify-center gap-2">
+                        <p className="text-[11px] text-slate-600">No cameras found for this site</p>
+                        <p className="text-[9px] text-slate-700">Configure cameras in Setup → zone → cameras</p>
                       </div>
-                    ))}
-                  </div>
-                )}
+                    ) : (
+                      <div className={`flex-1 grid ${gridCols(currentSite.cameras.length)} gap-0.5 p-0.5 overflow-hidden`}>
+                        {currentSite.cameras.map(cam => (
+                          <div
+                            key={cam.id}
+                            className="group relative bg-black overflow-hidden cursor-pointer"
+                            onDoubleClick={() => setExpandedCam({
+                              accountId: currentSite.id,
+                              cameraId:  cam.een_camera_id,
+                              name:      cam.name,
+                            })}
+                            title="Double-click to expand (main stream)"
+                          >
+                            {/* Substream tile — pointer-events-none so double-click on tile registers */}
+                            <div className="absolute inset-0 pointer-events-none">
+                              <SmartVideoPlayer
+                                accountId={currentSite.id}
+                                cameraId={cam.een_camera_id}
+                                source="een"
+                                streamType="preview"
+                                disableFullscreen
+                              />
+                            </div>
+                            {/* Camera name label */}
+                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 pointer-events-none">
+                              <p className="text-[9px] font-semibold text-white truncate">{cam.name}</p>
+                            </div>
+                            {/* Double-click hint on hover */}
+                            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                              <div className="bg-black/60 backdrop-blur-sm rounded px-2 py-1 border border-white/10">
+                                <p className="text-[8px] text-slate-300">Double-click for main stream</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
-                {/* Site label overlay */}
-                <div className="absolute top-2 left-2 bg-black/70 border border-white/10 rounded px-2 py-1 pointer-events-none">
-                  <p className="text-[10px] font-bold text-white">{currentSite.name}</p>
-                  <p className="text-[8px] text-slate-500">{currentSite.cameras.length} camera{currentSite.cameras.length !== 1 ? 's' : ''} · substream</p>
-                </div>
-              </div>
-
-              {/* ── Expanded camera modal (main stream) ── */}
-              {expandedCam && (
-                <div
-                  className="absolute inset-0 z-50 bg-black/90 flex flex-col"
-                  onClick={() => setExpandedCam(null)}
-                >
-                  <div className="flex items-center justify-between px-4 py-2 border-b border-white/[0.08] shrink-0" onClick={e => e.stopPropagation()}>
-                    <div>
-                      <p className="text-[11px] font-bold text-white">{expandedCam.name}</p>
-                      <p className="text-[9px] text-slate-500">Main stream · click outside to close</p>
+                    {/* Site label overlay (grid only) */}
+                    <div className="absolute top-2 left-2 bg-black/70 border border-white/10 rounded px-2 py-1 pointer-events-none">
+                      <p className="text-[10px] font-bold text-white">{currentSite.name}</p>
+                      <p className="text-[8px] text-slate-500">{currentSite.cameras.length} camera{currentSite.cameras.length !== 1 ? 's' : ''} · substream</p>
                     </div>
-                    <button
-                      onClick={() => setExpandedCam(null)}
-                      className="w-7 h-7 flex items-center justify-center rounded border border-white/10 bg-white/[0.04] hover:bg-white/[0.1] text-slate-400 hover:text-white transition-all"
-                    >
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                  <div className="flex-1 min-h-0" onClick={e => e.stopPropagation()}>
-                    <SmartVideoPlayer
-                      accountId={expandedCam.accountId}
-                      cameraId={expandedCam.cameraId}
-                      source="een"
-                      streamType="main"
-                      label={expandedCam.name}
-                      disableFullscreen
-                    />
-                  </div>
-                </div>
-              )}
+                  </>
+                )}
+              </div>
 
               {/* ── Right panel (tabbed) ── */}
               <div className="w-[300px] shrink-0 border-l border-white/[0.06] flex flex-col overflow-hidden">
@@ -890,9 +696,9 @@ export default function PatrolPage() {
                 <div className="flex border-b border-white/[0.06] shrink-0">
                   {([
                     { key: 'checklist',  label: 'Checklist' },
-                    { key: 'site-brief', label: 'Site Brief' },
-                    { key: 'contacts',   label: `Contacts${currentSite.contacts.length ? ` (${currentSite.contacts.length})` : ''}` },
-                    { key: 'comms',      label: '📞 Comms' },
+                    { key: 'site-brief', label: 'Brief' },
+                    { key: 'contacts',   label: `Contacts` },
+                    { key: 'comms',      label: 'Comms' },
                   ] as const).map(tab => (
                     <button
                       key={tab.key}
@@ -912,41 +718,6 @@ export default function PatrolPage() {
                 {rightTab === 'checklist' && (
                   <>
                     <div className="flex-1 overflow-y-auto p-4 space-y-4">
-
-                      {/* Quick Dial strip — top contacts always visible */}
-                      {currentSite.contacts.filter(c => c.phone).length > 0 && (
-                        <div>
-                          <p className="text-[8px] font-bold uppercase tracking-widest text-slate-600 mb-1.5 flex items-center gap-1.5">
-                            <svg className="w-3 h-3 text-emerald-500/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
-                            </svg>
-                            Quick Dial
-                          </p>
-                          <div className="space-y-1">
-                            {currentSite.contacts.filter(c => c.phone).slice(0, 3).map(c => (
-                              <button
-                                key={c.id}
-                                onClick={() => setDialerTarget({ phone: c.phone!, name: c.name, siteName: currentSite.name })}
-                                className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded border border-white/[0.06] hover:border-emerald-500/30 hover:bg-emerald-500/[0.06] transition-all group text-left"
-                              >
-                                <div className="w-4 h-4 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center shrink-0">
-                                  <svg className="w-2 h-2 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                      d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
-                                  </svg>
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-[9px] font-semibold text-white truncate">{c.name}</p>
-                                  <p className="text-[8px] text-slate-600 font-mono">{c.phone}</p>
-                                </div>
-                                <span className="text-[8px] font-bold text-slate-600 group-hover:text-emerald-400 transition-colors shrink-0">Call</span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
                       <div>
                         <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-[0.1em] mb-2">Site Checklist</p>
                         <div className="space-y-1">
@@ -993,170 +764,14 @@ export default function PatrolPage() {
                       )}
                     </div>
                     <div className="p-3 border-t border-white/[0.06] space-y-2">
-                      {/* ── Raise Alarm ── */}
-                      {alarmRaised ? (
-                        /* Persistent success — clears on page refresh */
-                        <div className="flex items-center justify-center gap-2 py-2.5 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px] font-semibold">
-                          <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="m4.5 12.75 6 6 9-13.5" />
-                          </svg>
-                          Alarm raised — dispatching to queue
-                        </div>
-                      ) : alarmOpen ? (
-                        <div className="space-y-1.5 p-2 rounded border border-red-500/20 bg-red-500/[0.05]">
-                          {/* Reason first — priority auto-fills below */}
-                          <select
-                            value={alarmReason}
-                            onChange={e => {
-                              const r = e.target.value;
-                              setAlarmReason(r);
-                              if (r && REASON_PRIORITY[r]) setAlarmPri(REASON_PRIORITY[r]);
-                            }}
-                            className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2 py-1.5 text-[10px] text-slate-300 focus:outline-none focus:border-red-500/50 [color-scheme:dark]"
-                          >
-                            <option value="">— Select reason —</option>
-                            <optgroup label="P1 — Threats">
-                              <option>Intrusion Detected</option>
-                              <option>Suspicious Person</option>
-                              <option>Fight / Altercation</option>
-                              <option>Weapon Observed</option>
-                              <option>Fire / Smoke</option>
-                              <option>Vandalism in Progress</option>
-                            </optgroup>
-                            <optgroup label="P2 — Security">
-                              <option>Loitering</option>
-                              <option>Unauthorized Access</option>
-                              <option>Gate Left Open</option>
-                              <option>Vehicle Blocking</option>
-                              <option>Package / Object Left</option>
-                            </optgroup>
-                            <optgroup label="P3 — General">
-                              <option>Motion Detected</option>
-                              <option>Noise Complaint</option>
-                              <option>Welfare Check</option>
-                              <option>Other</option>
-                            </optgroup>
-                          </select>
-                          {/* Priority — auto-set from reason, tap to override */}
-                          <div>
-                            <p className="text-[8px] text-slate-600 mb-1 uppercase tracking-wider">
-                              Priority
-                              {alarmReason && REASON_PRIORITY[alarmReason] && alarmPri !== REASON_PRIORITY[alarmReason] && (
-                                <span className="ml-1.5 text-amber-500">· overridden</span>
-                              )}
-                            </p>
-                            <div className="grid grid-cols-3 gap-1">
-                              {(['P1','P2','P3'] as const).map(p => (
-                                <button
-                                  key={p}
-                                  onClick={() => setAlarmPri(p)}
-                                  className={`py-1 rounded border text-[9px] font-semibold transition-all ${
-                                    alarmPri === p
-                                      ? p === 'P1' ? 'bg-red-600/30 border-red-500/50 text-red-300'
-                                        : p === 'P2' ? 'bg-amber-600/30 border-amber-500/50 text-amber-300'
-                                        : 'bg-slate-600/30 border-slate-500/50 text-slate-300'
-                                      : 'bg-white/[0.03] border-white/[0.06] text-slate-600 hover:text-slate-400'
-                                  }`}
-                                >{p}</button>
-                              ))}
-                            </div>
-                          </div>
-                          {/* Notes */}
-                          <textarea
-                            value={alarmNotes}
-                            onChange={e => setAlarmNotes(e.target.value)}
-                            placeholder="Optional notes…"
-                            rows={2}
-                            className="w-full bg-white/[0.03] border border-white/[0.06] rounded px-2 py-1.5 text-[10px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-red-500/40"
-                          />
-                          {alarmError && (
-                            <p className="text-[9px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1">✗ {alarmError}</p>
-                          )}
-                          <div className="flex gap-1.5">
-                            <button
-                              onClick={raisePatrolAlarm}
-                              disabled={alarmRaising || !alarmReason}
-                              className="flex-1 py-1.5 rounded border border-red-500/40 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-[10px] font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                            >
-                              {alarmRaising ? 'Raising…' : 'Confirm Alarm'}
-                            </button>
-                            <button
-                              onClick={() => { setAlarmOpen(false); setAlarmReason(''); setAlarmNotes(''); setAlarmPri('P2'); setAlarmError(null); }}
-                              className="px-3 py-1.5 rounded border border-white/[0.08] text-slate-500 text-[10px] hover:text-slate-300 transition-colors"
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => { setAlarmOpen(true); setAlarmError(null); }}
-                          className="w-full flex items-center justify-center gap-1.5 py-2 rounded border border-red-500/30 bg-red-500/[0.07] hover:bg-red-500/[0.14] text-red-400 text-[10px] font-semibold uppercase tracking-wider transition-all"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                          </svg>
-                          Raise Alarm
+                      <div className="grid grid-cols-2 gap-2">
+                        <button onClick={() => markSite('clear')} className="py-2.5 rounded border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-[10px] font-bold uppercase tracking-wider transition-all">
+                          ✓ All Clear
                         </button>
-                      )}
-                      {/* All Clear / Issue Found */}
-                      {issueConfirming ? (
-                        <div className="space-y-1.5 p-2 rounded border border-amber-500/20 bg-amber-500/[0.05]">
-                          <p className="text-[9px] font-semibold text-amber-400 uppercase tracking-wider">Describe the issue</p>
-                          <textarea
-                            value={currentResult.issue_detail}
-                            onChange={e => setIssueDetailForCurrent(e.target.value)}
-                            placeholder="Gate stuck open, broken sensor, unauthorized vehicle…"
-                            rows={3}
-                            autoFocus
-                            className="w-full bg-white/[0.03] border border-white/[0.06] rounded px-2 py-1.5 text-[10px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-amber-500/40"
-                          />
-                          {/* Gate picker — mark a specific gate as needs_service */}
-                          {allGates.filter(g => g.account_id === currentSite.id).length > 0 && (
-                            <div className="space-y-1">
-                              <p className="text-[9px] text-slate-500 uppercase tracking-wider">Flag a specific gate (optional)</p>
-                              <select
-                                value={selectedGateId}
-                                onChange={e => setSelectedGateId(e.target.value)}
-                                className="w-full bg-white/[0.04] border border-white/[0.08] rounded px-2 py-1.5 text-[10px] text-slate-300 focus:outline-none [color-scheme:dark]"
-                              >
-                                <option value="">— None / general issue —</option>
-                                {allGates.filter(g => g.account_id === currentSite.id).map(g => (
-                                  <option key={g.id} value={g.id}>{g.name}</option>
-                                ))}
-                              </select>
-                            </div>
-                          )}
-                          <div className="flex gap-1.5">
-                            <button
-                              onClick={async () => {
-                                if (selectedGateId) await markGateNeedsService(selectedGateId);
-                                markSite('issue');
-                                setSelectedGateId('');
-                              }}
-                              disabled={markingGate}
-                              className="flex-1 py-1.5 rounded border border-red-500/40 bg-red-500/20 hover:bg-red-500/30 text-red-300 text-[10px] font-bold uppercase tracking-wider transition-all disabled:opacity-40"
-                            >
-                              {markingGate ? '…' : '! Confirm Issue'}
-                            </button>
-                            <button
-                              onClick={() => { setIssueConfirming(false); setSelectedGateId(''); }}
-                              className="px-3 py-1.5 rounded border border-white/[0.08] text-slate-500 text-[10px] hover:text-slate-300 transition-colors"
-                            >
-                              Back
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="grid grid-cols-2 gap-2">
-                          <button onClick={() => markSite('clear')} className="py-2.5 rounded border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-[10px] font-bold uppercase tracking-wider transition-all">
-                            ✓ All Clear
-                          </button>
-                          <button onClick={() => setIssueConfirming(true)} className="py-2.5 rounded border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-300 text-[10px] font-bold uppercase tracking-wider transition-all">
-                            ! Issue Found
-                          </button>
-                        </div>
-                      )}
+                        <button onClick={() => markSite('issue')} className="py-2.5 rounded border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-300 text-[10px] font-bold uppercase tracking-wider transition-all">
+                          ! Issue Found
+                        </button>
+                      </div>
                       {allSitesDone && (
                         <button onClick={submitPatrol} disabled={submitting} className="w-full py-2.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold uppercase tracking-wider transition-all disabled:opacity-40">
                           {submitting ? 'Saving…' : 'Submit Patrol Report'}
@@ -1273,15 +888,14 @@ export default function PatrolPage() {
                             {c.email && <p className="text-[9px] text-slate-600 truncate">{c.email}</p>}
                           </div>
                           {c.phone && (
-                            <button
-                              onClick={() => setDialerTarget({ phone: c.phone!, name: c.name, siteName: currentSite.name })}
+                            <a
+                              href={`tel:${c.phone}`}
                               className="shrink-0 ml-2 w-8 h-8 flex items-center justify-center rounded border border-white/[0.08] bg-white/[0.03] hover:bg-emerald-500/20 hover:border-emerald-500/40 text-slate-400 hover:text-emerald-300 transition-all"
-                              title="Call via GateGuard"
                             >
                               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.25 6.75c0 8.284 6.716 15 15 15h2.25a2.25 2.25 0 002.25-2.25v-1.372c0-.516-.351-.966-.852-1.091l-4.423-1.106c-.44-.11-.902.055-1.173.417l-.97 1.293c-.282.376-.769.542-1.21.38a12.035 12.035 0 01-7.143-7.143c-.162-.441.004-.928.38-1.21l1.293-.97c.363-.271.527-.734.417-1.173L6.963 3.102a1.125 1.125 0 00-1.091-.852H4.5A2.25 2.25 0 002.25 6.75z" />
                               </svg>
-                            </button>
+                            </a>
                           )}
                         </div>
                       ))
@@ -1290,13 +904,22 @@ export default function PatrolPage() {
                 )}
 
                 {/* ── COMMS TAB ── */}
-                {rightTab === 'comms' && currentSite && (
-                  <div className="flex-1 overflow-y-auto">
+                {rightTab === 'comms' && (
+                  <div className="flex-1 overflow-hidden flex flex-col">
                     <CommunicationHub
-                      siteName={currentSite.name}
-                      siteContactPhone={currentSite.contacts[0]?.phone ?? null}
-                      siteContactEmail={currentSite.contacts[0]?.email ?? null}
-                      operatorName={operatorName}
+                      incidentId={null}
+                      patrolId={null}
+                      zoneId={currentSite.id}
+                      contacts={currentSite.contacts.map(c => ({
+                        id:    c.id,
+                        name:  c.name,
+                        phone: c.phone  ?? null,
+                        email: c.email  ?? null,
+                        role:  c.role,
+                      }))}
+                      agentEmail={operatorEmail}
+                      agentName={operatorName}
+                      isLocked={false}
                     />
                   </div>
                 )}
@@ -1305,214 +928,6 @@ export default function PatrolPage() {
           </>
         )}
       </main>
-
-      {/* ── PATROL LOG DETAIL MODAL ──────────────────────────────────────────── */}
-      {selectedLog && (() => {
-        const log = selectedLog;
-        const issues = (log.site_results ?? []).filter(r => r.status === 'issue');
-        const clears = (log.site_results ?? []).filter(r => r.status === 'clear');
-        const CHECKLIST_LABELS: Record<string, string> = {
-          gates_functional:        'Gates Functional',
-          no_unauthorized_persons: 'No Unauthorized Persons',
-          common_areas_clear:      'Common Areas Clear',
-          no_loitering:            'No Loitering',
-          no_dumping:              'No Dumping / Trash',
-          cameras_operational:     'Cameras Operational',
-        };
-        return (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
-            onClick={() => setSelectedLog(null)}
-          >
-            <div
-              className="relative w-full max-w-2xl max-h-[85vh] flex flex-col rounded-xl border border-white/[0.08] bg-[#0c0e14] shadow-2xl overflow-hidden"
-              onClick={e => e.stopPropagation()}
-            >
-              {/* Modal header */}
-              <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-white/[0.06] shrink-0">
-                <div>
-                  <p className="text-[10px] font-semibold text-indigo-400 uppercase tracking-widest mb-0.5">Patrol Log</p>
-                  <p className="text-[14px] font-bold text-white">{fmtDateTime(log.started_at)}</p>
-                  <p className="text-[10px] text-slate-500 mt-0.5">
-                    {log.operator_name}
-                    {log.patrol_type && log.patrol_type !== 'scheduled' && ` · ${log.patrol_type}`}
-                    {log.completed_at && ` · completed ${fmtTime(log.completed_at)}`}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  {issues.length > 0 && (
-                    <a
-                      href="/reports"
-                      className="text-[9px] font-semibold text-amber-400 hover:text-amber-300 border border-amber-500/30 hover:border-amber-500/50 rounded px-2.5 py-1.5 transition-colors"
-                    >
-                      View in Reports →
-                    </a>
-                  )}
-                  <button
-                    onClick={() => setSelectedLog(null)}
-                    className="w-7 h-7 flex items-center justify-center rounded border border-white/[0.08] text-slate-500 hover:text-white hover:bg-white/[0.06] transition-all text-[14px]"
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-
-              {/* Summary bar */}
-              <div className="flex items-center gap-6 px-5 py-2.5 border-b border-white/[0.04] bg-white/[0.01] shrink-0">
-                <div className="flex items-center gap-1.5">
-                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                  <span className="text-[10px] text-emerald-400 font-semibold">{clears.length} clear</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-1.5 h-1.5 rounded-full bg-red-400" />
-                  <span className="text-[10px] text-red-400 font-semibold">{issues.length} issue{issues.length !== 1 ? 's' : ''}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-1.5 h-1.5 rounded-full bg-slate-600" />
-                  <span className="text-[10px] text-slate-500">{(log.site_results ?? []).length} sites</span>
-                </div>
-              </div>
-
-              {/* Site results */}
-              <div className="flex-1 overflow-y-auto divide-y divide-white/[0.04]">
-                {(log.site_results ?? []).map((r, idx) => {
-                  const isIssue = r.status === 'issue';
-                  const checklist = r.checklist ?? {};
-                  const failedItems = Object.entries(checklist)
-                    .filter(([, v]) => !v)
-                    .map(([k]) => CHECKLIST_LABELS[k] ?? k);
-                  return (
-                    <div key={idx} className={`px-5 py-3 ${isIssue ? 'bg-red-500/[0.03]' : ''}`}>
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isIssue ? 'bg-red-400' : 'bg-emerald-400'}`} />
-                        <p className="text-[11px] font-semibold text-white flex-1 truncate">{r.site_name}</p>
-                        <span className={`text-[9px] font-bold uppercase tracking-wider ${isIssue ? 'text-red-400' : 'text-emerald-400'}`}>
-                          {isIssue ? 'Issue Found' : 'All Clear'}
-                        </span>
-                      </div>
-
-                      {/* Failed checklist items */}
-                      {failedItems.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mb-1.5 ml-3.5">
-                          {failedItems.map(item => (
-                            <span key={item} className="text-[8px] px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/20 text-red-400">
-                              ✗ {item}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Issue detail */}
-                      {isIssue && r.issue_detail && (
-                        <p className="text-[10px] text-amber-300/80 ml-3.5 mb-1 italic">&quot;{r.issue_detail}&quot;</p>
-                      )}
-
-                      {/* Notes */}
-                      {r.notes && (
-                        <p className="text-[9px] text-slate-500 ml-3.5">Notes: {r.notes}</p>
-                      )}
-
-                      {/* Acknowledged badge */}
-                      {isIssue && (
-                        <div className="ml-3.5 mt-1">
-                          {r.acknowledged
-                            ? <span className="text-[8px] text-emerald-500 font-semibold">✓ Acknowledged</span>
-                            : <span className="text-[8px] text-amber-500 font-semibold">⚠ Pending acknowledgement</span>
-                          }
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {(log.site_results ?? []).length === 0 && (
-                  <p className="text-[10px] text-slate-600 text-center py-10">No site results recorded</p>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* ── GATE ACKNOWLEDGMENT MODAL ──────────────────────────────────────── */}
-      {gateAckOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-6">
-          <div className="bg-[#0c0e14] border border-amber-500/30 rounded-xl shadow-2xl w-full max-w-md flex flex-col">
-            {/* Header */}
-            <div className="px-5 py-4 border-b border-amber-500/20 flex items-start gap-3">
-              <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0 mt-0.5">
-                <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-[13px] font-bold text-amber-300">
-                  {gatesNeedingService.length} Gate{gatesNeedingService.length > 1 ? 's' : ''} Need Service
-                </p>
-                <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">
-                  You must acknowledge the following known issues before starting your patrol.
-                  Note them in your site checklist if conditions have changed.
-                </p>
-              </div>
-            </div>
-
-            {/* Gate list */}
-            <div className="px-5 py-3 space-y-2 max-h-60 overflow-y-auto">
-              {gatesNeedingService.map(gate => {
-                const site = sites.find(s => s.id === gate.account_id);
-                return (
-                  <div key={gate.id} className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-amber-500/15 bg-amber-500/[0.05]">
-                    <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[11px] font-semibold text-white truncate">{gate.name}</p>
-                      <p className="text-[9px] text-slate-500">
-                        {site?.name ?? gate.account_id} · {gate.gate_type}
-                      </p>
-                    </div>
-                    <span className="text-[8px] font-bold text-amber-400 uppercase tracking-wider shrink-0">⚠ Service Needed</span>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Footer note */}
-            <div className="px-5 py-3 border-t border-white/[0.05]">
-              <p className="text-[9px] text-slate-600 leading-relaxed">
-                These gates are flagged in Reports → Gates. Service team follow-up is pending.
-                If a gate has been repaired during your patrol, mark it Operational in Reports after completing.
-              </p>
-            </div>
-
-            {/* Actions */}
-            <div className="px-5 py-4 flex gap-2 border-t border-white/[0.06]">
-              <button
-                onClick={() => {
-                  setGateAckOpen(false);
-                  startPatrol();
-                }}
-                className="flex-1 py-2.5 rounded-lg border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-[11px] font-bold uppercase tracking-wider transition-all"
-              >
-                I Acknowledge — Start Patrol
-              </button>
-              <button
-                onClick={() => setGateAckOpen(false)}
-                className="px-4 py-2.5 rounded-lg border border-white/[0.08] text-slate-500 text-[11px] hover:text-slate-300 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* In-app dialer modal — replaces tel: links in Contacts tab */}
-      {dialerTarget && (
-        <DialerModal
-          {...dialerTarget}
-          operatorName={operatorName}
-          operatorId={operatorId}
-          onClose={() => setDialerTarget(null)}
-        />
-      )}
     </div>
   );
 }
