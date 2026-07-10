@@ -537,9 +537,9 @@ export default function CamerasPage() {
   // ── VIEW 1: Site Tile Grid ────────────────────────────────────────────────
   if (view === 1) {
     return (
-      <div className="flex flex-col h-full bg-[#030406] text-white overflow-auto">
+      <div className="flex flex-col h-full bg-[#07111f] text-white overflow-auto">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-indigo-900/25 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-4 h-4 text-slate-400"><Ic.Camera /></div>
             <h1 className="text-[13px] font-semibold text-white uppercase tracking-[0.1em]">Camera Sites</h1>
@@ -563,24 +563,25 @@ export default function CamerasPage() {
                 <button
                   key={account.id}
                   onClick={() => openAccount(account)}
-                  className="group relative flex flex-col rounded border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.12] transition-all text-left overflow-hidden"
+                  className="group relative flex flex-col rounded border border-indigo-900/25 bg-indigo-950/20 hover:bg-indigo-900/15 hover:border-indigo-600/35 transition-all text-left overflow-hidden"
                 >
-                  {/* Thumbnail — live preview stream of primary/first EEN camera */}
-                  <div className="aspect-video bg-black relative overflow-hidden">
+                  {/* Thumbnail — static JPEG snapshot (fast, no stream lock) */}
+                  <div className="aspect-video bg-[#040c1a] relative overflow-hidden">
                     {(() => {
                       const esnToUse  = account.primaryCameraEsn ?? account.firstEenCamId;
                       const snapToUse = account.primaryCameraSnap ?? account.firstSnap;
                       if (esnToUse) return (
-                        /* pointer-events-none keeps the tile button clickable */
-                        <div className="absolute inset-0 pointer-events-none">
-                          <SmartVideoPlayer
-                            accountId={account.id}
-                            cameraId={esnToUse}
-                            source="een"
-                            streamType="preview"
-                            disableFullscreen
-                          />
-                        </div>
+                        <img
+                          src={`/api/een/image?accountId=${account.id}&cameraId=${esnToUse}`}
+                          alt={account.name}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            const t = e.target as HTMLImageElement;
+                            // Fall back to stored snap if EEN image fails
+                            if (snapToUse && t.src !== snapToUse) { t.src = snapToUse; }
+                            else { t.style.display = 'none'; }
+                          }}
+                        />
                       );
                       if (snapToUse) return (
                         <img
@@ -639,9 +640,9 @@ export default function CamerasPage() {
   // ── VIEW 2: Camera Wall ───────────────────────────────────────────────────
   if (view === 2 && selectedAccount) {
     return (
-      <div className="flex flex-col h-full bg-[#030406] text-white overflow-auto">
+      <div className="flex flex-col h-full bg-[#07111f] text-white overflow-auto">
         {/* Header */}
-        <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-3">
+        <div className="px-4 py-3 border-b border-indigo-900/25 flex items-center gap-3">
           <button
             onClick={() => setView(1)}
             className="w-6 h-6 text-slate-500 hover:text-white transition-colors"
@@ -673,7 +674,7 @@ export default function CamerasPage() {
                 return (
                   <div
                     key={cam.id}
-                    className="group relative aspect-video rounded border border-white/[0.06] bg-black overflow-hidden cursor-pointer hover:border-white/20 transition-all"
+                    className="group relative aspect-video rounded border border-indigo-900/20 bg-[#040c1a] overflow-hidden cursor-pointer hover:border-indigo-500/40 transition-all"
                     onDoubleClick={(e) => { e.stopPropagation(); openCamera(cam); }}
                   >
                     {/* pointer-events-none so hover actions and double-click on the tile work */}
@@ -748,9 +749,9 @@ export default function CamerasPage() {
   if (view === 3 && selectedCamera && selectedAccount) {
     const key = camKey(selectedCamera);
     return (
-      <div className="flex flex-col h-full bg-[#030406] text-white overflow-hidden">
+      <div className="flex flex-col h-full bg-[#07111f] text-white overflow-hidden">
         {/* Header */}
-        <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-3">
+        <div className="px-4 py-3 border-b border-indigo-900/25 flex items-center gap-3">
           <button
             onClick={() => setView(2)}
             className="w-6 h-6 text-slate-500 hover:text-white transition-colors"
@@ -769,7 +770,7 @@ export default function CamerasPage() {
         {/* Main content */}
         <div className="flex-1 flex min-h-0">
           {/* LEFT: Main player (full-width top 60%) + scrubber */}
-          <div className="flex-1 flex flex-col min-w-0 border-r border-white/[0.06]">
+          <div className="flex-1 flex flex-col min-w-0 border-r border-indigo-900/25">
             {/* Player — 60% */}
             <div className="bg-black" style={{ height: '60%' }}>
               <SmartVideoPlayer
@@ -783,7 +784,7 @@ export default function CamerasPage() {
               />
             </div>
             {/* Timeline scrubber — 40% */}
-            <div className="flex-1 overflow-y-auto p-4 border-t border-white/[0.06]">
+            <div className="flex-1 overflow-y-auto p-4 border-t border-indigo-900/25">
               <div className="flex items-center gap-2 mb-3">
                 <div className="w-3.5 h-3.5 text-slate-500"><Ic.Clock /></div>
                 <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Recorded Footage</span>
@@ -841,13 +842,13 @@ export default function CamerasPage() {
           <div className="w-[280px] shrink-0 flex flex-col">
 
             {/* ── Raise Alarm ── */}
-            <div className="px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
+            <div className="px-4 py-3 border-b border-indigo-900/25 flex items-center justify-between">
               <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Raise Alarm</span>
               {alarmRaised && (
                 <span className="text-[9px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">✓ Alarm raised</span>
               )}
             </div>
-            <div className="px-4 py-3 border-b border-white/[0.06] flex flex-col gap-2.5">
+            <div className="px-4 py-3 border-b border-indigo-900/25 flex flex-col gap-2.5">
               {!raiseAlarmOpen ? (
                 <button
                   onClick={() => setRaiseAlarmOpen(true)}
@@ -871,7 +872,7 @@ export default function CamerasPage() {
                             ? p === 'P1' ? 'bg-red-600/30 border-red-500/50 text-red-300'
                               : p === 'P2' ? 'bg-amber-600/30 border-amber-500/50 text-amber-300'
                               : 'bg-slate-600/30 border-slate-500/50 text-slate-300'
-                            : 'bg-white/[0.03] border-white/[0.06] text-slate-600 hover:text-slate-400'
+                            : 'bg-white/[0.03] border-indigo-900/25 text-slate-600 hover:text-slate-400'
                         }`}
                       >
                         {p}
@@ -913,7 +914,7 @@ export default function CamerasPage() {
                     onChange={e => setAlarmNotes(e.target.value)}
                     placeholder="Optional notes..."
                     rows={2}
-                    className="w-full bg-white/[0.03] border border-white/[0.06] rounded px-2.5 py-1.5 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-red-500/40"
+                    className="w-full bg-white/[0.03] border border-indigo-900/25 rounded px-2.5 py-1.5 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-red-500/40"
                   />
                   <div className="flex gap-2">
                     <button
@@ -938,10 +939,10 @@ export default function CamerasPage() {
             </div>
 
             {/* ── Door Access ── */}
-            <div className="px-4 py-3 border-b border-white/[0.06]">
+            <div className="px-4 py-3 border-b border-indigo-900/25">
               <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Door Access</span>
             </div>
-            <div className="px-4 py-4 border-b border-white/[0.06] flex flex-col gap-2.5">
+            <div className="px-4 py-4 border-b border-indigo-900/25 flex flex-col gap-2.5">
               {availableDoors.length === 0 ? (
                 <p className="text-[10px] text-slate-600 leading-relaxed">
                   No doors configured for this site. Add them in Setup → Brivo.
@@ -992,7 +993,7 @@ export default function CamerasPage() {
 
                   {/* ── Hold Open ── */}
                   {linkedDoorId && (
-                    <div className="mt-1 pt-3 border-t border-white/[0.06] flex flex-col gap-2">
+                    <div className="mt-1 pt-3 border-t border-indigo-900/25 flex flex-col gap-2">
                       <span className="text-[9px] text-slate-500 uppercase tracking-wider">Hold Open</span>
 
                       {holdActive ? (
@@ -1029,7 +1030,7 @@ export default function CamerasPage() {
                                 className={`py-1.5 rounded border text-[10px] font-medium transition-all ${
                                   holdMode === m
                                     ? 'bg-indigo-600/30 border-indigo-500/40 text-indigo-300'
-                                    : 'bg-white/[0.03] border-white/[0.06] text-slate-500 hover:text-slate-300'
+                                    : 'bg-white/[0.03] border-indigo-900/25 text-slate-500 hover:text-slate-300'
                                 }`}
                               >
                                 {m === 'indefinite' ? 'Indefinite' : 'Until Time'}
@@ -1073,7 +1074,7 @@ export default function CamerasPage() {
             </div>
 
             {/* ── Camera Notes ── */}
-            <div className="px-4 py-3 border-b border-white/[0.06]">
+            <div className="px-4 py-3 border-b border-indigo-900/25">
               <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Camera Notes</span>
             </div>
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
@@ -1083,7 +1084,7 @@ export default function CamerasPage() {
                 onChange={e => setCameraNote(e.target.value)}
                 placeholder="Add a note about this camera..."
                 rows={4}
-                className="w-full bg-white/[0.03] border border-white/[0.06] rounded px-3 py-2 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500/50"
+                className="w-full bg-white/[0.03] border border-indigo-900/25 rounded px-3 py-2 text-[11px] text-slate-300 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500/50"
               />
               <button
                 onClick={saveNote}
@@ -1095,7 +1096,7 @@ export default function CamerasPage() {
               </button>
               {/* Past notes */}
               {pastNotes.length > 0 && (
-                <div className="space-y-2 pt-2 border-t border-white/[0.06]">
+                <div className="space-y-2 pt-2 border-t border-indigo-900/25">
                   <p className="text-[9px] text-slate-600 uppercase tracking-wider">Recent Notes</p>
                   {pastNotes.map((note) => (
                     <div
