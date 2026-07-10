@@ -146,8 +146,6 @@ export default function CamerasPage() {
   const [doorOpening, setDoorOpening]         = useState(false);
   const [doorOpened, setDoorOpened]           = useState(false);
   const [doorError, setDoorError]             = useState<string | null>(null);
-  // Snapshot wall: tick increments every 10s to force-refresh EEN JPEG thumbnails in View 2
-  const [snapTick, setSnapTick] = useState(0);
   // Primary camera state
   const [settingPrimary, setSettingPrimary]   = useState<string | null>(null); // cameraId being set
   // Raise alarm state
@@ -258,7 +256,6 @@ export default function CamerasPage() {
   const openAccount = useCallback(async (account: Account) => {
     setSelectedAccount(account);
     setView(2);
-    setSnapTick(0);    // reset so the first snap loads fresh
     setWallLoading(true);
     // account.id is the zone ID — load cameras for this specific zone
     const { data: cams } = await supabase
@@ -269,13 +266,6 @@ export default function CamerasPage() {
     setCameras((cams as CameraRow[]) ?? []);
     setWallLoading(false);
   }, []);
-
-  // Auto-refresh wall snapshots every 10s while in View 2
-  useEffect(() => {
-    if (view !== 2) return;
-    const id = setInterval(() => setSnapTick(t => t + 1), 10_000);
-    return () => clearInterval(id);
-  }, [view]);
   // ── View 3: Open single camera ────────────────────────────────────────────
   const openCamera = useCallback(async (cam: CameraRow) => {
     setSelectedCamera(cam);
@@ -555,13 +545,8 @@ export default function CamerasPage() {
                   onClick={() => openAccount(account)}
                   className="group relative flex flex-col rounded border border-indigo-900/25 bg-indigo-950/20 hover:bg-indigo-900/15 hover:border-indigo-600/35 transition-all text-left overflow-hidden"
                 >
-                  {/* Thumbnail — building icon always present as base; img overlays when loaded */}
+                  {/* Thumbnail — static JPEG snapshot (fast, no stream lock) */}
                   <div className="aspect-video bg-[#040c1a] relative overflow-hidden">
-                    {/* Base layer — always visible until img loads */}
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-8 h-8 text-slate-700"><Ic.Building /></div>
-                    </div>
-                    {/* Snapshot overlay — EEN live snapshot, falls back to stored snap */}
                     {(() => {
                       const esnToUse  = account.primaryCameraEsn ?? account.firstEenCamId;
                       const snapToUse = account.primaryCameraSnap ?? account.firstSnap;
@@ -569,15 +554,12 @@ export default function CamerasPage() {
                         <img
                           src={`/api/een/image?accountId=${account.accountId}&cameraId=${esnToUse}`}
                           alt={account.name}
-                          className="absolute inset-0 w-full h-full object-cover"
+                          className="w-full h-full object-cover"
                           onError={(e) => {
                             const t = e.target as HTMLImageElement;
-                            if (snapToUse && t.src !== snapToUse) {
-                              t.src = snapToUse;
-                            } else {
-                              t.style.display = 'none';
-                              // building icon base layer is now visible
-                            }
+                            // Fall back to stored snap if EEN image fails
+                            if (snapToUse && t.src !== snapToUse) { t.src = snapToUse; }
+                            else { t.style.display = 'none'; }
                           }}
                         />
                       );
@@ -585,10 +567,14 @@ export default function CamerasPage() {
                         <img
                           src={snapToUse}
                           alt={account.name}
-                          className="absolute inset-0 w-full h-full object-cover opacity-60"
+                          className="w-full h-full object-cover opacity-60"
                         />
                       );
-                      return null;
+                      return (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <div className="w-8 h-8 text-slate-700"><Ic.Building /></div>
+                        </div>
+                      );
                     })()}
                     {/* Primary camera label */}
                     {account.primaryCameraId && (
@@ -666,49 +652,24 @@ export default function CamerasPage() {
             </div>
           ) : (
             <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
-              {cameras.map((cam) => {
+              {cameras.map((cam, camIdx) => {
                 const key = camKey(cam);
-                const eenId = cam.een_camera_id;
                 return (
                   <div
                     key={cam.id}
                     className="group relative aspect-video rounded border border-indigo-900/20 bg-[#040c1a] overflow-hidden cursor-pointer hover:border-indigo-500/40 transition-all"
-                    onClick={() => openCamera(cam)}
+                    onDoubleClick={(e) => { e.stopPropagation(); openCamera(cam); }}
                   >
-                    {/* Snapshot thumbnail — refreshes every 10s via snapTick, no HLS session lock */}
-                    <div className="absolute inset-0">
-                      {/* Base layer: building icon always visible */}
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="w-8 h-8 text-slate-700"><Ic.Building /></div>
-                      </div>
-                      {eenId ? (
-                        <img
-                          key={`${cam.id}-${snapTick}`}
-                          src={`/api/een/image?accountId=${selectedAccount.accountId}&cameraId=${eenId}&t=${snapTick}`}
-                          alt={cam.name}
-                          className="absolute inset-0 w-full h-full object-cover"
-                          onError={(e) => {
-                            const t = e.target as HTMLImageElement;
-                            if (cam.snapshot_url && t.src !== cam.snapshot_url) {
-                              t.src = cam.snapshot_url;
-                            } else {
-                              t.style.display = 'none';
-                            }
-                          }}
-                        />
-                      ) : cam.snapshot_url ? (
-                        <img
-                          src={cam.snapshot_url}
-                          alt={cam.name}
-                          className="absolute inset-0 w-full h-full object-cover opacity-70"
-                        />
-                      ) : null}
-                      {/* Click-to-live hint */}
-                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/50">
-                        <span className="flex items-center gap-1.5 text-[10px] font-semibold text-white uppercase tracking-wider border border-white/40 rounded px-3 py-1 bg-black/40">
-                          <div className="w-3 h-3"><Ic.Play /></div> Go Live
-                        </span>
-                      </div>
+                    {/* pointer-events-none so hover actions and double-click on the tile work */}
+                    <div className="absolute inset-0 pointer-events-none">
+                      <SmartVideoPlayer
+                        accountId={selectedAccount.accountId}
+                        cameraId={key}
+                        source={cam.source}
+                        streamType="preview"
+                        disableFullscreen
+                        startDelay={camIdx * 200}
+                      />
                     </div>
                     {/* Label */}
                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 pointer-events-none">

@@ -22,16 +22,6 @@ function makeSupabase() {
   );
 }
 
-// In-memory token cache — avoids Supabase round-trip on every stream request.
-// Serverless warm instances share this cache for burst requests (camera wall load).
-const _tokenCache = new Map<string, {
-  token: string;
-  cluster: string | null;
-  apiKey: string | null;
-  locationId: string | null;
-  expiresAt: number;  // ms timestamp
-}>();
-
 interface EENAccount {
   een_access_token:     string | null;
   een_cluster:          string | null;
@@ -45,12 +35,6 @@ interface EENAccount {
 
 export async function getValidEENToken(accountId: string) {
   const supabase = makeSupabase();
-
-  // Check cache first
-  const cached = _tokenCache.get(accountId);
-  if (cached && cached.expiresAt > Date.now()) {
-    return { token: cached.token, cluster: cached.cluster, apiKey: cached.apiKey, locationId: cached.locationId };
-  }
 
   // 1. Load account credentials + current token state
   const { data: siteRaw, error } = await supabase
@@ -74,18 +58,12 @@ export async function getValidEENToken(accountId: string) {
     : true;
 
   if (site.een_access_token && !isExpired) {
-    const result = {
+    return {
       token:      site.een_access_token,
       cluster:    site.een_cluster,
       apiKey:     site.een_api_key,
       locationId: site.een_location_id,
     };
-    // Cache until 60s before actual expiry
-    const expiresAt = site.een_token_expires_at
-      ? new Date(site.een_token_expires_at).getTime() - 60_000
-      : Date.now() + 4 * 60_000;
-    _tokenCache.set(accountId, { ...result, expiresAt });
-    return result;
   }
 
   // 3. Token missing or expired — attempt refresh
@@ -142,15 +120,10 @@ export async function getValidEENToken(accountId: string) {
 
   console.log(`[een] Token refreshed for account ${accountId}`);
 
-  const refreshResult = {
+  return {
     token:      data.access_token,
     cluster:    site.een_cluster,
     apiKey:     site.een_api_key,
     locationId: site.een_location_id,
   };
-  _tokenCache.set(accountId, {
-    ...refreshResult,
-    expiresAt: Date.now() + (data.expires_in - 60) * 1000,
-  });
-  return refreshResult;
 }
