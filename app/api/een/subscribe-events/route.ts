@@ -41,6 +41,11 @@ const SUBSCRIBED_EVENT_TYPES = [
   'een.crowdDetection.v1',
   'een.crossLineDetection.v1',
   'een.motionDetection.v1',
+  // Gate / linger AI events (Eagle Eye gate open detection)
+  'een.objectLingerDetectionEvent.v1',
+  'een.gateOpenTooLongEvent.v1',
+  'een.persistentMotionDetectionEvent.v1',
+  'een.persistentObjectDetectionEvent.v1',
 ];
 
 export async function POST(request: Request) {

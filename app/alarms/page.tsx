@@ -261,6 +261,54 @@ function ScriptCard({ label, color, text }: { label: string; color: string; text
   );
 }
 
+// ─── Alarm Clustering ─────────────────────────────────────────────────────────
+// Groups alarms from the same zone within a 60-second window into a cluster card.
+
+interface AlarmCluster {
+  type:      'cluster';
+  id:        string;       // first (newest) alarm id — used as React key
+  zone_id:   string | null;
+  site_name: string;
+  alarms:    Alarm[];      // newest first
+  priority:  Priority;     // highest priority in the cluster
+}
+type QueueItem = Alarm | AlarmCluster;
+
+function clusterQueue(alarms: Alarm[]): QueueItem[] {
+  if (alarms.length === 0) return [];
+  // alarms arrives newest-first from Supabase query
+  const PRIORITY_RANK: Record<Priority, number> = { P1: 4, P2: 3, P3: 2, P4: 1 };
+  const groups: Alarm[][] = [];
+
+  for (const alarm of alarms) {
+    const t = new Date(alarm.created_at).getTime();
+    // Find an existing group for the same zone whose newest alarm is within 60s
+    const g = groups.find(grp => {
+      const newestMs = new Date(grp[0].created_at).getTime();
+      return grp[0].zone_id === alarm.zone_id &&
+             alarm.zone_id !== null &&
+             Math.abs(newestMs - t) <= 60_000;
+    });
+    if (g) { g.push(alarm); }
+    else    { groups.push([alarm]); }
+  }
+
+  return groups.map(g => {
+    if (g.length === 1) return g[0];
+    const topPriority = g.reduce((best, a) =>
+      PRIORITY_RANK[a.priority] > PRIORITY_RANK[best.priority] ? a : best
+    ).priority;
+    return {
+      type:      'cluster' as const,
+      id:        g[0].id,
+      zone_id:   g[0].zone_id,
+      site_name: g[0].site_name,
+      alarms:    g,
+      priority:  topPriority,
+    };
+  });
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function AlarmsPage() {
   // Clerk identity — used for audit logs and incident reports
@@ -346,6 +394,15 @@ export default function AlarmsPage() {
   // Total alarm count (includes beyond the 50-item display limit)
   const [totalAlarmCount, setTotalAlarmCount] = useState(0);
 
+  // ── Alarm clustering state ─────────────────────────────────────────────────
+  const [expandedClusterId, setExpandedClusterId] = useState<string | null>(null);
+
+  // ── Camera peek modal — quick live view from queue without full processAlarm ─
+  const [peekAlarm, setPeekAlarm] = useState<Alarm | null>(null);
+
+  // ── FP learning loop — badge cameras with ≥3 false alarms in last 30d ───────
+  const [fpBadges, setFpBadges] = useState<Record<string, number>>({});
+
   // Resolve state
   const [actionTaken, setActionTaken]   = useState<ActionTaken>('');
   const [resolving, setResolving]       = useState(false);
@@ -355,6 +412,7 @@ export default function AlarmsPage() {
   useEffect(() => {
     // Initial load
     fetchQueue();
+    loadFpBadges();
 
     const channel = supabase
       .channel('alarms-realtime')
@@ -365,7 +423,14 @@ export default function AlarmsPage() {
       )
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    // Refresh FP badges every 5 minutes
+    const fpInterval = setInterval(loadFpBadges, 5 * 60_000);
+
+    return () => {
+      supabase.removeChannel(channel);
+      clearInterval(fpInterval);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function fetchQueue() {
@@ -395,6 +460,38 @@ export default function AlarmsPage() {
       }
       prevCountRef.current = data.length;
     }
+  }
+
+  // ── FP learning loop — load false-positive history per camera ──────────────
+  async function loadFpBadges() {
+    const since = new Date(Date.now() - 30 * 24 * 3600_000).toISOString();
+    const { data: logs } = await supabase
+      .from('audit_logs')
+      .select('alarm_id, details')
+      .eq('action', 'alarm_dismissed')
+      .gte('created_at', since);
+
+    const fpAlarmIds = (logs ?? [])
+      .filter(r => {
+        try { return JSON.parse(r.details ?? '{}').reason === 'false_alarm'; }
+        catch { return false; }
+      })
+      .map(r => r.alarm_id)
+      .filter(Boolean) as string[];
+
+    if (fpAlarmIds.length === 0) { setFpBadges({}); return; }
+
+    const { data: fpAlarms } = await supabase
+      .from('alarms')
+      .select('camera_id')
+      .in('id', fpAlarmIds.slice(0, 200))
+      .not('camera_id', 'is', null);
+
+    const counts: Record<string, number> = {};
+    (fpAlarms ?? []).forEach((a: any) => {
+      if (a.camera_id) counts[a.camera_id] = (counts[a.camera_id] ?? 0) + 1;
+    });
+    setFpBadges(counts);
   }
 
   // ── Load alarm into Action Canvas ──────────────────────────────────────────
@@ -905,9 +1002,95 @@ export default function AlarmsPage() {
               <p className="text-[10px] text-slate-600 uppercase tracking-wider">No pending events</p>
             </div>
           ) : (
-            queue.map((alarm) => {
+            clusterQueue(queue).map((item) => {
+              /* ── Cluster card ─────────────────────────────────────────── */
+              if ('type' in item && item.type === 'cluster') {
+                const cluster = item as AlarmCluster;
+                const cfg = PRIORITY_CONFIG[cluster.priority];
+                const isExpanded = expandedClusterId === cluster.id;
+                return (
+                  <div key={cluster.id} className={`rounded border p-2.5 transition-all ${cfg.ring} ring-1 border-transparent ${cfg.bg}`}>
+                    {/* Cluster header */}
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <PriorityBadge p={cluster.priority} />
+                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${cfg.bg} ${cfg.color} border border-current/20`}>
+                        {cluster.alarms.length}×
+                      </span>
+                      <span className="text-[9px] text-slate-500 ml-auto">{timeAgo(cluster.alarms[0].created_at)}</span>
+                    </div>
+                    <p className="text-[11px] font-semibold text-white leading-tight mb-0.5 truncate">{cluster.site_name}</p>
+                    <p className="text-[9px] text-slate-400 truncate mb-2 leading-relaxed">
+                      {cluster.alarms.slice(0, 3).map(a => a.event_label).join(' · ')}
+                      {cluster.alarms.length > 3 ? ` +${cluster.alarms.length - 3}` : ''}
+                    </p>
+                    {/* Cluster actions */}
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => setExpandedClusterId(isExpanded ? null : cluster.id)}
+                        className="flex-1 py-1 rounded text-[9px] font-semibold uppercase tracking-wider bg-white/[0.06] hover:bg-white/[0.10] border border-white/[0.10] text-slate-300 transition-all"
+                      >
+                        {isExpanded ? '▲ Collapse' : '▼ Expand'}
+                      </button>
+                      <button
+                        onClick={() => cluster.alarms.forEach(a => dismissAlarm(a, 'nothing_seen'))}
+                        className="px-2 py-1 rounded text-[9px] font-bold bg-slate-700/50 hover:bg-slate-600/60 border border-white/[0.07] text-slate-500 hover:text-slate-300 transition-all"
+                        title="Dismiss all — nothing seen"
+                      >NS All</button>
+                      <button
+                        onClick={() => cluster.alarms.forEach(a => dismissAlarm(a, 'false_alarm'))}
+                        className="px-2 py-1 rounded text-[9px] font-bold bg-sky-800/30 hover:bg-sky-700/40 border border-sky-600/20 text-sky-400 hover:text-sky-300 transition-all"
+                        title="Dismiss all — false alarm"
+                      >FA All</button>
+                    </div>
+                    {/* Expanded alarm list */}
+                    {isExpanded && (
+                      <div className="mt-2 space-y-1 border-t border-white/[0.08] pt-2">
+                        {cluster.alarms.map(alarm => {
+                          const isActive = activeAlarm?.id === alarm.id;
+                          const acfg = PRIORITY_CONFIG[alarm.priority];
+                          const fpCount = alarm.camera_id ? (fpBadges[alarm.camera_id] ?? 0) : 0;
+                          return (
+                            <div key={alarm.id} className={`rounded border px-2 py-1.5 flex items-start gap-1.5 ${isActive ? `${acfg.bg} border-transparent` : 'border-white/[0.06] bg-black/20'}`}>
+                              <div className="shrink-0 mt-0.5"><PriorityBadge p={alarm.priority} /></div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[9px] text-slate-200 truncate font-medium">{alarm.event_label}</p>
+                                {alarm.cameras?.name && <p className="text-[8px] text-slate-600 truncate">{alarm.cameras.name}</p>}
+                                {fpCount >= 3 && (
+                                  <p className="text-[8px] text-amber-400 mt-0.5">⚠ {fpCount}× false alarm (30d)</p>
+                                )}
+                              </div>
+                              <span className="text-[8px] text-slate-600 shrink-0 mt-0.5">{timeAgo(alarm.created_at)}</span>
+                              <div className="flex gap-0.5 shrink-0">
+                                <button
+                                  onClick={() => processAlarm(alarm)}
+                                  className="px-1.5 py-0.5 rounded text-[8px] font-semibold bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 text-indigo-300 transition-all"
+                                >Process</button>
+                                <button
+                                  onClick={e => { e.stopPropagation(); dismissAlarm(alarm, 'nothing_seen'); }}
+                                  className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-slate-700/50 hover:bg-slate-600/60 border border-white/[0.07] text-slate-500 hover:text-slate-300 transition-all"
+                                  title="NS"
+                                >NS</button>
+                                <button
+                                  onClick={e => { e.stopPropagation(); dismissAlarm(alarm, 'false_alarm'); }}
+                                  className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-sky-800/30 hover:bg-sky-700/40 border border-sky-600/20 text-sky-400 hover:text-sky-300 transition-all"
+                                  title="FA"
+                                >FA</button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
+              /* ── Plain alarm card ─────────────────────────────────────── */
+              const alarm = item as Alarm;
               const cfg = PRIORITY_CONFIG[alarm.priority];
               const isActive = activeAlarm?.id === alarm.id;
+              const fpCount = alarm.camera_id ? (fpBadges[alarm.camera_id] ?? 0) : 0;
+              const hasEenCam = !!(alarm.cameras?.een_camera_id);
               return (
                 <div
                   key={alarm.id}
@@ -928,7 +1111,6 @@ export default function AlarmsPage() {
                         className="w-full h-full object-cover"
                         onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
                       />
-                      {/* Priority badge overlaid on snapshot */}
                       <div className="absolute top-1.5 left-1.5">
                         <PriorityBadge p={alarm.priority} />
                       </div>
@@ -939,16 +1121,14 @@ export default function AlarmsPage() {
                       </div>
                     </div>
                   )}
-                  {/* Header row — only show when no snapshot (snapshot has overlaid badge) */}
+                  {/* Header row — only show when no snapshot */}
                   {!alarm.snapshot_url && (
                     <div className="flex items-center justify-between mb-1.5">
                       <PriorityBadge p={alarm.priority} />
                       <span className="text-[9px] text-slate-500">{timeAgo(alarm.created_at)}</span>
                     </div>
                   )}
-                  {alarm.snapshot_url && (
-                    <div className="h-1" /> /* spacer after snapshot */
-                  )}
+                  {alarm.snapshot_url && <div className="h-1" />}
                   <p className="text-[11px] font-semibold text-white leading-tight mb-0.5 truncate">
                     {alarm.site_name}
                   </p>
@@ -956,8 +1136,14 @@ export default function AlarmsPage() {
                     {alarm.event_label}
                   </p>
                   {alarm.cameras?.name && (
-                    <p className="text-[9px] text-slate-500 truncate mb-2">
+                    <p className="text-[9px] text-slate-500 truncate mb-1">
                       <span className="text-slate-600">cam: </span>{alarm.cameras.name}
+                    </p>
+                  )}
+                  {/* FP badge — shown when camera has ≥3 false alarms in 30 days */}
+                  {fpCount >= 3 && (
+                    <p className="text-[9px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5 mb-1.5 inline-block">
+                      ⚠ {fpCount}× false alarm (30d)
                     </p>
                   )}
                   {!isActive && (
@@ -968,20 +1154,26 @@ export default function AlarmsPage() {
                       >
                         Process
                       </button>
+                      {/* Camera peek — quick live view without full dispatch */}
+                      {hasEenCam && (
+                        <button
+                          onClick={e => { e.stopPropagation(); setPeekAlarm(alarm); }}
+                          title="Quick camera peek"
+                          className="w-7 flex items-center justify-center rounded bg-slate-700/50 hover:bg-indigo-600/30 border border-white/[0.07] hover:border-indigo-500/30 text-slate-500 hover:text-indigo-300 transition-all"
+                        >
+                          <div className="w-3.5 h-3.5"><Ic.Camera /></div>
+                        </button>
+                      )}
                       <button
                         onClick={(e) => { e.stopPropagation(); dismissAlarm(alarm, 'nothing_seen'); }}
                         className="px-2 py-1 rounded text-[9px] font-bold bg-slate-700/50 hover:bg-slate-600/60 border border-white/[0.07] text-slate-500 hover:text-slate-300 transition-all"
                         title="Nothing seen — dismiss"
-                      >
-                        NS
-                      </button>
+                      >NS</button>
                       <button
                         onClick={(e) => { e.stopPropagation(); dismissAlarm(alarm, 'false_alarm'); }}
                         className="px-2 py-1 rounded text-[9px] font-bold bg-sky-800/30 hover:bg-sky-700/40 border border-sky-600/20 text-sky-400 hover:text-sky-300 transition-all"
                         title="False alarm — dismiss"
-                      >
-                        FA
-                      </button>
+                      >FA</button>
                     </div>
                   )}
                   {isActive && (
@@ -1822,6 +2014,86 @@ export default function AlarmsPage() {
 
         </div>
       </aside>
+
+      {/* ── Camera Peek Modal ───────────────────────────────────────────────── */}
+      {/* One-click live view from queue without loading the full dispatch canvas */}
+      {peekAlarm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setPeekAlarm(null)}
+        >
+          <div
+            className="w-[540px] bg-[#0B1728] border border-white/[0.12] rounded-xl overflow-hidden shadow-2xl shadow-black/80"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal header */}
+            <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-white/[0.07]">
+              <PriorityBadge p={peekAlarm.priority} />
+              <div className="flex-1 min-w-0">
+                <p className="text-[12px] font-bold text-white truncate">{peekAlarm.site_name}</p>
+                <p className="text-[10px] text-slate-400 truncate">{peekAlarm.event_label}</p>
+              </div>
+              <span className="text-[9px] text-slate-500 font-mono shrink-0">{timeAgo(peekAlarm.created_at)}</span>
+              <button
+                onClick={() => setPeekAlarm(null)}
+                className="w-6 h-6 flex items-center justify-center rounded text-slate-500 hover:text-white hover:bg-white/[0.08] transition-all"
+                title="Close"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-3.5 h-3.5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Live video or snapshot */}
+            <div className="aspect-video bg-black">
+              {peekAlarm.cameras?.een_camera_id && (peekAlarm.account_id ?? peekAlarm.zones?.account_id) ? (
+                <SmartVideoPlayer
+                  accountId={peekAlarm.account_id ?? peekAlarm.zones?.account_id ?? ''}
+                  cameraId={peekAlarm.cameras.een_camera_id}
+                  source="een"
+                  streamType="preview"
+                  label=""
+                />
+              ) : peekAlarm.snapshot_url ? (
+                <img
+                  src={peekAlarm.snapshot_url}
+                  alt="Alarm snapshot"
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <p className="text-[10px] text-slate-600">No video available</p>
+                </div>
+              )}
+            </div>
+
+            {/* Footer actions */}
+            <div className="flex gap-2 px-4 py-3 border-t border-white/[0.07] bg-white/[0.01]">
+              <button
+                onClick={() => { processAlarm(peekAlarm); setPeekAlarm(null); }}
+                className="flex-1 py-1.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 text-indigo-300 transition-all"
+              >
+                Process
+              </button>
+              <button
+                onClick={() => { dismissAlarm(peekAlarm, 'nothing_seen'); setPeekAlarm(null); }}
+                className="px-3 py-1.5 rounded text-[10px] font-bold bg-slate-700/50 hover:bg-slate-600/60 border border-white/[0.07] text-slate-500 hover:text-slate-300 transition-all"
+                title="Nothing seen"
+              >NS</button>
+              <button
+                onClick={() => { dismissAlarm(peekAlarm, 'false_alarm'); setPeekAlarm(null); }}
+                className="px-3 py-1.5 rounded text-[10px] font-bold bg-sky-800/30 hover:bg-sky-700/40 border border-sky-600/20 text-sky-400 hover:text-sky-300 transition-all"
+                title="False alarm"
+              >FA</button>
+              <button
+                onClick={() => setPeekAlarm(null)}
+                className="px-3 py-1.5 rounded text-[10px] font-bold bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.07] text-slate-400 hover:text-white transition-all"
+              >Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

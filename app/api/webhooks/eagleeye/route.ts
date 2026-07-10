@@ -66,6 +66,14 @@ const PRIORITY_MAP: Record<string, Priority> = {
   'een.objectRemovalEvent.v1':            'P2',
   'een.crowdFormationDetectionEvent.v1':  'P2',
 
+  // P1 — Gate / linger AI events
+  'een.objectLingerDetectionEvent.v1':    'P1',
+  'een.gateOpenTooLongEvent.v1':          'P1',
+
+  // P2 — Persistent motion / object
+  'een.persistentMotionDetectionEvent.v1': 'P2',
+  'een.persistentObjectDetectionEvent.v1': 'P2',
+
   // P3 — General motion
   'een.motionDetectionEvent.v1':          'P3',
   'een.motionInRegionDetectionEvent.v1':  'P3',
@@ -98,6 +106,12 @@ const LABEL_MAP: Record<string, string> = {
   'een.motionDetectionEvent.v1':          'Motion Detected',
   'een.motionInRegionDetectionEvent.v1':  'Motion in Region Detected',
   'een.deviceCloudStatusUpdateEvent.v1':  'Device Status Change',
+  // Gate / linger AI
+  'een.objectLingerDetectionEvent.v1':    'Gate/Object Left Open (AI)',
+  'een.gateOpenTooLongEvent.v1':          'Gate Left Open Too Long',
+  // Persistent motion / object
+  'een.persistentMotionDetectionEvent.v1': 'Persistent Motion Detected',
+  'een.persistentObjectDetectionEvent.v1': 'Persistent Object Detected',
 };
 
 function priorityFor(type: string): Priority {
