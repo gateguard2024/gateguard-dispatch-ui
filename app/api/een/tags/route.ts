@@ -1,28 +1,41 @@
 // app/api/een/tags/route.ts
 //
-// Returns the unique EEN property tags available on a given account.
+// Returns all cameras + their tags from EEN for a given account.
+// Always calls EEN live — never reads from Supabase cache — so new cameras
+// and new tags are visible immediately without a full sync.
 //
-// Strategy (two-tier):
-//   1. FAST PATH — if cameras already exist in Supabase for this account,
-//      derive tags directly from the stored een_tags column.
-//      No EEN API call needed, responds in ~50ms.
+// Also cross-references with Supabase to show which cameras are already
+// synced to which zone, so mismatches are immediately obvious in the UI.
 //
-//   2. LIVE PATH — if no cameras exist yet (fresh account / first setup),
-//      call EEN GET /api/v3.0/cameras?include=tags and extract unique tags
-//      from the camera objects. Same auth pattern as sync-hardware.
-//
-// Why not a separate EEN "tags" endpoint?
-//   EEN V3 has no standalone tags endpoint. Tags are properties of cameras.
-//   This route is a lightweight version of sync-hardware that returns tag
-//   names only, without writing anything to the database.
-//
-// Request body:  { siteId: string }   ← Supabase accounts.id (UUID)
-// Response:      { success: true, tags: string[], source: "db" | "een" }
+// Request body:  { accountId: string }   ← Supabase accounts.id (UUID)
+// Response:      {
+//   success: true,
+//   cameras: CameraTagRow[],  ← one row per EEN camera
+//   allTags: string[],        ← deduplicated sorted tag list
+// }
 
-// app/api/een/tags/route.ts
-import { NextResponse } from 'next/server';
-import { createClient }  from '@supabase/supabase-js';
+import { NextResponse }     from 'next/server';
+import { createClient }     from '@supabase/supabase-js';
 import { getValidEENToken } from '@/lib/een';
+
+interface CameraTagRow {
+  esn:       string;
+  name:      string;
+  tags:      string[];
+  is_online: boolean | null;
+  synced_to: string | null;  // zone name if already in Supabase, null if not yet synced
+}
+
+// Extracts tag strings from any EEN camera object regardless of field name variant
+function extractTags(cam: any): string[] {
+  const raw = cam.tags ?? cam.tagList ?? cam.deviceTags ?? cam.labels ?? [];
+  return (Array.isArray(raw) ? raw : [])
+    .map((t: any) => {
+      if (typeof t === 'string') return t.trim();
+      return (t?.name ?? t?.value ?? t?.label ?? t?.tagName ?? '').trim();
+    })
+    .filter(Boolean);
+}
 
 export async function POST(request: Request) {
   const supabase = createClient(
@@ -32,46 +45,24 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const accountId: string | undefined = body.siteId ?? body.accountId;
+    const accountId: string | undefined = body.accountId ?? body.siteId;
 
     if (!accountId) {
-      return NextResponse.json(
-        { error: 'Missing required field: siteId' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Missing required field: accountId' }, { status: 400 });
     }
 
-    // Fast path: derive tags from cameras already in Supabase
-    const { data: existingCameras, error: camErr } = await supabase
-      .from('cameras')
-      .select('een_tags')
-      .eq('account_id', accountId)
-      .not('een_tags', 'is', null);
-
-    if (!camErr && existingCameras && existingCameras.length > 0) {
-      const tagSet = new Set<string>();
-      for (const cam of existingCameras) {
-        const tags: string[] = cam.een_tags ?? [];
-        for (const t of tags) {
-          const clean = t.trim();
-          if (clean) tagSet.add(clean);
-        }
-      }
-      const tags = Array.from(tagSet).sort();
-      return NextResponse.json({ success: true, tags, source: 'db' });
-    }
-
-    // Live path: call EEN cameras endpoint
+    // ── 1. Get valid EEN token ────────────────────────────────────────────────
     const { token, cluster, apiKey } = await getValidEENToken(accountId);
 
-    if (!cluster) {
+    if (!cluster || !token) {
       return NextResponse.json(
-        { error: 'EEN not authenticated for this account. Complete OAuth in Setup first.' },
+        { error: 'EEN not authenticated for this account. Re-run OAuth in Setup.' },
         { status: 400 }
       );
     }
 
-    const params = new URLSearchParams({ pageSize: '500', include: 'tags' });
+    // ── 2. Fetch all cameras from EEN live (never use cached Supabase data) ──
+    const params = new URLSearchParams({ pageSize: '500', include: 'tags,status' });
 
     const eenHeaders: Record<string, string> = {
       Authorization: `Bearer ${token}`,
@@ -89,20 +80,56 @@ export async function POST(request: Request) {
       throw new Error(`EEN API error ${eenRes.status}: ${errBody}`);
     }
 
-    const eenData  = await eenRes.json();
-    const cameras: any[] = eenData.results ?? eenData.data ?? [];
+    const eenData    = await eenRes.json();
+    const eenCameras: any[] = eenData.results ?? eenData.data ?? [];
 
-    const tagSet = new Set<string>();
-    for (const cam of cameras) {
-      const rawTags: any[] = cam.tags ?? cam.tagList ?? [];
-      for (const t of rawTags) {
-        const name = (typeof t === 'string' ? t : t?.name ?? '').trim();
-        if (name) tagSet.add(name);
-      }
+    // Log raw field names to help diagnose tag field issues in Vercel logs
+    if (eenCameras.length > 0) {
+      const s = eenCameras[0];
+      console.log(`[een/tags] keys: ${Object.keys(s).join(', ')}`);
+      console.log(`[een/tags] tag fields — tags:${JSON.stringify(s.tags)} tagList:${JSON.stringify(s.tagList)} deviceTags:${JSON.stringify(s.deviceTags)} labels:${JSON.stringify(s.labels)}`);
     }
 
-    const tags = Array.from(tagSet).sort();
-    return NextResponse.json({ success: true, tags, source: 'een' });
+    // ── 3. Cross-reference with Supabase to find already-synced cameras ──────
+    const { data: syncedCameras } = await supabase
+      .from('cameras')
+      .select('een_camera_id, zones(name)')
+      .eq('account_id', accountId)
+      .not('een_camera_id', 'is', null);
+
+    const syncedMap = new Map<string, string>();
+    for (const cam of syncedCameras ?? []) {
+      const zoneName = (cam as any).zones?.name ?? 'Unknown zone';
+      syncedMap.set(cam.een_camera_id, zoneName);
+    }
+
+    // ── 4. Build response ─────────────────────────────────────────────────────
+    const allTagSet = new Set<string>();
+
+    const cameras: CameraTagRow[] = eenCameras.map((cam: any) => {
+      const esn  = cam.id ?? cam.deviceId ?? cam.esn ?? '';
+      const tags = extractTags(cam);
+      tags.forEach(t => allTagSet.add(t));
+
+      const connStatus = cam.status?.connectionStatus ?? cam.status?.status ?? cam.connectionStatus ?? null;
+      const isOnline   = connStatus != null
+        ? (typeof connStatus === 'string' ? connStatus.toLowerCase() === 'online' : null)
+        : null;
+
+      return {
+        esn,
+        name:      cam.name ?? cam.deviceName ?? 'Unnamed Camera',
+        tags,
+        is_online: isOnline,
+        synced_to: esn ? (syncedMap.get(esn) ?? null) : null,
+      };
+    });
+
+    const allTags = Array.from(allTagSet).sort();
+
+    console.log(`[een/tags] ${cameras.length} cameras, ${allTags.length} unique tags: ${allTags.join(', ')}`);
+
+    return NextResponse.json({ success: true, cameras, allTags });
 
   } catch (err: any) {
     console.error('[een/tags] Error:', err.message);

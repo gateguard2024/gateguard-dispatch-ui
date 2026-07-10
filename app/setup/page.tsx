@@ -912,6 +912,34 @@ export default function SetupPage() {
   // Deletion modal
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
 
+  // EEN Tag Discovery — per-account camera+tag list fetched live from EEN
+  interface EenCameraRow { esn: string; name: string; tags: string[]; is_online: boolean | null; synced_to: string | null; }
+  const [tagDiscovery, setTagDiscovery]       = useState<Record<string, { cameras: EenCameraRow[]; allTags: string[]; error?: string }>>({});
+  const [tagDiscoveryLoading, setTagDiscoveryLoading] = useState<string | null>(null); // accountId loading
+  const [tagDiscoveryOpen, setTagDiscoveryOpen]       = useState<string | null>(null); // accountId panel open
+
+  const discoverEENTags = async (accountId: string) => {
+    setTagDiscoveryLoading(accountId);
+    setTagDiscoveryOpen(accountId);
+    try {
+      const res  = await fetch('/api/een/tags', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ accountId }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        setTagDiscovery(p => ({ ...p, [accountId]: { cameras: [], allTags: [], error: json.error ?? 'Unknown error' } }));
+      } else {
+        setTagDiscovery(p => ({ ...p, [accountId]: { cameras: json.cameras, allTags: json.allTags } }));
+      }
+    } catch (e: any) {
+      setTagDiscovery(p => ({ ...p, [accountId]: { cameras: [], allTags: [], error: e.message } }));
+    } finally {
+      setTagDiscoveryLoading(null);
+    }
+  };
+
   // ── Data loading ─────────────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -1892,7 +1920,95 @@ export default function SetupPage() {
                     <Ic d={I.excl} className="w-3 h-3" />
                     Re-auth EEN
                   </button>
+                  <button
+                    onClick={() => tagDiscoveryOpen === zone.account_id
+                      ? setTagDiscoveryOpen(null)
+                      : discoverEENTags(zone.account_id)
+                    }
+                    disabled={tagDiscoveryLoading === zone.account_id}
+                    className="flex items-center gap-1.5 text-[10px] text-sky-400 hover:text-sky-200 transition-all ml-3 shrink-0 whitespace-nowrap disabled:opacity-50"
+                    title="See all cameras and tags from EEN live — use to diagnose sync issues"
+                  >
+                    {tagDiscoveryLoading === zone.account_id
+                      ? <div className="w-3 h-3 border border-sky-400 border-t-transparent rounded-full animate-spin" />
+                      : <Ic d={I.search} className="w-3 h-3" />
+                    }
+                    {tagDiscoveryOpen === zone.account_id ? 'Hide Tags' : 'Discover Tags'}
+                  </button>
                 </div>
+
+                {/* EEN Tag Discovery Panel */}
+                {tagDiscoveryOpen === zone.account_id && (() => {
+                  const disc = tagDiscovery[zone.account_id];
+                  if (!disc && tagDiscoveryLoading === zone.account_id) return (
+                    <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-500 py-3">
+                      <div className="w-3.5 h-3.5 border border-slate-500 border-t-transparent rounded-full animate-spin" />
+                      Fetching cameras from EEN…
+                    </div>
+                  );
+                  if (!disc) return null;
+                  if (disc.error) return (
+                    <div className="mt-3 text-[11px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+                      {disc.error}
+                    </div>
+                  );
+                  return (
+                    <div className="mt-3 border border-sky-500/20 rounded bg-sky-500/[0.04] overflow-hidden">
+                      {/* Tag summary */}
+                      <div className="px-3 py-2 border-b border-sky-500/10 flex items-center gap-2 flex-wrap">
+                        <span className="text-[9px] font-bold text-sky-400 uppercase tracking-widest shrink-0">
+                          EEN Tags ({disc.allTags.length})
+                        </span>
+                        {disc.allTags.length === 0
+                          ? <span className="text-[10px] text-slate-500">No tags found — cameras may be untagged</span>
+                          : disc.allTags.map(tag => (
+                            <span key={tag} className="text-[10px] font-mono bg-sky-500/15 border border-sky-500/30 text-sky-300 rounded px-2 py-0.5">
+                              {tag}
+                            </span>
+                          ))
+                        }
+                      </div>
+                      {/* Per-camera rows */}
+                      <div className="divide-y divide-white/[0.04] max-h-64 overflow-y-auto">
+                        {disc.cameras.map(cam => (
+                          <div key={cam.esn} className="flex items-center gap-3 px-3 py-2">
+                            {/* Online dot */}
+                            <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              cam.is_online === true  ? 'bg-emerald-400' :
+                              cam.is_online === false ? 'bg-red-500' :
+                                                        'bg-slate-600'
+                            }`} />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[11px] text-white truncate">{cam.name}</p>
+                              <p className="text-[9px] text-slate-600 font-mono">{cam.esn}</p>
+                            </div>
+                            {/* Tags on this camera */}
+                            <div className="flex items-center gap-1 flex-wrap justify-end">
+                              {cam.tags.length === 0
+                                ? <span className="text-[9px] text-slate-700">no tags</span>
+                                : cam.tags.map(t => (
+                                  <span key={t} className="text-[9px] font-mono bg-sky-500/10 border border-sky-500/20 text-sky-400 rounded px-1.5 py-0.5">
+                                    {t}
+                                  </span>
+                                ))
+                              }
+                            </div>
+                            {/* Sync status */}
+                            <div className="shrink-0 text-right">
+                              {cam.synced_to
+                                ? <span className="text-[9px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5 whitespace-nowrap">✓ {cam.synced_to}</span>
+                                : <span className="text-[9px] text-slate-600 bg-white/[0.03] border border-white/[0.06] rounded px-1.5 py-0.5 whitespace-nowrap">Not synced</span>
+                              }
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="px-3 py-2 border-t border-sky-500/10 text-[9px] text-slate-600">
+                        {disc.cameras.length} cameras in EEN · {disc.cameras.filter(c => c.synced_to).length} synced to GateGuard · {disc.cameras.filter(c => !c.synced_to).length} not yet synced
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {cams.length === 0 ? (
                   <div className="flex items-center justify-center h-16 border border-white/[0.05] rounded text-[11px] text-slate-700 uppercase tracking-wider">
