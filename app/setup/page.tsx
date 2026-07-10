@@ -100,6 +100,7 @@ interface Camera {
   source?:          string;
   een_camera_id?:   string | null;
   is_monitored:     boolean;
+  is_online:        boolean | null;  // null = not yet synced; true/false = live EEN status
   monitored_events: string[] | null;
   schedule_override: {
     enabled:         boolean;
@@ -1932,7 +1933,13 @@ export default function SetupPage() {
                         <div key={cam.id} className={idx < cams.length - 1 ? "border-b border-white/[0.07]" : ""}>
                           {/* Camera row */}
                           <div className="flex items-center gap-3 px-3 py-3 hover:bg-white/[0.04] transition-all group">
-                            <div className={`w-2 h-2 rounded-full shrink-0 ${cam.is_monitored ? "bg-emerald-400" : "bg-slate-600"}`} />
+                            {/* Dot: green=online, red=offline, amber=monitored/no sync yet, slate=unmonitored */}
+                            <div className={`w-2 h-2 rounded-full shrink-0 ${
+                              cam.is_online === true  ? "bg-emerald-400" :
+                              cam.is_online === false ? "bg-red-500" :
+                              cam.is_monitored        ? "bg-amber-400" :
+                                                        "bg-slate-600"
+                            }`} />
                             <div className="flex items-center gap-2 flex-1 min-w-0">
                               <span className="text-[13px] font-medium text-white truncate">{cam.name}</span>
                               {cam.monitored_events && (

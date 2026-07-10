@@ -22,6 +22,7 @@ interface Account {
   address?:         string;
   cameraCount:      number;
   onlineCount:      number;
+  onlineKnown:      boolean;  // true if is_online column has been populated by a sync
   hasAlert:         boolean;
   firstSnap:        string | null;
   firstEenCamId:    string | null;
@@ -36,6 +37,7 @@ interface CameraRow {
   brivo_camera_id: string | null;
   een_camera_id:   string | null;
   is_monitored:    boolean;
+  is_online:       boolean | null;  // null = not yet synced; true/false = live EEN status
   snapshot_url:    string | null;
   zone_id:         string;
   brivo_door_id:   string | null;
@@ -211,7 +213,7 @@ export default function CamerasPage() {
       if (zoneIds.length > 0) {
         const { data: cams, error: camErr } = await supabase
           .from('cameras')
-          .select('id, zone_id, source, is_monitored, snapshot_url, een_camera_id')
+          .select('id, zone_id, source, is_monitored, is_online, snapshot_url, een_camera_id')
           .in('zone_id', zoneIds);
         if (camErr) console.error('[cameras] cameras query error:', camErr);
         camRows = cams ?? [];
@@ -226,7 +228,11 @@ export default function CamerasPage() {
       // 4. Map one Account tile per zone
       const mapped: Account[] = zones.map((z: any) => {
         const allCams    = camsByZone[z.id] ?? [];
-        const online     = allCams.filter((c: any) => c.is_monitored).length;
+        // is_online = live EEN connectivity (true/false/null). null means not yet synced.
+        const onlineKnown = allCams.some((c: any) => c.is_online !== null);
+        const online      = onlineKnown
+          ? allCams.filter((c: any) => c.is_online === true).length
+          : allCams.filter((c: any) => c.is_monitored).length; // fallback if column not yet populated
         const snap       = allCams.find((c: any) => c.snapshot_url)?.snapshot_url ?? null;
         const firstEenCam = allCams.find((c: any) => c.source === 'een' && c.een_camera_id && c.is_monitored)
                          ?? allCams.find((c: any) => c.source === 'een' && c.een_camera_id);
@@ -238,6 +244,7 @@ export default function CamerasPage() {
           address:           undefined,
           cameraCount:       allCams.length,
           onlineCount:       online,
+          onlineKnown:       onlineKnown,
           hasAlert:          false,
           firstSnap:         snap,
           firstEenCamId:     firstEenCam?.een_camera_id ?? null,
@@ -260,7 +267,7 @@ export default function CamerasPage() {
     // account.id is the zone ID — load cameras for this specific zone
     const { data: cams } = await supabase
       .from('cameras')
-      .select('id, name, source, brivo_camera_id, een_camera_id, is_monitored, snapshot_url, zone_id, brivo_door_id')
+      .select('id, name, source, brivo_camera_id, een_camera_id, is_monitored, is_online, snapshot_url, zone_id, brivo_door_id')
       .eq('zone_id', account.id)
       .order('name');
     setCameras((cams as CameraRow[]) ?? []);
@@ -583,11 +590,19 @@ export default function CamerasPage() {
                         <span className="text-[8px] text-white font-semibold">Primary</span>
                       </div>
                     )}
-                    {/* Camera count badge */}
+                    {/* Camera count badge — dot color reflects real connectivity when known */}
                     <div className="absolute top-2 right-2 flex items-center gap-1 bg-black/70 backdrop-blur-sm border border-white/10 rounded px-2 py-0.5 pointer-events-none">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        account.cameraCount === 0
+                          ? 'bg-slate-600'
+                          : account.onlineKnown
+                            ? account.onlineCount > 0 ? 'bg-emerald-500' : 'bg-red-500'
+                            : 'bg-slate-400'  // cameras exist but online status not yet synced
+                      }`} />
                       <span className="text-[9px] text-white/80 font-medium">
-                        {account.cameraCount} cam{account.cameraCount !== 1 ? 's' : ''}
+                        {account.onlineKnown && account.cameraCount > 0
+                          ? `${account.onlineCount}/${account.cameraCount} online`
+                          : `${account.cameraCount} cam${account.cameraCount !== 1 ? 's' : ''}`}
                       </span>
                     </div>
                     {/* Hover overlay */}
@@ -675,9 +690,14 @@ export default function CamerasPage() {
                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-2 py-1.5 pointer-events-none">
                       <p className="text-[9px] font-semibold text-white truncate">{cam.name}</p>
                     </div>
-                    {/* Status dot */}
+                    {/* Status dot — green=online, red=offline, amber=monitored/unknown, slate=not monitored */}
                     <div className="absolute top-1.5 left-1.5 pointer-events-none">
-                      <span className={`block w-1.5 h-1.5 rounded-full ${cam.is_monitored ? 'bg-emerald-500' : 'bg-slate-600'}`} />
+                      <span className={`block w-1.5 h-1.5 rounded-full ${
+                        cam.is_online === true  ? 'bg-emerald-500' :
+                        cam.is_online === false ? 'bg-red-500' :
+                        cam.is_monitored        ? 'bg-amber-400' :
+                                                  'bg-slate-600'
+                      }`} />
                     </div>
                     {/* Primary badge */}
                     {selectedAccount?.primaryCameraId === cam.id && (
@@ -747,8 +767,18 @@ export default function CamerasPage() {
           <span className="text-[13px] font-semibold text-white">{selectedCamera.name}</span>
           <span className="text-[10px] text-slate-600">{selectedAccount.name}</span>
           <div className="ml-auto flex items-center gap-1.5">
-            <span className={`block w-1.5 h-1.5 rounded-full ${selectedCamera.is_monitored ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
-            <span className="text-[10px] text-slate-600">{selectedCamera.is_monitored ? 'Monitored' : 'Offline'}</span>
+            <span className={`block w-1.5 h-1.5 rounded-full ${
+              selectedCamera.is_online === true  ? 'bg-emerald-500' :
+              selectedCamera.is_online === false ? 'bg-red-500' :
+              selectedCamera.is_monitored        ? 'bg-amber-400' :
+                                                   'bg-slate-600'
+            }`} />
+            <span className="text-[10px] text-slate-500">
+              {selectedCamera.is_online === true  ? 'Online' :
+               selectedCamera.is_online === false ? 'Offline' :
+               selectedCamera.is_monitored        ? 'Monitored' :
+                                                    'Unmonitored'}
+            </span>
           </div>
         </div>
         {/* Main content */}

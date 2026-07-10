@@ -155,17 +155,29 @@ export async function POST(request: Request) {
       }).filter(Boolean);
     };
 
+    const now = new Date().toISOString();
+
     const rows = cameras
-      .map((cam: any) => ({
-        zone_id:       zoneId,
-        account_id:    accountId,
-        een_camera_id: cam.id ?? cam.deviceId ?? cam.esn ?? null,
-        name:          cam.name ?? cam.deviceName ?? 'Unnamed Camera',
-        source:        'een',
-        is_monitored:  true,
-        snapshot_url:  null,
-        een_tags:      extractTagStrings(cam),
-      }))
+      .map((cam: any) => {
+        // EEN returns status as { connectionStatus: 'online' | 'offline' } or a string directly
+        const connStatus = cam.status?.connectionStatus ?? cam.status?.status ?? cam.connectionStatus ?? null;
+        const isOnline = connStatus != null
+          ? (typeof connStatus === 'string' ? connStatus.toLowerCase() === 'online' : null)
+          : null;
+
+        return {
+          zone_id:        zoneId,
+          account_id:     accountId,
+          een_camera_id:  cam.id ?? cam.deviceId ?? cam.esn ?? null,
+          name:           cam.name ?? cam.deviceName ?? 'Unnamed Camera',
+          source:         'een',
+          is_monitored:   true,
+          snapshot_url:   null,
+          een_tags:       extractTagStrings(cam),
+          is_online:      isOnline,
+          last_seen_at:   isOnline !== null ? now : undefined,
+        };
+      })
       .filter(r => r.een_camera_id != null);
 
     if (rows.length === 0) {
