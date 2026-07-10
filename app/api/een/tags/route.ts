@@ -129,7 +129,12 @@ export async function POST(request: Request) {
 
     console.log(`[een/tags] ${cameras.length} cameras, ${allTags.length} unique tags: ${allTags.join(', ')}`);
 
-    return NextResponse.json({ success: true, cameras, allTags });
+    return NextResponse.json({
+      success: true,
+      cameras,
+      allTags,
+      tags: allTags,   // backward-compat alias — wizard reads data.tags
+    });
 
   } catch (err: any) {
     console.error('[een/tags] Error:', err.message);
