@@ -94,7 +94,7 @@ export async function POST(request: Request) {
     `${baseUrl}/image?timestamp=${nowIso}`,
     `${baseUrl}/image?type=preview`,
   ]) {
-    const r = await fetch(url, { headers: imgHeaders, signal: AbortSignal.timeout(6000) });
+    const r = await fetch(url, { headers: imgHeaders, signal: AbortSignal.timeout(3000) });
     if (r.ok && r.headers.get('content-type')?.includes('image')) {
       imageBuffer = Buffer.from(await r.arrayBuffer());
       usedMethod  = `still:${url}`;
@@ -130,19 +130,25 @@ export async function POST(request: Request) {
       hlsDebug.feed_count = feedsData?.results?.length ?? 0;
 
       if (hlsUrl) {
-        // The HLS URL from EEN has an embedded expiry token (?e=...) — it's self-authenticating.
-        // Do NOT send Authorization header; it may conflict and cause the media server to hang.
-        // Use no-auth headers for all media.c0xx.eagleeyenetworks.com requests.
-        const noAuthHlsHeaders = { Accept: 'application/vnd.apple.mpegurl, application/x-mpegurl, */*' };
-        const noAuthTsHeaders  = { Accept: 'video/MP2T, */*' };
+        // EEN media server requires Bearer token auth — same as /api/cameras/proxy.
+        // Media servers are slower than API servers; use generous timeouts.
+        const authHlsHeaders = {
+          Authorization: `Bearer ${token}`,
+          Accept:        'application/vnd.apple.mpegurl, application/x-mpegurl, */*',
+        };
+        const authTsHeaders = {
+          Authorization: `Bearer ${token}`,
+          Accept:        'video/MP2T, */*',
+        };
 
-        // Fetch the M3U8 master playlist — 20s timeout for media servers
-        const m3u8Res  = await fetch(hlsUrl, { headers: noAuthHlsHeaders, signal: AbortSignal.timeout(20000) });
+        // Fetch the M3U8 master playlist — 25s timeout for media servers
+        const m3u8Res  = await fetch(hlsUrl, { headers: authHlsHeaders, signal: AbortSignal.timeout(25000) });
         hlsDebug.manifest_status = m3u8Res.status;
         hlsDebug.manifest_type   = m3u8Res.headers.get('content-type');
 
         const m3u8Text = m3u8Res.ok ? await m3u8Res.text() : null;
         hlsDebug.manifest_lines = m3u8Text?.split('\n').length ?? 0;
+        if (!m3u8Res.ok) hlsDebug.manifest_body = await m3u8Res.text().catch(() => '');
 
         if (m3u8Text) {
           const lines = m3u8Text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -154,7 +160,7 @@ export async function POST(request: Request) {
 
             if (line.endsWith('.m3u8') || line.includes('.m3u8?')) {
               // Master → variant playlist; fetch it and grab first segment
-              const varRes   = await fetch(resolved, { headers: noAuthHlsHeaders, signal: AbortSignal.timeout(15000) });
+              const varRes   = await fetch(resolved, { headers: authHlsHeaders, signal: AbortSignal.timeout(20000) });
               const varText  = varRes.ok ? await varRes.text() : '';
               hlsDebug.variant_status = varRes.status;
               const varLines = varText.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
@@ -172,7 +178,7 @@ export async function POST(request: Request) {
           hlsDebug.segment_url = segmentUrl ? segmentUrl.slice(0, 80) + '…' : null;
 
           if (segmentUrl) {
-            const tsRes = await fetch(segmentUrl, { headers: noAuthTsHeaders, signal: AbortSignal.timeout(20000) });
+            const tsRes = await fetch(segmentUrl, { headers: authTsHeaders, signal: AbortSignal.timeout(25000) });
             hlsDebug.segment_status = tsRes.status;
             hlsDebug.segment_type   = tsRes.headers.get('content-type');
 
