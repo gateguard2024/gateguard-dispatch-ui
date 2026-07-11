@@ -789,6 +789,7 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
     gates: Array<{ label: string; status: string; traffic_flowing: boolean; vehicle_present: boolean; confidence: number }>;
     scanned_at: string;
     error?: string;
+    debug?: { url: string; esn: string; cluster: string; account_id: string; has_token: boolean; has_apikey: boolean };
   } | null>(null);
   const [gateEnabled,   setGateEnabled]  = useState(false);
   const [gateCount,     setGateCount]    = useState(1);
@@ -1064,7 +1065,18 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
             {scanResult && (
               <div className="space-y-2">
                 {scanResult.error ? (
-                  <p className="text-[10px] text-red-400">✗ {scanResult.error}</p>
+                  <div className="space-y-1">
+                    <p className="text-[10px] text-red-400">✗ {scanResult.error}</p>
+                    {scanResult.debug && (
+                      <div className="bg-white/[0.03] rounded p-2 space-y-0.5">
+                        <p className="text-[9px] text-slate-500 font-medium">Debug info:</p>
+                        <p className="text-[9px] text-slate-600 break-all">URL: <span className="text-slate-400">{scanResult.debug.url}</span></p>
+                        <p className="text-[9px] text-slate-600">ESN: <span className="text-slate-400">{scanResult.debug.esn}</span></p>
+                        <p className="text-[9px] text-slate-600">Cluster: <span className="text-slate-400">{scanResult.debug.cluster}</span></p>
+                        <p className="text-[9px] text-slate-600">Token: <span className={scanResult.debug.has_token ? 'text-emerald-400' : 'text-red-400'}>{scanResult.debug.has_token ? '✓' : '✗ missing'}</span></p>
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <>
                     {/* Image with drag-to-draw region boxes */}

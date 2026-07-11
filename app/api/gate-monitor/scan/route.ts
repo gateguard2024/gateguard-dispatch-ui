@@ -73,14 +73,22 @@ export async function POST(request: Request) {
   };
   if (apiKey) imgHeaders['x-api-key'] = apiKey;
 
-  const imgRes = await fetch(
-    `https://${cluster}/api/v3.0/cameras/${encodeURIComponent(cam.een_camera_id)}/image`,
-    { headers: imgHeaders, signal: AbortSignal.timeout(8000) }
-  );
+  const imageUrl = `https://${cluster}/api/v3.0/cameras/${encodeURIComponent(cam.een_camera_id)}/image`;
+  const imgRes = await fetch(imageUrl, { headers: imgHeaders, signal: AbortSignal.timeout(8000) });
 
   if (!imgRes.ok) {
     return NextResponse.json(
-      { error: `EEN image fetch failed: HTTP ${imgRes.status}. Camera may be offline.` },
+      {
+        error: `EEN image fetch failed: HTTP ${imgRes.status}`,
+        debug: {
+          url:        imageUrl,
+          esn:        cam.een_camera_id,
+          cluster,
+          account_id: cam.account_id,
+          has_token:  !!token,
+          has_apikey: !!apiKey,
+        },
+      },
       { status: 502 }
     );
   }
