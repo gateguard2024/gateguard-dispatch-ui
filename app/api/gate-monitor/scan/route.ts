@@ -104,96 +104,115 @@ export async function POST(request: Request) {
   }
 
   // ── Attempt 2: Extract frame from HLS stream ───────────────────────────────
-  // Get the HLS manifest from EEN's feeds endpoint, fetch the first .ts segment,
-  // then scan it for the first JPEG SOI marker (FF D8) to extract a frame.
-  // Works for cameras where the still image endpoint returns 404.
+  // Get HLS URL from /feeds (same endpoint SmartVideoPlayer uses), download the
+  // first .ts segment, extract the first JPEG frame from the MPEG-TS stream.
+  const hlsDebug: Record<string, any> = {};
   if (!imageBuffer) {
     try {
+      // HLS manifests need these headers — NOT image/jpeg Accept
+      const hlsHeaders: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        Accept:        'application/vnd.apple.mpegurl, application/x-mpegurl, */*',
+      };
+      const tsHeaders: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        Accept:        'video/MP2T, */*',
+      };
+      if (apiKey) { hlsHeaders['x-api-key'] = apiKey; tsHeaders['x-api-key'] = apiKey; }
+
       const feedsUrl  = `https://${cluster}/api/v3.0/feeds?deviceId=${cam.een_camera_id}&include=hlsUrl`;
       const feedsRes  = await fetch(feedsUrl, { headers: jsonHeaders, signal: AbortSignal.timeout(6000) });
+      hlsDebug.feeds_status = feedsRes.status;
+
       const feedsData = feedsRes.ok ? await feedsRes.json() : null;
-      const hlsUrl    = (feedsData?.results ?? []).find((f: any) => f.hlsUrl)?.hlsUrl;
+      const hlsUrl    = (feedsData?.results ?? []).find((f: any) => f.hlsUrl)?.hlsUrl ?? null;
+      hlsDebug.hls_url = hlsUrl ? hlsUrl.slice(0, 80) + '…' : null;
+      hlsDebug.feed_count = feedsData?.results?.length ?? 0;
 
       if (hlsUrl) {
-        console.log(`[gate-monitor/scan] HLS fallback — fetching manifest`);
+        // Fetch the M3U8 master playlist
+        const m3u8Res  = await fetch(hlsUrl, { headers: hlsHeaders, signal: AbortSignal.timeout(8000) });
+        hlsDebug.manifest_status = m3u8Res.status;
+        hlsDebug.manifest_type   = m3u8Res.headers.get('content-type');
 
-        // Download the M3U8 manifest (token in auth header)
-        const m3u8Res  = await fetch(hlsUrl, { headers: imgHeaders, signal: AbortSignal.timeout(8000) });
         const m3u8Text = m3u8Res.ok ? await m3u8Res.text() : null;
+        hlsDebug.manifest_lines = m3u8Text?.split('\n').length ?? 0;
 
         if (m3u8Text) {
-          // The manifest may be a master playlist — find the first variant or segment URL
-          const lines    = m3u8Text.split('\n').map(l => l.trim()).filter(Boolean);
-
-          // Try to find a child playlist URL (master → variant) or a direct segment
+          const lines = m3u8Text.split('\n').map(l => l.trim()).filter(Boolean);
           let segmentUrl: string | null = null;
+
           for (const line of lines) {
             if (line.startsWith('#')) continue;
             const resolved = line.startsWith('http') ? line : new URL(line, hlsUrl).href;
-            if (line.endsWith('.m3u8')) {
-              // It's a variant playlist — fetch it and get its first segment
-              const varRes  = await fetch(resolved, { headers: imgHeaders, signal: AbortSignal.timeout(6000) });
-              const varText = varRes.ok ? await varRes.text() : '';
+
+            if (line.endsWith('.m3u8') || line.includes('.m3u8?')) {
+              // Master → variant playlist; fetch it and grab first segment
+              const varRes   = await fetch(resolved, { headers: hlsHeaders, signal: AbortSignal.timeout(6000) });
+              const varText  = varRes.ok ? await varRes.text() : '';
+              hlsDebug.variant_status = varRes.status;
               const varLines = varText.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+              hlsDebug.variant_segments = varLines.length;
               if (varLines[0]) {
                 segmentUrl = varLines[0].startsWith('http') ? varLines[0] : new URL(varLines[0], resolved).href;
               }
               break;
             }
             if (line.endsWith('.ts') || line.includes('.ts?')) {
-              segmentUrl = resolved;
-              break;
+              segmentUrl = resolved; break;
             }
           }
 
+          hlsDebug.segment_url = segmentUrl ? segmentUrl.slice(0, 80) + '…' : null;
+
           if (segmentUrl) {
-            console.log(`[gate-monitor/scan] Fetching .ts segment: ${segmentUrl}`);
-            const tsRes = await fetch(segmentUrl, { headers: imgHeaders, signal: AbortSignal.timeout(10000) });
+            const tsRes = await fetch(segmentUrl, { headers: tsHeaders, signal: AbortSignal.timeout(12000) });
+            hlsDebug.segment_status = tsRes.status;
+            hlsDebug.segment_type   = tsRes.headers.get('content-type');
+
             if (tsRes.ok) {
               const tsBuffer = Buffer.from(await tsRes.arrayBuffer());
+              hlsDebug.segment_bytes = tsBuffer.length;
 
-              // Scan for the first JPEG SOI marker (FF D8 FF) in the MPEG-TS stream
-              // MPEG-TS streams often embed JPEG frames in the PES payload
+              // Scan for JPEG SOI marker (FF D8 FF) in the MPEG-TS PES payload
               let jpegStart = -1;
               for (let i = 0; i < tsBuffer.length - 2; i++) {
                 if (tsBuffer[i] === 0xFF && tsBuffer[i + 1] === 0xD8 && tsBuffer[i + 2] === 0xFF) {
-                  jpegStart = i;
-                  break;
+                  jpegStart = i; break;
                 }
               }
+              hlsDebug.jpeg_found = jpegStart >= 0;
 
               if (jpegStart >= 0) {
-                // Find the JPEG EOI marker (FF D9) to get the full JPEG
                 let jpegEnd = tsBuffer.length;
                 for (let i = jpegStart + 2; i < tsBuffer.length - 1; i++) {
-                  if (tsBuffer[i] === 0xFF && tsBuffer[i + 1] === 0xD9) {
-                    jpegEnd = i + 2;
-                    break;
-                  }
+                  if (tsBuffer[i] === 0xFF && tsBuffer[i + 1] === 0xD9) { jpegEnd = i + 2; break; }
                 }
                 imageBuffer = tsBuffer.slice(jpegStart, jpegEnd);
                 usedMethod  = 'hls-segment-jpeg';
-                console.log(`[gate-monitor/scan] Extracted JPEG from .ts (${imageBuffer.length} bytes)`);
-              } else {
-                // No JPEG in segment — use the raw .ts bytes anyway (Claude can handle it)
-                imageBuffer = tsBuffer;
-                usedMethod  = 'hls-segment-raw';
-                console.log(`[gate-monitor/scan] No JPEG marker in .ts — passing raw segment (${tsBuffer.length} bytes)`);
+                console.log(`[gate-monitor/scan] ✓ Extracted JPEG from .ts (${imageBuffer.length} bytes)`);
               }
+              // Note: raw .ts can't be sent to Claude Vision — only use if JPEG found
             }
           }
         }
       }
     } catch (err: any) {
-      console.warn(`[gate-monitor/scan] HLS fallback failed: ${err.message}`);
+      hlsDebug.error = err.message;
+      console.warn(`[gate-monitor/scan] HLS fallback error: ${err.message}`);
     }
   }
 
   if (!imageBuffer) {
     return NextResponse.json(
       {
-        error: 'Could not retrieve a camera image. The still image endpoint returned 404 and the HLS stream could not be read.',
-        debug: { esn: cam.een_camera_id, cluster, account_id: cam.account_id },
+        error: 'Could not retrieve a camera image — still image endpoint returned 404 and HLS frame extraction failed.',
+        debug: {
+          esn:       cam.een_camera_id,
+          cluster,
+          has_token: !!token,
+          hls:       hlsDebug,
+        },
       },
       { status: 502 }
     );
