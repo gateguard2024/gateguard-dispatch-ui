@@ -130,8 +130,14 @@ export async function POST(request: Request) {
       hlsDebug.feed_count = feedsData?.results?.length ?? 0;
 
       if (hlsUrl) {
-        // Fetch the M3U8 master playlist
-        const m3u8Res  = await fetch(hlsUrl, { headers: hlsHeaders, signal: AbortSignal.timeout(8000) });
+        // The HLS URL from EEN has an embedded expiry token (?e=...) — it's self-authenticating.
+        // Do NOT send Authorization header; it may conflict and cause the media server to hang.
+        // Use no-auth headers for all media.c0xx.eagleeyenetworks.com requests.
+        const noAuthHlsHeaders = { Accept: 'application/vnd.apple.mpegurl, application/x-mpegurl, */*' };
+        const noAuthTsHeaders  = { Accept: 'video/MP2T, */*' };
+
+        // Fetch the M3U8 master playlist — 20s timeout for media servers
+        const m3u8Res  = await fetch(hlsUrl, { headers: noAuthHlsHeaders, signal: AbortSignal.timeout(20000) });
         hlsDebug.manifest_status = m3u8Res.status;
         hlsDebug.manifest_type   = m3u8Res.headers.get('content-type');
 
@@ -148,7 +154,7 @@ export async function POST(request: Request) {
 
             if (line.endsWith('.m3u8') || line.includes('.m3u8?')) {
               // Master → variant playlist; fetch it and grab first segment
-              const varRes   = await fetch(resolved, { headers: hlsHeaders, signal: AbortSignal.timeout(6000) });
+              const varRes   = await fetch(resolved, { headers: noAuthHlsHeaders, signal: AbortSignal.timeout(15000) });
               const varText  = varRes.ok ? await varRes.text() : '';
               hlsDebug.variant_status = varRes.status;
               const varLines = varText.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
@@ -166,7 +172,7 @@ export async function POST(request: Request) {
           hlsDebug.segment_url = segmentUrl ? segmentUrl.slice(0, 80) + '…' : null;
 
           if (segmentUrl) {
-            const tsRes = await fetch(segmentUrl, { headers: tsHeaders, signal: AbortSignal.timeout(12000) });
+            const tsRes = await fetch(segmentUrl, { headers: noAuthTsHeaders, signal: AbortSignal.timeout(20000) });
             hlsDebug.segment_status = tsRes.status;
             hlsDebug.segment_type   = tsRes.headers.get('content-type');
 
