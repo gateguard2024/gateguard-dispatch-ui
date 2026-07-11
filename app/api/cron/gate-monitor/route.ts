@@ -19,10 +19,11 @@
 // Cost: ~$0.0002/Vision call. Only runs while monitoring_until > now().
 // Monitoring windows are opened by the EEN motion webhook on gate cameras.
 
-import { NextResponse }     from 'next/server';
-import { createClient }     from '@supabase/supabase-js';
-import Anthropic            from '@anthropic-ai/sdk';
-import { getValidEENToken } from '@/lib/een';
+import { NextResponse }          from 'next/server';
+import { createClient }          from '@supabase/supabase-js';
+import Anthropic                 from '@anthropic-ai/sdk';
+import { getValidEENToken }      from '@/lib/een';
+import { buildGateVisionPrompt } from '@/lib/gate-vision';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
@@ -66,7 +67,7 @@ export async function GET(request: Request) {
         account_id,
         zone_id,
         zones ( name ),
-        gate_camera_configs ( gate_label, idle_threshold_seconds, enabled )
+        gate_camera_configs ( gate_label, gate_type, region, idle_threshold_seconds, enabled )
       )
     `)
     .gt('monitoring_until', now.toISOString());
@@ -126,11 +127,19 @@ export async function GET(request: Request) {
       const base64Image = Buffer.from(await imgRes.arrayBuffer()).toString('base64');
 
       // ── 4. Claude Haiku Vision ─────────────────────────────────────────────
-      const gateLabels = states.map(s => s.gate_label);
+      const configs      = (cam.gate_camera_configs as any[]) ?? [];
+      const gatePromptConfigs = states.map(s => {
+        const cfg = configs.find((c: any) => c.gate_label === s.gate_label) ?? {};
+        return {
+          gate_label: s.gate_label,
+          gate_type:  cfg.gate_type ?? 'barrier_arm',
+          region:     cfg.region    ?? null,
+        };
+      });
 
       const visionMsg = await anthropic.messages.create({
         model:      'claude-haiku-4-5-20251001',
-        max_tokens: 300,
+        max_tokens: 400,
         messages: [{
           role: 'user',
           content: [
@@ -140,7 +149,7 @@ export async function GET(request: Request) {
             },
             {
               type: 'text',
-              text: buildVisionPrompt(gateLabels),
+              text: buildGateVisionPrompt(gatePromptConfigs),
             },
           ],
         }],
@@ -254,24 +263,7 @@ export async function GET(request: Request) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function buildVisionPrompt(gateLabels: string[]): string {
-  const count = gateLabels.length;
-  return `You are a security camera AI monitoring a vehicle gate at a multifamily apartment community.
-This camera shows ${count} gate lane${count > 1 ? 's' : ''}: ${gateLabels.join(', ')}.
-
-Return ONLY valid JSON, no other text:
-{
-  "gates": [${gateLabels.map(l => `{"label":"${l}","status":"closed","traffic_flowing":false,"vehicle_present":false,"confidence":85}`).join(',')}]
-}
-
-For each gate use these exact values:
-- "status": "open" (barrier raised/retracted, lane passable) | "closed" (barrier blocking lane) | "partial" (stuck mid-way)
-- "traffic_flowing": true ONLY if vehicles are actively moving through RIGHT NOW
-- "vehicle_present": true if any vehicle visible in or near the opening (moving or stopped)
-- "confidence": 0-100. Use below 50 if the gate is not clearly visible in frame.
-If a labeled gate is not visible, return status "closed" with confidence 25.`;
-}
+// buildGateVisionPrompt is now in lib/gate-vision.ts (shared with scan endpoint)
 
 async function upsertState(
   supabase:  any,

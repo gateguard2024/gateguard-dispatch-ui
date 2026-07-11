@@ -48,6 +48,8 @@ export async function POST(request: Request) {
     gates: Array<{
       gate_index:             number;
       gate_label:             string;
+      gate_type:              string;
+      region:                 { x: number; y: number; w: number; h: number } | null;
       idle_threshold_seconds: number;
       enabled:                boolean;
     }>;
@@ -75,6 +77,8 @@ export async function POST(request: Request) {
       camera_id:              cameraId,
       gate_index:             g.gate_index,
       gate_label:             g.gate_label,
+      gate_type:              g.gate_type  ?? 'barrier_arm',
+      region:                 g.region     ?? null,
       idle_threshold_seconds: g.idle_threshold_seconds,
       enabled:                g.enabled,
     })))

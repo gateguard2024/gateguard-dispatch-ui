@@ -29,7 +29,7 @@
 
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 
 // ─── SVG Icon Primitive ───────────────────────────────────────────────────────
@@ -757,10 +757,22 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
 // Saves independently via /api/gate-monitor/configure.
 
 const DEFAULT_GATE_LABELS = ['Main Gate', 'Resident', 'Guest'];
+const DEFAULT_GATE_TYPE   = 'barrier_arm';
+
+const GATE_TYPE_OPTIONS = [
+  { value: 'barrier_arm',    label: 'Barrier Arm',    hint: 'Horizontal arm raises/lowers' },
+  { value: 'swing',          label: 'Swing Gate',     hint: 'Panel swings open on hinges' },
+  { value: 'slide',          label: 'Slide / Roll',   hint: 'Panel slides sideways to open' },
+  { value: 'vertical_lift',  label: 'Vertical Lift',  hint: 'Panel lifts straight up' },
+];
+
+type GateRegion = { x: number; y: number; w: number; h: number };
 
 interface GateConfig {
   gate_index:             number;
   gate_label:             string;
+  gate_type:              string;
+  region:                 GateRegion | null;
   idle_threshold_seconds: number;
   enabled:                boolean;
 }
@@ -771,10 +783,24 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
   const [saveMsg,       setSaveMsg]      = useState<string | null>(null);
   const [testing,       setTesting]      = useState(false);
   const [testMsg,       setTestMsg]      = useState<string | null>(null);
+  const [scanning,      setScanning]     = useState(false);
+  const [scanResult,    setScanResult]   = useState<{
+    image_data: string;
+    gates: Array<{ label: string; status: string; traffic_flowing: boolean; vehicle_present: boolean; confidence: number }>;
+    scanned_at: string;
+    error?: string;
+  } | null>(null);
   const [gateEnabled,   setGateEnabled]  = useState(false);
   const [gateCount,     setGateCount]    = useState(1);
   const [gateLabels,    setGateLabels]   = useState<string[]>(['Main Gate', 'Resident', 'Guest']);
+  const [gateTypes,     setGateTypes]    = useState<string[]>(['barrier_arm', 'barrier_arm', 'barrier_arm']);
+  const [gateRegions,   setGateRegions]  = useState<(GateRegion | null)[]>([null, null, null]);
   const [idleThreshold, setIdleThreshold] = useState(300);
+  // Canvas drawing state
+  const [drawingFor,    setDrawingFor]   = useState<number | null>(null); // gate index being drawn
+  const [drawStart,     setDrawStart]    = useState<{ x: number; y: number } | null>(null);
+  const [corrections,   setCorrections]  = useState<Record<string, string>>({}); // label → corrected status
+  const imgRef = useRef<HTMLImageElement>(null);
 
   // Load existing config on mount
   useEffect(() => {
@@ -787,6 +813,8 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
           setGateEnabled(true);
           setGateCount(gates.length);
           setGateLabels(gates.map(g => g.gate_label));
+          setGateTypes(gates.map(g => g.gate_type ?? DEFAULT_GATE_TYPE));
+          setGateRegions(gates.map(g => g.region ?? null));
           setIdleThreshold(gates[0].idle_threshold_seconds);
         }
       })
@@ -801,7 +829,9 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
       const gates = gateEnabled
         ? Array.from({ length: gateCount }, (_, i) => ({
             gate_index:             i,
-            gate_label:             gateLabels[i] || DEFAULT_GATE_LABELS[i] || `Gate ${i + 1}`,
+            gate_label:             gateLabels[i]  || DEFAULT_GATE_LABELS[i] || `Gate ${i + 1}`,
+            gate_type:              gateTypes[i]   || DEFAULT_GATE_TYPE,
+            region:                 gateRegions[i] ?? null,
             idle_threshold_seconds: idleThreshold,
             enabled:                true,
           }))
@@ -838,6 +868,25 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
       setTestMsg(`✗ ${err.message}`);
     } finally {
       setTesting(false);
+    }
+  };
+
+  const scan = async () => {
+    setScanning(true);
+    setScanResult(null);
+    try {
+      const res = await fetch('/api/gate-monitor/scan', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ cameraId: cam.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Scan failed');
+      setScanResult(data);
+    } catch (err: any) {
+      setScanResult({ image_data: '', gates: [], scanned_at: '', error: err.message });
+    } finally {
+      setScanning(false);
     }
   };
 
@@ -891,22 +940,47 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
             </div>
           </div>
 
-          {/* Gate labels */}
+          {/* Gate labels + type */}
           {Array.from({ length: gateCount }, (_, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <span className="text-[10px] text-slate-600 w-24 shrink-0">
-                Gate {i + 1} label
-              </span>
-              <input
-                value={gateLabels[i] ?? ''}
-                onChange={e => setGateLabels(prev => {
-                  const next = [...prev];
-                  next[i] = e.target.value;
-                  return next;
-                })}
-                placeholder={DEFAULT_GATE_LABELS[i] ?? `Gate ${i + 1}`}
-                className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded px-2 py-1 text-[10px] text-slate-300 placeholder-slate-700 focus:outline-none focus:border-indigo-500/50"
-              />
+            <div key={i} className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-slate-600 w-16 shrink-0">Gate {i + 1}</span>
+                <input
+                  value={gateLabels[i] ?? ''}
+                  onChange={e => setGateLabels(prev => {
+                    const next = [...prev]; next[i] = e.target.value; return next;
+                  })}
+                  placeholder={DEFAULT_GATE_LABELS[i] ?? `Gate ${i + 1}`}
+                  className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded px-2 py-1 text-[10px] text-slate-300 placeholder-slate-700 focus:outline-none focus:border-indigo-500/50"
+                />
+              </div>
+              <div className="flex items-center gap-2 pl-[72px]">
+                <select
+                  value={gateTypes[i] ?? DEFAULT_GATE_TYPE}
+                  onChange={e => setGateTypes(prev => {
+                    const next = [...prev]; next[i] = e.target.value; return next;
+                  })}
+                  className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded px-2 py-1 text-[10px] text-slate-400 focus:outline-none focus:border-indigo-500/50"
+                >
+                  {GATE_TYPE_OPTIONS.map(o => (
+                    <option key={o.value} value={o.value}>{o.label} — {o.hint}</option>
+                  ))}
+                </select>
+                {gateRegions[i] && (
+                  <button
+                    onClick={() => setGateRegions(prev => {
+                      const next = [...prev]; next[i] = null; return next;
+                    })}
+                    className="text-[9px] text-slate-600 hover:text-red-400 transition-colors shrink-0"
+                    title="Clear drawn region"
+                  >
+                    ✕ region
+                  </button>
+                )}
+                {!gateRegions[i] && (
+                  <span className="text-[9px] text-slate-700 shrink-0">no region</span>
+                )}
+              </div>
             </div>
           ))}
 
@@ -966,6 +1040,217 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
               {testMsg}
             </p>
           )}
+
+          {/* Vision Debug — Scan Now + region drawing + corrections */}
+          <div className="border-t border-white/[0.04] pt-3 mt-1">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] text-slate-400 font-medium">Vision Debug</span>
+              <button
+                onClick={scan}
+                disabled={scanning || !gateEnabled}
+                title={!gateEnabled ? 'Enable Gate Monitor first' : 'Fetch live image and run Claude Vision right now'}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-violet-600/20 hover:bg-violet-600/40 border border-violet-500/30 text-violet-300 text-[10px] font-semibold transition-all disabled:opacity-40"
+              >
+                {scanning
+                  ? <div className="w-3 h-3 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
+                  : <span>🔍</span>}
+                {scanning ? 'Scanning…' : 'Scan Now'}
+              </button>
+            </div>
+            <p className="text-[9px] text-slate-600 mb-2">
+              Fetches the live image and runs Vision now. Draw a box on the image to tell the AI exactly where each gate is — this improves accuracy especially for multi-gate cameras.
+            </p>
+
+            {scanResult && (
+              <div className="space-y-2">
+                {scanResult.error ? (
+                  <p className="text-[10px] text-red-400">✗ {scanResult.error}</p>
+                ) : (
+                  <>
+                    {/* Image with drag-to-draw region boxes */}
+                    {scanResult.image_data && (
+                      <div className="space-y-1">
+                        {/* Gate selector for drawing */}
+                        {gateEnabled && gateCount > 0 && (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-[9px] text-slate-600">Draw region for:</span>
+                            {Array.from({ length: gateCount }, (_, i) => {
+                              const label = gateLabels[i] || DEFAULT_GATE_LABELS[i] || `Gate ${i+1}`;
+                              const REGION_COLORS = ['#818cf8','#34d399','#fb923c'];
+                              const hasRegion = !!gateRegions[i];
+                              return (
+                                <button
+                                  key={i}
+                                  onClick={() => setDrawingFor(drawingFor === i ? null : i)}
+                                  className={`px-2 py-0.5 rounded text-[9px] font-medium border transition-all ${
+                                    drawingFor === i
+                                      ? 'border-transparent text-white'
+                                      : 'border-white/[0.08] text-slate-500 hover:text-slate-300'
+                                  }`}
+                                  style={drawingFor === i ? { backgroundColor: REGION_COLORS[i % REGION_COLORS.length] + '40', borderColor: REGION_COLORS[i % REGION_COLORS.length] } : {}}
+                                >
+                                  {hasRegion ? '✓ ' : ''}{label}
+                                </button>
+                              );
+                            })}
+                            {drawingFor !== null && (
+                              <span className="text-[9px] text-violet-400 animate-pulse">drag on image →</span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* The image — click+drag draws a region box */}
+                        <div
+                          className="relative rounded overflow-hidden border border-white/[0.06] select-none"
+                          style={{ cursor: drawingFor !== null ? 'crosshair' : 'default' }}
+                          onMouseDown={e => {
+                            if (drawingFor === null || !imgRef.current) return;
+                            const rect = imgRef.current.getBoundingClientRect();
+                            setDrawStart({
+                              x: (e.clientX - rect.left) / rect.width,
+                              y: (e.clientY - rect.top)  / rect.height,
+                            });
+                          }}
+                          onMouseUp={e => {
+                            if (drawingFor === null || !drawStart || !imgRef.current) return;
+                            const rect = imgRef.current.getBoundingClientRect();
+                            const ex = (e.clientX - rect.left)  / rect.width;
+                            const ey = (e.clientY - rect.top)   / rect.height;
+                            const x  = Math.min(drawStart.x, ex);
+                            const y  = Math.min(drawStart.y, ey);
+                            const w  = Math.abs(ex - drawStart.x);
+                            const h  = Math.abs(ey - drawStart.y);
+                            if (w > 0.02 && h > 0.02) {
+                              const idx = drawingFor;
+                              setGateRegions(prev => {
+                                const next = [...prev];
+                                next[idx] = { x, y, w, h };
+                                return next;
+                              });
+                            }
+                            setDrawStart(null);
+                            setDrawingFor(null);
+                          }}
+                        >
+                          <img
+                            ref={imgRef}
+                            src={scanResult.image_data}
+                            alt="Gate camera snapshot"
+                            className="w-full object-cover max-h-56 block"
+                            draggable={false}
+                          />
+                          {/* Draw saved region overlays */}
+                          {Array.from({ length: gateCount }, (_, i) => {
+                            const r = gateRegions[i];
+                            if (!r) return null;
+                            const REGION_COLORS = ['#818cf8','#34d399','#fb923c'];
+                            const color = REGION_COLORS[i % REGION_COLORS.length];
+                            const label = gateLabels[i] || DEFAULT_GATE_LABELS[i] || `Gate ${i+1}`;
+                            return (
+                              <div
+                                key={i}
+                                className="absolute border-2 pointer-events-none"
+                                style={{
+                                  left:   `${r.x * 100}%`,
+                                  top:    `${r.y * 100}%`,
+                                  width:  `${r.w * 100}%`,
+                                  height: `${r.h * 100}%`,
+                                  borderColor: color,
+                                }}
+                              >
+                                <span
+                                  className="absolute top-0 left-0 text-[8px] font-bold px-1 leading-tight"
+                                  style={{ backgroundColor: color + 'cc', color: '#fff' }}
+                                >
+                                  {label}
+                                </span>
+                              </div>
+                            );
+                          })}
+                          <span className="absolute top-1 right-1 bg-black/60 text-[8px] text-slate-300 px-1.5 py-0.5 rounded">
+                            {new Date(scanResult.scanned_at).toLocaleTimeString()}
+                          </span>
+                        </div>
+
+                        {/* Save regions hint */}
+                        {gateRegions.some(r => r !== null) && (
+                          <p className="text-[9px] text-violet-400">
+                            Regions drawn — hit <strong>Save Gate Config</strong> above to persist them.
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Per-gate results with corrections */}
+                    <div className="space-y-1">
+                      {scanResult.gates.map(g => {
+                        const corrected   = corrections[g.label];
+                        const displayStatus = corrected ?? g.status;
+                        const statusColor =
+                          displayStatus === 'closed'  ? 'text-emerald-400' :
+                          displayStatus === 'open'    ? 'text-red-400'     :
+                          displayStatus === 'partial' ? 'text-amber-400'   : 'text-slate-400';
+                        const confColor =
+                          g.confidence >= 70 ? 'text-emerald-400' :
+                          g.confidence >= 40 ? 'text-amber-400'   : 'text-red-400';
+                        return (
+                          <div key={g.label} className="bg-white/[0.03] rounded px-2 py-1.5 space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] text-slate-300 font-medium w-24 truncate">{g.label}</span>
+                              <span className={`text-[10px] font-bold uppercase ${statusColor}`}>
+                                {displayStatus}
+                                {corrected && <span className="text-[8px] font-normal text-slate-500 ml-1">(corrected)</span>}
+                              </span>
+                              {g.traffic_flowing && (
+                                <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1 rounded">traffic</span>
+                              )}
+                              {g.vehicle_present && !g.traffic_flowing && (
+                                <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1 rounded">vehicle</span>
+                              )}
+                              <span className={`ml-auto text-[9px] ${confColor}`}>{g.confidence}%</span>
+                            </div>
+                            {/* Correction buttons — shown when AI call could be wrong */}
+                            {g.confidence < 80 && !corrected && (
+                              <div className="flex items-center gap-1 pl-24">
+                                <span className="text-[8px] text-slate-700">AI wrong?</span>
+                                {['open','closed','partial'].filter(s => s !== g.status).map(s => (
+                                  <button
+                                    key={s}
+                                    onClick={() => setCorrections(p => ({ ...p, [g.label]: s }))}
+                                    className="text-[8px] px-1.5 py-0.5 rounded border border-white/[0.06] text-slate-500 hover:text-slate-300 hover:border-white/20 transition-all"
+                                  >
+                                    it's {s}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            {corrected && (
+                              <div className="flex items-center gap-1 pl-24">
+                                <span className="text-[8px] text-slate-700">
+                                  You said {corrected} — draw a region box on the image above to help the AI find this gate.
+                                </span>
+                                <button
+                                  onClick={() => setCorrections(p => { const n = {...p}; delete n[g.label]; return n; })}
+                                  className="text-[8px] text-slate-600 hover:text-slate-400 ml-auto"
+                                >undo</button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Low-confidence warning */}
+                    {scanResult.gates.some(g => g.confidence < 50) && (
+                      <p className="text-[9px] text-amber-400">
+                        ⚠ Low confidence — try drawing a region box to focus the AI on each gate's location in the frame.
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
