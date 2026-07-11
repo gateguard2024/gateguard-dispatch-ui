@@ -50,26 +50,28 @@ export async function GET(request: Request) {
 
   const now = new Date();
 
-  // ── 1. Find all gate states with active monitoring windows ─────────────────
+  const STATE_SELECT = `
+    camera_id,
+    gate_label,
+    status,
+    idle_since,
+    stuck_alarm_id,
+    monitoring_until,
+    cameras (
+      id,
+      name,
+      een_camera_id,
+      account_id,
+      zone_id,
+      zones ( name ),
+      gate_camera_configs ( gate_label, gate_type, region, idle_threshold_seconds, enabled )
+    )
+  `;
+
+  // ── 1a. Gates with active monitoring windows ───────────────────────────────
   const { data: activeStates, error: stateErr } = await supabase
     .from('gate_monitor_states')
-    .select(`
-      camera_id,
-      gate_label,
-      status,
-      idle_since,
-      stuck_alarm_id,
-      monitoring_until,
-      cameras (
-        id,
-        name,
-        een_camera_id,
-        account_id,
-        zone_id,
-        zones ( name ),
-        gate_camera_configs ( gate_label, gate_type, region, idle_threshold_seconds, enabled )
-      )
-    `)
+    .select(STATE_SELECT)
     .gt('monitoring_until', now.toISOString());
 
   if (stateErr) {
@@ -77,13 +79,41 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: stateErr.message }, { status: 500 });
   }
 
-  if (!activeStates?.length) {
+  // ── 1b. stuck_open gates whose window lapsed (cron gap recovery) ───────────
+  // If the Vercel cron had a gap and a stuck gate fell out of its window,
+  // we still need to check it so we can detect when it closes.
+  const { data: stuckLapsed } = await supabase
+    .from('gate_monitor_states')
+    .select(STATE_SELECT)
+    .eq('status', 'stuck_open')
+    .or(`monitoring_until.is.null,monitoring_until.lt.${now.toISOString()}`);
+
+  // Re-open monitoring window for any recovered stuck gates so they stay watched
+  if (stuckLapsed?.length) {
+    const recovered = new Date(now.getTime() + 30 * 60_000).toISOString();
+    await supabase
+      .from('gate_monitor_states')
+      .update({ monitoring_until: recovered })
+      .eq('status', 'stuck_open')
+      .or(`monitoring_until.is.null,monitoring_until.lt.${now.toISOString()}`);
+    console.log(`[gate-monitor] Recovered ${stuckLapsed.length} stuck gate(s) with lapsed monitoring window`);
+  }
+
+  // Merge — deduplicate by camera_id + gate_label (active window takes precedence)
+  const seen = new Set<string>();
+  const allStates: typeof activeStates = [];
+  for (const s of [...(activeStates ?? []), ...(stuckLapsed ?? [])]) {
+    const key = `${s.camera_id}:${s.gate_label}`;
+    if (!seen.has(key)) { seen.add(key); allStates.push(s); }
+  }
+
+  if (!allStates.length) {
     return NextResponse.json({ checked: 0, message: 'No active gate monitoring windows' });
   }
 
   // ── 2. Group by camera_id — one image fetch per camera ────────────────────
-  const byCameraId = new Map<string, typeof activeStates>();
-  for (const state of activeStates) {
+  const byCameraId = new Map<string, typeof allStates>();
+  for (const state of allStates) {
     if (!byCameraId.has(state.camera_id)) byCameraId.set(state.camera_id, []);
     byCameraId.get(state.camera_id)!.push(state);
   }
