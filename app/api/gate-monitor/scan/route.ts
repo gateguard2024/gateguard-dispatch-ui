@@ -66,32 +66,71 @@ export async function POST(request: Request) {
     );
   }
 
-  // Fetch live JPEG
+  // Fetch live JPEG — try multiple URL variants since EEN V3 behaviour varies by account/camera
   const imgHeaders: Record<string, string> = {
     Authorization: `Bearer ${token}`,
-    Accept: 'image/jpeg',
+    Accept:        'image/jpeg, */*',
   };
-  if (apiKey) imgHeaders['x-api-key'] = apiKey;
+  const jsonHeaders: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    Accept:        'application/json',
+  };
+  if (apiKey) { imgHeaders['x-api-key'] = apiKey; jsonHeaders['x-api-key'] = apiKey; }
 
-  const imageUrl = `https://${cluster}/api/v3.0/cameras/${encodeURIComponent(cam.een_camera_id)}/image`;
-  const imgRes = await fetch(imageUrl, { headers: imgHeaders, signal: AbortSignal.timeout(8000) });
+  const esn       = encodeURIComponent(cam.een_camera_id);
+  const nowIso    = new Date().toISOString();
+  const baseUrl   = `https://${cluster}/api/v3.0/cameras/${esn}`;
 
-  if (!imgRes.ok) {
+  // Step 1: Ask EEN for camera details — the response may include an imageUrl field
+  // that points to the actual preview image (may be a signed CDN URL, not the /image path)
+  let eenImageUrl: string | null = null;
+  try {
+    const camInfoRes = await fetch(`${baseUrl}`, { headers: jsonHeaders, signal: AbortSignal.timeout(5000) });
+    if (camInfoRes.ok) {
+      const camInfo = await camInfoRes.json();
+      // EEN V3 camera object may have imageUrl, previewImageUrl, or similar fields
+      eenImageUrl = camInfo?.imageUrl ?? camInfo?.previewUrl ?? camInfo?.thumbnail ?? null;
+      console.log(`[gate-monitor/scan] EEN camera info keys: ${Object.keys(camInfo ?? {}).join(', ')}`);
+    }
+  } catch { /* non-fatal */ }
+
+  // Step 2: Try image URLs in order — EEN-provided URL first, then standard variants
+  const candidates = [
+    ...(eenImageUrl ? [eenImageUrl] : []),
+    `${baseUrl}/image`,
+    `${baseUrl}/image?timestamp=${nowIso}`,
+    `${baseUrl}/image?type=preview`,
+    `${baseUrl}/image?type=main`,
+  ];
+
+  let imgRes: Response | null = null;
+  let usedUrl = '';
+  for (const url of candidates) {
+    const r = await fetch(url, { headers: imgHeaders, signal: AbortSignal.timeout(8000) });
+    if (r.ok && r.headers.get('content-type')?.startsWith('image/')) {
+      imgRes = r; usedUrl = url; break;
+    }
+    console.log(`[gate-monitor/scan] ${url} → ${r.status} (${r.headers.get('content-type')})`);
+  }
+
+  if (!imgRes) {
     return NextResponse.json(
       {
-        error: `EEN image fetch failed: HTTP ${imgRes.status}`,
+        error: `EEN image not available for this camera (tried ${candidates.length} URL variants)`,
         debug: {
-          url:        imageUrl,
-          esn:        cam.een_camera_id,
+          tried:          candidates,
+          een_image_url:  eenImageUrl,
+          esn:            cam.een_camera_id,
           cluster,
-          account_id: cam.account_id,
-          has_token:  !!token,
-          has_apikey: !!apiKey,
+          account_id:     cam.account_id,
+          has_token:      !!token,
+          has_apikey:     !!apiKey,
         },
       },
       { status: 502 }
     );
   }
+  console.log(`[gate-monitor/scan] Image fetched via: ${usedUrl}`);
 
   const imageBuffer  = Buffer.from(await imgRes.arrayBuffer());
   const base64Image  = imageBuffer.toString('base64');
