@@ -882,7 +882,11 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
         body:    JSON.stringify({ cameraId: cam.id }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Scan failed');
+      if (!res.ok) {
+        // Preserve debug info from error response
+        setScanResult({ image_data: '', gates: [], scanned_at: '', error: data.error ?? 'Scan failed', debug: data.debug });
+        return;
+      }
       setScanResult(data);
     } catch (err: any) {
       setScanResult({ image_data: '', gates: [], scanned_at: '', error: err.message });
