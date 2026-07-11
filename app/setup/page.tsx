@@ -752,6 +752,226 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
   );
 }
 
+// ─── Gate Monitor Config Sub-panel ───────────────────────────────────────────
+// Shown inside CameraConfigPanel for EEN cameras only.
+// Saves independently via /api/gate-monitor/configure.
+
+const DEFAULT_GATE_LABELS = ['Main Gate', 'Resident', 'Guest'];
+
+interface GateConfig {
+  gate_index:             number;
+  gate_label:             string;
+  idle_threshold_seconds: number;
+  enabled:                boolean;
+}
+
+function GateMonitorConfig({ cam }: { cam: Camera }) {
+  const [loading,       setLoading]      = useState(true);
+  const [saving,        setSaving]       = useState(false);
+  const [saveMsg,       setSaveMsg]      = useState<string | null>(null);
+  const [testing,       setTesting]      = useState(false);
+  const [testMsg,       setTestMsg]      = useState<string | null>(null);
+  const [gateEnabled,   setGateEnabled]  = useState(false);
+  const [gateCount,     setGateCount]    = useState(1);
+  const [gateLabels,    setGateLabels]   = useState<string[]>(['Main Gate', 'Resident', 'Guest']);
+  const [idleThreshold, setIdleThreshold] = useState(300);
+
+  // Load existing config on mount
+  useEffect(() => {
+    if (!cam.een_camera_id) { setLoading(false); return; }
+    fetch(`/api/gate-monitor/configure?cameraId=${cam.id}`)
+      .then(r => r.json())
+      .then(data => {
+        const gates: GateConfig[] = data.gates ?? [];
+        if (gates.length > 0) {
+          setGateEnabled(true);
+          setGateCount(gates.length);
+          setGateLabels(gates.map(g => g.gate_label));
+          setIdleThreshold(gates[0].idle_threshold_seconds);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [cam.id, cam.een_camera_id]);
+
+  const save = async () => {
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      const gates = gateEnabled
+        ? Array.from({ length: gateCount }, (_, i) => ({
+            gate_index:             i,
+            gate_label:             gateLabels[i] || DEFAULT_GATE_LABELS[i] || `Gate ${i + 1}`,
+            idle_threshold_seconds: idleThreshold,
+            enabled:                true,
+          }))
+        : [];
+
+      const res = await fetch('/api/gate-monitor/configure', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ cameraId: cam.id, gates }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Save failed');
+      setSaveMsg(`✓ Saved — ${gates.length} gate${gates.length !== 1 ? 's' : ''} configured`);
+    } catch (err: any) {
+      setSaveMsg(`✗ ${err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const test = async () => {
+    setTesting(true);
+    setTestMsg(null);
+    try {
+      const res = await fetch('/api/gate-monitor/trigger', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ cameraId: cam.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Trigger failed');
+      setTestMsg(`✓ Monitoring active for 5min — ${data.gates?.join(', ')}`);
+    } catch (err: any) {
+      setTestMsg(`✗ ${err.message}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  // Only show for EEN cameras (Vision requires EEN image API)
+  if (!cam.een_camera_id) return null;
+  if (loading) return (
+    <div className="flex items-center gap-2 py-2">
+      <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+      <span className="text-[10px] text-slate-600">Loading gate config…</span>
+    </div>
+  );
+
+  const minutesDisplay = idleThreshold >= 60
+    ? `${Math.round(idleThreshold / 60)}min`
+    : `${idleThreshold}s`;
+
+  return (
+    <div className="border-t border-white/[0.04] pt-3 mt-1">
+      {/* Header + toggle */}
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-3 h-3 text-emerald-400 shrink-0">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21" />
+          </svg>
+        </div>
+        <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+          Gate Monitor (Vision AI)
+        </span>
+        <div className="ml-auto">
+          <Toggle checked={gateEnabled} onChange={() => setGateEnabled(p => !p)} />
+        </div>
+      </div>
+
+      {gateEnabled && (
+        <div className="space-y-3">
+          {/* Gate count */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-500 w-24 shrink-0">Gates in frame</span>
+            <div className="flex gap-1">
+              {[1, 2, 3].map(n => (
+                <button
+                  key={n}
+                  onClick={() => setGateCount(n)}
+                  className={`w-7 h-6 rounded text-[10px] font-semibold border transition-all
+                    ${gateCount === n
+                      ? 'bg-indigo-600/40 border-indigo-500/50 text-indigo-300'
+                      : 'bg-white/[0.03] border-white/[0.06] text-slate-500 hover:text-slate-300'
+                    }`}
+                >{n}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Gate labels */}
+          {Array.from({ length: gateCount }, (_, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <span className="text-[10px] text-slate-600 w-24 shrink-0">
+                Gate {i + 1} label
+              </span>
+              <input
+                value={gateLabels[i] ?? ''}
+                onChange={e => setGateLabels(prev => {
+                  const next = [...prev];
+                  next[i] = e.target.value;
+                  return next;
+                })}
+                placeholder={DEFAULT_GATE_LABELS[i] ?? `Gate ${i + 1}`}
+                className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded px-2 py-1 text-[10px] text-slate-300 placeholder-slate-700 focus:outline-none focus:border-indigo-500/50"
+              />
+            </div>
+          ))}
+
+          {/* Idle threshold */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-500 w-24 shrink-0">Alert after</span>
+            <div className="flex items-center gap-2 flex-1">
+              <input
+                type="range"
+                min={60}
+                max={900}
+                step={30}
+                value={idleThreshold}
+                onChange={e => setIdleThreshold(Number(e.target.value))}
+                className="flex-1 accent-indigo-500"
+              />
+              <span className="text-[10px] text-indigo-300 font-mono w-10 text-right shrink-0">
+                {minutesDisplay}
+              </span>
+            </div>
+          </div>
+          <p className="text-[9px] text-slate-600 leading-relaxed -mt-1">
+            Gate open with no active traffic for this long → P1 alarm. Rush hour traffic resets the timer.
+          </p>
+
+          {/* Save + Test */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={save}
+              disabled={saving}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-emerald-600/20 hover:bg-emerald-600/40 border border-emerald-500/30 text-emerald-300 text-[10px] font-semibold transition-all disabled:opacity-40"
+            >
+              {saving
+                ? <div className="w-3 h-3 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                : null}
+              {saving ? 'Saving…' : 'Save Gate Config'}
+            </button>
+            <button
+              onClick={test}
+              disabled={testing || !gateEnabled}
+              title={!gateEnabled ? 'Enable Gate Monitor first' : 'Open a 5-min monitoring window to test Vision AI now'}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/30 text-indigo-300 text-[10px] font-semibold transition-all disabled:opacity-40"
+            >
+              {testing
+                ? <div className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                : <span>▶</span>}
+              {testing ? 'Testing…' : 'Test Now'}
+            </button>
+            {saveMsg && (
+              <span className={`text-[10px] ${saveMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>
+                {saveMsg}
+              </span>
+            )}
+          </div>
+          {testMsg && (
+            <p className={`text-[9px] mt-1 ${testMsg.startsWith('✓') ? 'text-indigo-400' : 'text-red-400'}`}>
+              {testMsg}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Camera Config Panel ──────────────────────────────────────────────────────
 // Rendered inline below a camera row when the gear icon is clicked.
 // Must be a real component (not an IIFE) so React hooks work correctly.
@@ -862,6 +1082,9 @@ function CameraConfigPanel({ cam, allTypeIds, isSaving, onSave }: CameraConfigPa
           </div>
         )}
       </div>
+
+      {/* Gate Monitor — Vision AI gate open detection */}
+      <GateMonitorConfig cam={cam} />
 
       {/* Save button */}
       <button

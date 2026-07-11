@@ -1,32 +1,41 @@
 // app/api/cron/gate-monitor/route.ts
 //
-// Vercel Cron — runs every 5 minutes
-// Checks for gate/door alarms that have been open (unresolved) for 5+ minutes
-// and escalates them to P1 with a "Gate Stuck Open" alert if not already handled.
+// Vercel Cron — runs every minute  (vercel.json: "* * * * *")
 //
-// Add to vercel.json:
-//   { "path": "/api/cron/gate-monitor", "schedule": "*/5 * * * *" }
+// Vision-based gate monitoring using Claude Haiku + EEN image API.
+// Replaces the old rule-based alarm escalation approach.
 //
-// Gate event types we monitor:
-//   een.objectIntrusionEvent.v1  — object in region (often gates/barriers)
-//   een.personTailgateEvent.v1   — tailgate through gate
+// Flow:
+//   1. Find gate_monitor_states rows where monitoring_until > now()
+//   2. Group by camera so each image is fetched once per camera
+//   3. For each active camera → fetch EEN JPEG → Claude Vision → structured JSON
+//   4. Per-gate state machine:
+//        closed      → no action (or fire gate_restored if was stuck)
+//        open_active → traffic flowing, reset idle timer
+//        open_idle   → start/continue idle timer
+//        stuck_open  → idle ≥ threshold → fire P1 alarm + site_events
+//   5. Update gate_monitor_states
 //
-// Custom gate-open detection uses site_name pattern matching as a fallback
-// until cameras are tagged with gate/door metadata.
+// Cost: ~$0.0002/Vision call. Only runs while monitoring_until > now().
+// Monitoring windows are opened by the EEN motion webhook on gate cameras.
 
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { NextResponse }     from 'next/server';
+import { createClient }     from '@supabase/supabase-js';
+import Anthropic            from '@anthropic-ai/sdk';
+import { getValidEENToken } from '@/lib/een';
 
-const GATE_EVENT_TYPES = new Set([
-  'een.objectIntrusionEvent.v1',
-  'een.personTailgateEvent.v1',
-]);
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
-// Keywords in event_label that suggest a gate/door is involved
-const GATE_KEYWORDS = ['gate', 'door', 'entry', 'exit', 'access', 'barrier'];
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface GateVisionResult {
+  label:           string;
+  status:          'open' | 'closed' | 'partial';
+  traffic_flowing: boolean;
+  vehicle_present: boolean;
+  confidence:      number;
+}
 
-const FIVE_MINUTES_MS = 5 * 60 * 1000;
-
+// ─── Handler ──────────────────────────────────────────────────────────────────
 export async function GET(request: Request) {
   const authHeader = request.headers.get('authorization');
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -38,63 +47,358 @@ export async function GET(request: Request) {
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 
-  const now        = new Date();
-  const cutoffTime = new Date(now.getTime() - FIVE_MINUTES_MS).toISOString();
+  const now = new Date();
 
-  // Find pending alarms older than 5 minutes that may be gate-related
-  const { data: staleAlarms } = await supabase
-    .from('alarms')
-    .select('id, priority, event_type, event_label, site_name, zone_id, account_id, created_at, triage_status')
-    .eq('status', 'pending')
-    .lt('created_at', cutoffTime)  // older than 5 minutes
-    .neq('priority', 'P1');        // P1 already escalated
+  // ── 1. Find all gate states with active monitoring windows ─────────────────
+  const { data: activeStates, error: stateErr } = await supabase
+    .from('gate_monitor_states')
+    .select(`
+      camera_id,
+      gate_label,
+      status,
+      idle_since,
+      stuck_alarm_id,
+      monitoring_until,
+      cameras (
+        id,
+        name,
+        een_camera_id,
+        account_id,
+        zone_id,
+        zones ( name ),
+        gate_camera_configs ( gate_label, idle_threshold_seconds, enabled )
+      )
+    `)
+    .gt('monitoring_until', now.toISOString());
 
-  if (!staleAlarms?.length) {
-    return NextResponse.json({ checked: 0, escalated: 0 });
+  if (stateErr) {
+    console.error('[gate-monitor] State query error:', stateErr.message);
+    return NextResponse.json({ error: stateErr.message }, { status: 500 });
   }
 
-  let escalated = 0;
+  if (!activeStates?.length) {
+    return NextResponse.json({ checked: 0, message: 'No active gate monitoring windows' });
+  }
 
-  for (const alarm of staleAlarms) {
-    const isGateEvent = GATE_EVENT_TYPES.has(alarm.event_type);
-    const labelLower  = (alarm.event_label ?? '').toLowerCase();
-    const hasGateKeyword = GATE_KEYWORDS.some(kw => labelLower.includes(kw));
+  // ── 2. Group by camera_id — one image fetch per camera ────────────────────
+  const byCameraId = new Map<string, typeof activeStates>();
+  for (const state of activeStates) {
+    if (!byCameraId.has(state.camera_id)) byCameraId.set(state.camera_id, []);
+    byCameraId.get(state.camera_id)!.push(state);
+  }
 
-    if (!isGateEvent && !hasGateKeyword) continue;
+  let checked = 0, alerts = 0, restorations = 0;
 
-    const minutesOpen = Math.round((now.getTime() - new Date(alarm.created_at).getTime()) / 60_000);
+  for (const [cameraId, states] of byCameraId) {
+    try {
+      const cam = states[0].cameras as any;
+      if (!cam?.een_camera_id) {
+        console.warn(`[gate-monitor] Camera ${cameraId} has no een_camera_id — skipping`);
+        continue;
+      }
 
-    // Escalate to P1 with gate-stuck-open interpretation
-    const { error } = await supabase
-      .from('alarms')
-      .update({
-        priority:       'P1',
-        triage_status:  'escalated',
-        triage_result:  {
-          decision:        'escalate',
-          priority:        'P1',
-          interpretation:  `Gate or access point has been open/triggered for ${minutesOpen} minutes with no operator response. Possible stuck gate, unauthorized access, or system fault.`,
-          suggested_steps: [
-            'View live camera feed at the gate location immediately',
-            'Check if gate is physically stuck open or being held',
-            'Attempt remote gate close if Brivo access is available',
-            'Contact on-site security or property manager',
-            'If unauthorized access confirmed, consider dispatching security',
+      const accountId = cam.account_id ?? cam.zones?.account_id;
+      if (!accountId) continue;
+
+      // ── 3. Get EEN token + fetch JPEG ──────────────────────────────────────
+      const { token, cluster, apiKey } = await getValidEENToken(accountId);
+      if (!token || !cluster) {
+        console.warn(`[gate-monitor] No EEN token for account ${accountId}`);
+        continue;
+      }
+
+      const imgHeaders: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        Accept:        'image/jpeg',
+      };
+      if (apiKey) imgHeaders['x-api-key'] = apiKey;
+
+      const imgRes = await fetch(
+        `https://${cluster}/api/v3.0/cameras/${encodeURIComponent(cam.een_camera_id)}/image`,
+        { headers: imgHeaders, signal: AbortSignal.timeout(8000) }
+      );
+
+      if (!imgRes.ok) {
+        console.warn(`[gate-monitor] EEN image ${imgRes.status} for ${cam.name}`);
+        continue;
+      }
+
+      const base64Image = Buffer.from(await imgRes.arrayBuffer()).toString('base64');
+
+      // ── 4. Claude Haiku Vision ─────────────────────────────────────────────
+      const gateLabels = states.map(s => s.gate_label);
+
+      const visionMsg = await anthropic.messages.create({
+        model:      'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type:   'image',
+              source: { type: 'base64', media_type: 'image/jpeg', data: base64Image },
+            },
+            {
+              type: 'text',
+              text: buildVisionPrompt(gateLabels),
+            },
           ],
-          confidence:   90,
-          reasoning:    `Gate event unresolved for ${minutesOpen} minutes — auto-escalated by GateGuard monitor.`,
-          model:        'rule-based-gate-monitor',
-          processed_at: now.toISOString(),
-        },
-      })
-      .eq('id', alarm.id);
+        }],
+      });
 
-    if (!error) {
-      escalated++;
-      console.log(`[gate-monitor] ⚠ Escalated gate alarm ${alarm.id} at ${alarm.site_name} — open ${minutesOpen}min`);
+      const rawText = visionMsg.content[0].type === 'text' ? visionMsg.content[0].text : '';
+      let visionData: { gates: GateVisionResult[] };
+
+      try {
+        const cleaned = rawText.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+        visionData = JSON.parse(cleaned);
+      } catch {
+        console.warn(
+          `[gate-monitor] Vision JSON parse failed for ${cam.name}: ${rawText.slice(0, 200)}`
+        );
+        continue;
+      }
+
+      if (!Array.isArray(visionData?.gates)) continue;
+      checked++;
+
+      // ── 5. Per-gate state machine ──────────────────────────────────────────
+      for (const gateResult of visionData.gates) {
+        const state = states.find(s => s.gate_label === gateResult.label);
+        if (!state) continue;
+
+        const configs      = (cam.gate_camera_configs as any[]) ?? [];
+        const config       = configs.find((c: any) => c.gate_label === gateResult.label && c.enabled);
+        if (!config) continue;  // Gate disabled in config
+
+        const idleThresholdSecs = config.idle_threshold_seconds ?? 300;
+        const gateOpen          = gateResult.status === 'open' || gateResult.status === 'partial';
+        const isPartial         = gateResult.status === 'partial';
+        const isActive          = gateResult.traffic_flowing && !isPartial;
+
+        // ── CLOSED ──────────────────────────────────────────────────────────
+        if (!gateOpen) {
+          if (state.status === 'stuck_open') {
+            await fireGateRestored(supabase, cameraId, gateResult.label, state, cam, accountId);
+            restorations++;
+          }
+          await upsertState(supabase, cameraId, gateResult.label, {
+            status:          'closed',
+            idle_since:      null,
+            stuck_alarm_id:  null,
+            last_checked_at: now.toISOString(),
+          });
+          continue;
+        }
+
+        // ── OPEN + ACTIVE TRAFFIC ────────────────────────────────────────────
+        if (isActive) {
+          await upsertState(supabase, cameraId, gateResult.label, {
+            status:          'open_active',
+            idle_since:      null,
+            last_checked_at: now.toISOString(),
+          });
+          continue;
+        }
+
+        // ── OPEN + IDLE ──────────────────────────────────────────────────────
+        // Use existing idle_since to accumulate time; don't reset unless traffic flows
+        const idleSince   = state.idle_since ? new Date(state.idle_since) : now;
+        const idleSeconds = (now.getTime() - idleSince.getTime()) / 1000;
+        const thresholdHit = idleSeconds >= idleThresholdSecs || isPartial;
+
+        if (thresholdHit) {
+          if (state.status !== 'stuck_open') {
+            // First crossing — fire alarm
+            const alarmId = await fireGateStuckOpen(
+              supabase, cameraId, gateResult.label, cam, accountId, idleSeconds
+            );
+            alerts++;
+            await upsertState(supabase, cameraId, gateResult.label, {
+              status:           'stuck_open',
+              idle_since:       idleSince.toISOString(),
+              stuck_alarm_id:   alarmId,
+              last_checked_at:  now.toISOString(),
+              monitoring_until: new Date(now.getTime() + 30 * 60_000).toISOString(),
+            });
+          } else {
+            // Already alerted — extend monitoring window to catch restoration
+            await supabase
+              .from('gate_monitor_states')
+              .update({
+                last_checked_at:  now.toISOString(),
+                monitoring_until: new Date(now.getTime() + 30 * 60_000).toISOString(),
+              })
+              .eq('camera_id', cameraId)
+              .eq('gate_label', gateResult.label);
+          }
+        } else {
+          // Idle but below threshold — update idle timer
+          await upsertState(supabase, cameraId, gateResult.label, {
+            status:          'open_idle',
+            idle_since:      idleSince.toISOString(),
+            last_checked_at: now.toISOString(),
+          });
+        }
+      }
+
+    } catch (err: any) {
+      console.error(`[gate-monitor] Error on camera ${cameraId}:`, err.message);
     }
   }
 
-  console.log(`[gate-monitor] Checked ${staleAlarms.length} stale alarms, escalated ${escalated} gate events`);
-  return NextResponse.json({ checked: staleAlarms.length, escalated });
+  console.log(
+    `[gate-monitor] Done — ${checked} cameras, ${alerts} stuck alerts, ${restorations} restorations`
+  );
+  return NextResponse.json({ checked, alerts, restorations });
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function buildVisionPrompt(gateLabels: string[]): string {
+  const count = gateLabels.length;
+  return `You are a security camera AI monitoring a vehicle gate at a multifamily apartment community.
+This camera shows ${count} gate lane${count > 1 ? 's' : ''}: ${gateLabels.join(', ')}.
+
+Return ONLY valid JSON, no other text:
+{
+  "gates": [${gateLabels.map(l => `{"label":"${l}","status":"closed","traffic_flowing":false,"vehicle_present":false,"confidence":85}`).join(',')}]
+}
+
+For each gate use these exact values:
+- "status": "open" (barrier raised/retracted, lane passable) | "closed" (barrier blocking lane) | "partial" (stuck mid-way)
+- "traffic_flowing": true ONLY if vehicles are actively moving through RIGHT NOW
+- "vehicle_present": true if any vehicle visible in or near the opening (moving or stopped)
+- "confidence": 0-100. Use below 50 if the gate is not clearly visible in frame.
+If a labeled gate is not visible, return status "closed" with confidence 25.`;
+}
+
+async function upsertState(
+  supabase:  any,
+  cameraId:  string,
+  gateLabel: string,
+  fields:    Record<string, any>,
+) {
+  await supabase
+    .from('gate_monitor_states')
+    .upsert(
+      { camera_id: cameraId, gate_label: gateLabel, ...fields },
+      { onConflict: 'camera_id,gate_label' }
+    );
+}
+
+async function fireGateStuckOpen(
+  supabase:    any,
+  cameraId:    string,
+  gateLabel:   string,
+  cam:         any,
+  accountId:   string,
+  idleSeconds: number,
+): Promise<string | null> {
+  const siteName    = cam.zones?.name ?? cam.name ?? 'Unknown Site';
+  const minutesIdle = Math.round(idleSeconds / 60);
+
+  const { data: alarm } = await supabase
+    .from('alarms')
+    .insert({
+      priority:      'P1',
+      event_type:    'gate_stuck_open',
+      event_label:   `Gate Left Open — ${gateLabel}`,
+      site_name:     siteName,
+      camera_id:     cameraId,
+      zone_id:       cam.zone_id,
+      account_id:    accountId,
+      source:        'een',
+      status:        'pending',
+      created_at:    new Date().toISOString(),
+      triage_status: 'escalated',
+      triage_result: {
+        decision:        'escalate',
+        priority:        'P1',
+        interpretation:  `${gateLabel} has been idle-open for ${minutesIdle} minute${minutesIdle !== 1 ? 's' : ''} with no active traffic — confirmed by Vision AI. Possible stuck gate, mechanical fault, or unauthorized prop-open.`,
+        suggested_steps: [
+          `View live camera feed for ${gateLabel} immediately`,
+          'Check if the gate arm/barrier is physically stuck or being held open',
+          'Attempt remote close via Brivo access control if available',
+          'Contact on-site maintenance or property manager',
+          'If unauthorized access confirmed, dispatch security or police',
+        ],
+        confidence:   92,
+        reasoning:    `Vision AI confirmed ${gateLabel} idle-open for ${minutesIdle}min with no traffic.`,
+        model:        'claude-haiku-vision',
+        processed_at: new Date().toISOString(),
+      },
+    })
+    .select('id')
+    .single();
+
+  console.log(
+    `[gate-monitor] 🔴 STUCK OPEN: ${gateLabel} @ ${siteName} — ${minutesIdle}min → alarm ${alarm?.id}`
+  );
+
+  // Write to portal site_events (non-fatal if portal uses different Supabase)
+  try {
+    await supabase.from('site_events').insert({
+      zone_id:     cam.zone_id,
+      event_type:  'gate_stuck_open',
+      title:       `Gate Left Open — ${gateLabel}`,
+      description: `${gateLabel} at ${siteName} open with no traffic for ${minutesIdle}min. Vision AI confirmed idle. SOC alerted — P1.`,
+      severity:    'critical',
+      metadata:    { camera_id: cameraId, gate_label: gateLabel, idle_minutes: minutesIdle, alarm_id: alarm?.id },
+      created_at:  new Date().toISOString(),
+    });
+  } catch {
+    console.warn('[gate-monitor] site_events write failed (non-fatal)');
+  }
+
+  return alarm?.id ?? null;
+}
+
+async function fireGateRestored(
+  supabase:  any,
+  cameraId:  string,
+  gateLabel: string,
+  state:     any,
+  cam:       any,
+  accountId: string,
+): Promise<void> {
+  const siteName = cam.zones?.name ?? cam.name ?? 'Unknown Site';
+
+  // Auto-resolve the stuck alarm
+  if (state.stuck_alarm_id) {
+    await supabase
+      .from('alarms')
+      .update({ status: 'resolved' })
+      .eq('id', state.stuck_alarm_id);
+  }
+
+  // P4 audit-trail alarm (auto-resolved, surfaces in history)
+  await supabase.from('alarms').insert({
+    priority:    'P4',
+    event_type:  'gate_restored',
+    event_label: `Gate Restored — ${gateLabel}`,
+    site_name:   siteName,
+    camera_id:   cameraId,
+    zone_id:     cam.zone_id,
+    account_id:  accountId,
+    source:      'een',
+    status:      'resolved',
+    created_at:  new Date().toISOString(),
+  });
+
+  console.log(`[gate-monitor] 🟢 RESTORED: ${gateLabel} @ ${siteName}`);
+
+  try {
+    await supabase.from('site_events').insert({
+      zone_id:     cam.zone_id,
+      event_type:  'gate_restored',
+      title:       `Gate Restored — ${gateLabel}`,
+      description: `${gateLabel} at ${siteName} confirmed closed by Vision AI. Gate is now secure.`,
+      severity:    'info',
+      metadata:    { camera_id: cameraId, gate_label: gateLabel, prior_alarm_id: state.stuck_alarm_id },
+      created_at:  new Date().toISOString(),
+    });
+  } catch {
+    // Non-fatal
+  }
 }

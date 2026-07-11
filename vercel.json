@@ -10,7 +10,7 @@
     },
     {
       "path": "/api/cron/gate-monitor",
-      "schedule": "*/5 * * * *"
+      "schedule": "* * * * *"
     }
   ]
 }

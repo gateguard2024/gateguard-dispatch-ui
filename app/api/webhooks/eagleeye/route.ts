@@ -191,6 +191,13 @@ async function processEvent(supabase: any, event: EENEvent) {
     return;
   }
 
+  // ── Gate monitoring window — open BEFORE any alarm filters ────────────────
+  // Gate Vision monitoring runs 24/7 regardless of SOC schedule or event filters.
+  // A gate stuck open at 2pm is just as urgent as at 2am.
+  openGateMonitoringWindow(supabase, camera.id).catch(err =>
+    console.warn('[webhooks/eagleeye] Gate monitor window error (non-fatal):', err.message)
+  );
+
   // Check per-camera event type filter (monitored_events)
   // null = all types allowed; array = only listed types create alarms
   const allowedTypes: string[] | null = camera.monitored_events ?? null;
@@ -251,6 +258,39 @@ async function processEvent(supabase: any, event: EENEvent) {
   // snapshot_url populates ~1-2s later and triggers realtime update on the card.
   captureAlarmSnapshot(supabase, inserted.id, esn, camera.account_id).catch(err =>
     console.warn('[webhooks/eagleeye] Snapshot capture failed (non-fatal):', err.message)
+  );
+}
+
+// ─── Gate monitoring window ───────────────────────────────────────────────────
+// Called on every event for a camera. If the camera has gate_camera_configs,
+// sets monitoring_until = now + 10 min so the gate-monitor cron starts Vision polling.
+// If no gate config exists, exits cheaply (one query, no writes).
+
+async function openGateMonitoringWindow(supabase: any, cameraId: string): Promise<void> {
+  const { data: configs } = await supabase
+    .from('gate_camera_configs')
+    .select('gate_label')
+    .eq('camera_id', cameraId)
+    .eq('enabled', true);
+
+  if (!configs?.length) return;  // Not a gate camera — nothing to do
+
+  const monitoringUntil = new Date(Date.now() + 10 * 60_000).toISOString();
+
+  await supabase
+    .from('gate_monitor_states')
+    .upsert(
+      configs.map((gc: any) => ({
+        camera_id:        cameraId,
+        gate_label:       gc.gate_label,
+        monitoring_until: monitoringUntil,
+        last_checked_at:  new Date().toISOString(),
+      })),
+      { onConflict: 'camera_id,gate_label' }
+    );
+
+  console.log(
+    `[webhooks/eagleeye] Gate monitoring activated — camera ${cameraId}, ${configs.length} gate(s), until ${monitoringUntil}`
   );
 }
 
