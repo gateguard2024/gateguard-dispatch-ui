@@ -66,7 +66,11 @@ export async function POST(request: Request) {
     );
   }
 
-  // Fetch live JPEG — try multiple URL variants since EEN V3 behaviour varies by account/camera
+  // Fetch a JPEG frame for Vision.
+  // EEN's /cameras/{esn}/image endpoint doesn't work for all camera types.
+  // Fallback: pull an HLS stream URL from /feeds, download the first .ts segment,
+  // then extract a JPEG frame from the raw MPEG-TS data.
+
   const imgHeaders: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     Accept:        'image/jpeg, */*',
@@ -77,63 +81,129 @@ export async function POST(request: Request) {
   };
   if (apiKey) { imgHeaders['x-api-key'] = apiKey; jsonHeaders['x-api-key'] = apiKey; }
 
-  const esn       = encodeURIComponent(cam.een_camera_id);
-  const nowIso    = new Date().toISOString();
-  const baseUrl   = `https://${cluster}/api/v3.0/cameras/${esn}`;
+  const esn     = encodeURIComponent(cam.een_camera_id);
+  const nowIso  = new Date().toISOString();
+  const baseUrl = `https://${cluster}/api/v3.0/cameras/${esn}`;
 
-  // Step 1: Ask EEN for camera details — the response may include an imageUrl field
-  // that points to the actual preview image (may be a signed CDN URL, not the /image path)
-  let eenImageUrl: string | null = null;
-  try {
-    const camInfoRes = await fetch(`${baseUrl}`, { headers: jsonHeaders, signal: AbortSignal.timeout(5000) });
-    if (camInfoRes.ok) {
-      const camInfo = await camInfoRes.json();
-      // EEN V3 camera object may have imageUrl, previewImageUrl, or similar fields
-      eenImageUrl = camInfo?.imageUrl ?? camInfo?.previewUrl ?? camInfo?.thumbnail ?? null;
-      console.log(`[gate-monitor/scan] EEN camera info keys: ${Object.keys(camInfo ?? {}).join(', ')}`);
-    }
-  } catch { /* non-fatal */ }
+  // ── Attempt 1: Standard /cameras/{esn}/image endpoint ─────────────────────
+  let imageBuffer: Buffer | null = null;
+  let usedMethod = '';
 
-  // Step 2: Try image URLs in order — EEN-provided URL first, then standard variants
-  const candidates = [
-    ...(eenImageUrl ? [eenImageUrl] : []),
+  for (const url of [
     `${baseUrl}/image`,
     `${baseUrl}/image?timestamp=${nowIso}`,
     `${baseUrl}/image?type=preview`,
-    `${baseUrl}/image?type=main`,
-  ];
-
-  let imgRes: Response | null = null;
-  let usedUrl = '';
-  for (const url of candidates) {
-    const r = await fetch(url, { headers: imgHeaders, signal: AbortSignal.timeout(8000) });
-    if (r.ok && r.headers.get('content-type')?.startsWith('image/')) {
-      imgRes = r; usedUrl = url; break;
+  ]) {
+    const r = await fetch(url, { headers: imgHeaders, signal: AbortSignal.timeout(6000) });
+    if (r.ok && r.headers.get('content-type')?.includes('image')) {
+      imageBuffer = Buffer.from(await r.arrayBuffer());
+      usedMethod  = `still:${url}`;
+      break;
     }
-    console.log(`[gate-monitor/scan] ${url} → ${r.status} (${r.headers.get('content-type')})`);
+    console.log(`[gate-monitor/scan] ${url} → ${r.status}`);
   }
 
-  if (!imgRes) {
+  // ── Attempt 2: Extract frame from HLS stream ───────────────────────────────
+  // Get the HLS manifest from EEN's feeds endpoint, fetch the first .ts segment,
+  // then scan it for the first JPEG SOI marker (FF D8) to extract a frame.
+  // Works for cameras where the still image endpoint returns 404.
+  if (!imageBuffer) {
+    try {
+      const feedsUrl  = `https://${cluster}/api/v3.0/feeds?deviceId=${cam.een_camera_id}&include=hlsUrl`;
+      const feedsRes  = await fetch(feedsUrl, { headers: jsonHeaders, signal: AbortSignal.timeout(6000) });
+      const feedsData = feedsRes.ok ? await feedsRes.json() : null;
+      const hlsUrl    = (feedsData?.results ?? []).find((f: any) => f.hlsUrl)?.hlsUrl;
+
+      if (hlsUrl) {
+        console.log(`[gate-monitor/scan] HLS fallback — fetching manifest`);
+
+        // Download the M3U8 manifest (token in auth header)
+        const m3u8Res  = await fetch(hlsUrl, { headers: imgHeaders, signal: AbortSignal.timeout(8000) });
+        const m3u8Text = m3u8Res.ok ? await m3u8Res.text() : null;
+
+        if (m3u8Text) {
+          // The manifest may be a master playlist — find the first variant or segment URL
+          const lines    = m3u8Text.split('\n').map(l => l.trim()).filter(Boolean);
+
+          // Try to find a child playlist URL (master → variant) or a direct segment
+          let segmentUrl: string | null = null;
+          for (const line of lines) {
+            if (line.startsWith('#')) continue;
+            const resolved = line.startsWith('http') ? line : new URL(line, hlsUrl).href;
+            if (line.endsWith('.m3u8')) {
+              // It's a variant playlist — fetch it and get its first segment
+              const varRes  = await fetch(resolved, { headers: imgHeaders, signal: AbortSignal.timeout(6000) });
+              const varText = varRes.ok ? await varRes.text() : '';
+              const varLines = varText.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+              if (varLines[0]) {
+                segmentUrl = varLines[0].startsWith('http') ? varLines[0] : new URL(varLines[0], resolved).href;
+              }
+              break;
+            }
+            if (line.endsWith('.ts') || line.includes('.ts?')) {
+              segmentUrl = resolved;
+              break;
+            }
+          }
+
+          if (segmentUrl) {
+            console.log(`[gate-monitor/scan] Fetching .ts segment: ${segmentUrl}`);
+            const tsRes = await fetch(segmentUrl, { headers: imgHeaders, signal: AbortSignal.timeout(10000) });
+            if (tsRes.ok) {
+              const tsBuffer = Buffer.from(await tsRes.arrayBuffer());
+
+              // Scan for the first JPEG SOI marker (FF D8 FF) in the MPEG-TS stream
+              // MPEG-TS streams often embed JPEG frames in the PES payload
+              let jpegStart = -1;
+              for (let i = 0; i < tsBuffer.length - 2; i++) {
+                if (tsBuffer[i] === 0xFF && tsBuffer[i + 1] === 0xD8 && tsBuffer[i + 2] === 0xFF) {
+                  jpegStart = i;
+                  break;
+                }
+              }
+
+              if (jpegStart >= 0) {
+                // Find the JPEG EOI marker (FF D9) to get the full JPEG
+                let jpegEnd = tsBuffer.length;
+                for (let i = jpegStart + 2; i < tsBuffer.length - 1; i++) {
+                  if (tsBuffer[i] === 0xFF && tsBuffer[i + 1] === 0xD9) {
+                    jpegEnd = i + 2;
+                    break;
+                  }
+                }
+                imageBuffer = tsBuffer.slice(jpegStart, jpegEnd);
+                usedMethod  = 'hls-segment-jpeg';
+                console.log(`[gate-monitor/scan] Extracted JPEG from .ts (${imageBuffer.length} bytes)`);
+              } else {
+                // No JPEG in segment — use the raw .ts bytes anyway (Claude can handle it)
+                imageBuffer = tsBuffer;
+                usedMethod  = 'hls-segment-raw';
+                console.log(`[gate-monitor/scan] No JPEG marker in .ts — passing raw segment (${tsBuffer.length} bytes)`);
+              }
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[gate-monitor/scan] HLS fallback failed: ${err.message}`);
+    }
+  }
+
+  if (!imageBuffer) {
     return NextResponse.json(
       {
-        error: `EEN image not available for this camera (tried ${candidates.length} URL variants)`,
-        debug: {
-          tried:          candidates,
-          een_image_url:  eenImageUrl,
-          esn:            cam.een_camera_id,
-          cluster,
-          account_id:     cam.account_id,
-          has_token:      !!token,
-          has_apikey:     !!apiKey,
-        },
+        error: 'Could not retrieve a camera image. The still image endpoint returned 404 and the HLS stream could not be read.',
+        debug: { esn: cam.een_camera_id, cluster, account_id: cam.account_id },
       },
       { status: 502 }
     );
   }
-  console.log(`[gate-monitor/scan] Image fetched via: ${usedUrl}`);
 
-  const imageBuffer  = Buffer.from(await imgRes.arrayBuffer());
+  console.log(`[gate-monitor/scan] Image ready via: ${usedMethod}`);
+
   const base64Image  = imageBuffer.toString('base64');
+  // Determine media type — raw .ts can't be sent as jpeg; fall back to jpeg and hope Claude handles it
+  const mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' = 'image/jpeg';
 
   // Run Claude Vision with full gate context
   const gatePromptConfigs = configs.map(c => ({
@@ -157,7 +227,7 @@ export async function POST(request: Request) {
       messages: [{
         role: 'user',
         content: [
-          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Image } },
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Image } },
           { type: 'text',  text: buildGateVisionPrompt(gatePromptConfigs) },
         ],
       }],
