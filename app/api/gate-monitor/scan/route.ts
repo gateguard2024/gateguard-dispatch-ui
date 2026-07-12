@@ -260,10 +260,34 @@ export async function POST(request: Request) {
     );
   }
 
-  console.log(`[gate-monitor/scan] Image ready via: ${usedMethod}`);
+  console.log(`[gate-monitor/scan] Image ready via: ${usedMethod} (${imageBuffer.length} bytes)`);
 
-  const base64Image  = imageBuffer.toString('base64');
-  // Determine media type — raw .ts can't be sent as jpeg; fall back to jpeg and hope Claude handles it
+  // Validate the buffer is actually a JPEG (starts with FF D8 FF)
+  const isValidJpeg = imageBuffer.length > 3 &&
+    imageBuffer[0] === 0xFF && imageBuffer[1] === 0xD8 && imageBuffer[2] === 0xFF;
+
+  console.log(`[gate-monitor/scan] JPEG valid: ${isValidJpeg}, first bytes: ${
+    Array.from(imageBuffer.slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+  }`);
+
+  if (!isValidJpeg) {
+    return NextResponse.json(
+      {
+        error: `Image retrieved (${imageBuffer.length} bytes via ${usedMethod}) but is not a valid JPEG. First bytes: ${
+          Array.from(imageBuffer.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ')
+        }`,
+        debug: { esn: cam.een_camera_id, cluster, has_token: !!token, method: usedMethod, bytes: imageBuffer.length, hls: hlsDebug },
+      },
+      { status: 502 }
+    );
+  }
+
+  // Claude Vision max image size is 5MB base64 (~3.75MB raw). Warn if close.
+  if (imageBuffer.length > 3_500_000) {
+    console.warn(`[gate-monitor/scan] Image is ${imageBuffer.length} bytes — may exceed Claude's limit`);
+  }
+
+  const base64Image = imageBuffer.toString('base64');
   const mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' = 'image/jpeg';
 
   // Run Claude Vision with full gate context
