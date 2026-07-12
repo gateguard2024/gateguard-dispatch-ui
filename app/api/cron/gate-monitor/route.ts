@@ -24,6 +24,7 @@ import { createClient }          from '@supabase/supabase-js';
 import Anthropic                 from '@anthropic-ai/sdk';
 import { getValidEENToken }      from '@/lib/een';
 import { buildGateVisionPrompt } from '@/lib/gate-vision';
+import { fetchEenCameraImage }   from '@/lib/een-image';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
@@ -138,23 +139,21 @@ export async function GET(request: Request) {
         continue;
       }
 
-      const imgHeaders: Record<string, string> = {
-        Authorization: `Bearer ${token}`,
-        Accept:        'image/jpeg',
-      };
-      if (apiKey) imgHeaders['x-api-key'] = apiKey;
-
-      const imgRes = await fetch(
-        `https://${cluster}/api/v3.0/cameras/${encodeURIComponent(cam.een_camera_id)}/image`,
-        { headers: imgHeaders, signal: AbortSignal.timeout(8000) }
+      // Use shared image strategy: still API → media JPEG → HLS + ffmpeg
+      const { buffer: imgBuffer, method: imgMethod, debug: imgDebug } = await fetchEenCameraImage(
+        cam.een_camera_id,
+        cluster,
+        token,
+        apiKey,
       );
 
-      if (!imgRes.ok) {
-        console.warn(`[gate-monitor] EEN image ${imgRes.status} for ${cam.name}`);
+      if (!imgBuffer) {
+        console.warn(`[gate-monitor] Could not get image for ${cam.name}:`, JSON.stringify(imgDebug));
         continue;
       }
 
-      const base64Image = Buffer.from(await imgRes.arrayBuffer()).toString('base64');
+      console.log(`[gate-monitor] Got image via ${imgMethod} (${imgBuffer.length}B) for ${cam.name}`);
+      const base64Image = imgBuffer.toString('base64');
 
       // ── 4. Claude Haiku Vision ─────────────────────────────────────────────
       const configs      = (cam.gate_camera_configs as any[]) ?? [];

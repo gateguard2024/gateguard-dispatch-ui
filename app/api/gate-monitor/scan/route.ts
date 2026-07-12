@@ -4,7 +4,7 @@
 // Used by the Setup page Vision Debug panel.
 //
 // POST { cameraId: string }
-// → fetches live EEN JPEG
+// → fetches live EEN JPEG via lib/een-image.ts (still API → media JPEG → HLS+ffmpeg)
 // → runs Claude Haiku Vision with gate type + region context
 // → returns { image_data, gates, scanned_at }
 //
@@ -15,6 +15,7 @@ import { createClient }          from '@supabase/supabase-js';
 import Anthropic                 from '@anthropic-ai/sdk';
 import { getValidEENToken }      from '@/lib/een';
 import { buildGateVisionPrompt } from '@/lib/gate-vision';
+import { fetchEenCameraImage }   from '@/lib/een-image';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
@@ -66,225 +67,40 @@ export async function POST(request: Request) {
     );
   }
 
-  // Fetch a JPEG frame for Vision.
-  // EEN's /cameras/{esn}/image endpoint doesn't work for all camera types.
-  // Fallback: pull an HLS stream URL from /feeds, download the first .ts segment,
-  // then extract a JPEG frame from the raw MPEG-TS data.
-
-  const imgHeaders: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    Accept:        'image/jpeg, */*',
-  };
-  const jsonHeaders: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-    Accept:        'application/json',
-  };
-  if (apiKey) { imgHeaders['x-api-key'] = apiKey; jsonHeaders['x-api-key'] = apiKey; }
-
-  const esn     = encodeURIComponent(cam.een_camera_id);
-  const nowIso  = new Date().toISOString();
-  const baseUrl = `https://${cluster}/api/v3.0/cameras/${esn}`;
-
-  // ── Attempt 1: Standard /cameras/{esn}/image endpoint ─────────────────────
-  let imageBuffer: Buffer | null = null;
-  let usedMethod = '';
-
-  for (const url of [
-    `${baseUrl}/image`,
-    `${baseUrl}/image?timestamp=${nowIso}`,
-    `${baseUrl}/image?type=preview`,
-  ]) {
-    const r = await fetch(url, { headers: imgHeaders, signal: AbortSignal.timeout(3000) });
-    if (r.ok && r.headers.get('content-type')?.includes('image')) {
-      imageBuffer = Buffer.from(await r.arrayBuffer());
-      usedMethod  = `still:${url}`;
-      break;
-    }
-    console.log(`[gate-monitor/scan] ${url} → ${r.status}`);
-  }
-
-  // ── Attempt 2: Extract frame from HLS stream ───────────────────────────────
-  // Get HLS URL from /feeds (same endpoint SmartVideoPlayer uses), download the
-  // first .ts segment, extract the first JPEG frame from the MPEG-TS stream.
-  const hlsDebug: Record<string, any> = {};
-  if (!imageBuffer) {
-    try {
-      // HLS manifests need these headers — NOT image/jpeg Accept
-      const hlsHeaders: Record<string, string> = {
-        Authorization: `Bearer ${token}`,
-        Accept:        'application/vnd.apple.mpegurl, application/x-mpegurl, */*',
-      };
-      const tsHeaders: Record<string, string> = {
-        Authorization: `Bearer ${token}`,
-        Accept:        'video/MP2T, */*',
-      };
-      if (apiKey) { hlsHeaders['x-api-key'] = apiKey; tsHeaders['x-api-key'] = apiKey; }
-
-      const feedsUrl  = `https://${cluster}/api/v3.0/feeds?deviceId=${cam.een_camera_id}&include=hlsUrl`;
-      const feedsRes  = await fetch(feedsUrl, { headers: jsonHeaders, signal: AbortSignal.timeout(6000) });
-      hlsDebug.feeds_status = feedsRes.status;
-
-      const feedsData = feedsRes.ok ? await feedsRes.json() : null;
-      const hlsUrl    = (feedsData?.results ?? []).find((f: any) => f.hlsUrl)?.hlsUrl ?? null;
-      hlsDebug.hls_url = hlsUrl ? hlsUrl.slice(0, 80) + '…' : null;
-      hlsDebug.feed_count = feedsData?.results?.length ?? 0;
-
-      if (hlsUrl) {
-        // ── Attempt 2a: EEN media server JPEG endpoint ─────────────────────
-        // EEN media servers typically expose a parallel JPEG snapshot endpoint at
-        // /media/streams/main/jpg/getJpeg with the same query params as the HLS URL.
-        // e.g. /media/streams/main/hls/getPlaylist?e=... → /media/streams/main/jpg/getJpeg?e=...
-        try {
-          const jpegUrl = hlsUrl
-            .replace('/hls/getPlaylist', '/jpg/getJpeg')
-            .replace('/hls/getLivePlaylist', '/jpg/getJpeg');
-          if (jpegUrl !== hlsUrl) {
-            hlsDebug.jpeg_endpoint_tried = jpegUrl.slice(0, 80) + '…';
-            const jpegRes = await fetch(jpegUrl, {
-              headers: { Authorization: `Bearer ${token}`, Accept: 'image/jpeg, */*' },
-              signal:  AbortSignal.timeout(10000),
-            });
-            hlsDebug.jpeg_endpoint_status = jpegRes.status;
-            hlsDebug.jpeg_endpoint_type   = jpegRes.headers.get('content-type');
-            if (jpegRes.ok && jpegRes.headers.get('content-type')?.includes('image')) {
-              imageBuffer = Buffer.from(await jpegRes.arrayBuffer());
-              usedMethod  = 'media-jpeg-endpoint';
-              console.log(`[gate-monitor/scan] ✓ Got JPEG from media server endpoint (${imageBuffer.length} bytes)`);
-            }
-          }
-        } catch (e: any) {
-          hlsDebug.jpeg_endpoint_error = e.message;
-        }
-
-        if (imageBuffer) {
-          // Skip HLS segment approach — we got the image from the JPEG endpoint
-        } else {
-        // EEN media server requires Bearer token auth — same as /api/cameras/proxy.
-        // Media servers are slower than API servers; use generous timeouts.
-        const authHlsHeaders = {
-          Authorization: `Bearer ${token}`,
-          Accept:        'application/vnd.apple.mpegurl, application/x-mpegurl, */*',
-        };
-        const authTsHeaders = {
-          Authorization: `Bearer ${token}`,
-          Accept:        'video/MP2T, */*',
-        };
-
-        // Fetch the M3U8 master playlist — 25s timeout for media servers
-        const m3u8Res  = await fetch(hlsUrl, { headers: authHlsHeaders, signal: AbortSignal.timeout(25000) });
-        hlsDebug.manifest_status = m3u8Res.status;
-        hlsDebug.manifest_type   = m3u8Res.headers.get('content-type');
-
-        const m3u8Text = m3u8Res.ok ? await m3u8Res.text() : null;
-        hlsDebug.manifest_lines = m3u8Text?.split('\n').length ?? 0;
-        if (!m3u8Res.ok) hlsDebug.manifest_body = await m3u8Res.text().catch(() => '');
-
-        if (m3u8Text) {
-          const lines = m3u8Text.split('\n').map(l => l.trim()).filter(Boolean);
-          let segmentUrl: string | null = null;
-
-          for (const line of lines) {
-            if (line.startsWith('#')) continue;
-            const resolved = line.startsWith('http') ? line : new URL(line, hlsUrl).href;
-
-            if (line.endsWith('.m3u8') || line.includes('.m3u8?')) {
-              // Master → variant playlist; fetch it and grab first segment
-              const varRes   = await fetch(resolved, { headers: authHlsHeaders, signal: AbortSignal.timeout(20000) });
-              const varText  = varRes.ok ? await varRes.text() : '';
-              hlsDebug.variant_status = varRes.status;
-              const varLines = varText.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
-              hlsDebug.variant_segments = varLines.length;
-              if (varLines[0]) {
-                segmentUrl = varLines[0].startsWith('http') ? varLines[0] : new URL(varLines[0], resolved).href;
-              }
-              break;
-            }
-            if (line.endsWith('.ts') || line.includes('.ts?')) {
-              segmentUrl = resolved; break;
-            }
-          }
-
-          hlsDebug.segment_url = segmentUrl ? segmentUrl.slice(0, 80) + '…' : null;
-
-          if (segmentUrl) {
-            const tsRes = await fetch(segmentUrl, { headers: authTsHeaders, signal: AbortSignal.timeout(25000) });
-            hlsDebug.segment_status = tsRes.status;
-            hlsDebug.segment_type   = tsRes.headers.get('content-type');
-
-            if (tsRes.ok) {
-              const tsBuffer = Buffer.from(await tsRes.arrayBuffer());
-              hlsDebug.segment_bytes = tsBuffer.length;
-
-              // Scan for JPEG SOI marker (FF D8 FF) in the MPEG-TS PES payload
-              let jpegStart = -1;
-              for (let i = 0; i < tsBuffer.length - 2; i++) {
-                if (tsBuffer[i] === 0xFF && tsBuffer[i + 1] === 0xD8 && tsBuffer[i + 2] === 0xFF) {
-                  jpegStart = i; break;
-                }
-              }
-              hlsDebug.jpeg_found = jpegStart >= 0;
-
-              if (jpegStart >= 0) {
-                let jpegEnd = tsBuffer.length;
-                for (let i = jpegStart + 2; i < tsBuffer.length - 1; i++) {
-                  if (tsBuffer[i] === 0xFF && tsBuffer[i + 1] === 0xD9) { jpegEnd = i + 2; break; }
-                }
-                imageBuffer = tsBuffer.slice(jpegStart, jpegEnd);
-                usedMethod  = 'hls-segment-jpeg';
-                console.log(`[gate-monitor/scan] ✓ Extracted JPEG from .ts (${imageBuffer.length} bytes)`);
-              }
-              // Note: raw .ts can't be sent to Claude Vision — only use if JPEG found
-            }
-          }
-        }
-        } // end else (jpeg endpoint failed)
-      }
-    } catch (err: any) {
-      hlsDebug.error = err.message;
-      console.warn(`[gate-monitor/scan] HLS fallback error: ${err.message}`);
-    }
-  }
+  // ── Fetch JPEG via shared strategy: still API → media JPEG → HLS + ffmpeg ──
+  const { buffer: imageBuffer, method: usedMethod, debug } = await fetchEenCameraImage(
+    cam.een_camera_id,
+    cluster,
+    token,
+    apiKey,
+  );
 
   if (!imageBuffer) {
     return NextResponse.json(
       {
-        error: 'Could not retrieve a camera image — still image endpoint returned 404 and HLS frame extraction failed.',
-        debug: {
-          esn:       cam.een_camera_id,
-          cluster,
-          has_token: !!token,
-          hls:       hlsDebug,
-        },
+        error: 'Could not retrieve a camera image — all methods failed (still API 404, media JPEG 404, HLS ffmpeg failed).',
+        debug: { esn: cam.een_camera_id, cluster, has_token: !!token, ...debug },
       },
       { status: 502 }
     );
   }
 
-  console.log(`[gate-monitor/scan] Image ready via: ${usedMethod} (${imageBuffer.length} bytes)`);
-
-  // Validate the buffer is actually a JPEG (starts with FF D8 FF)
+  // Validate JPEG header (FF D8 FF)
   const isValidJpeg = imageBuffer.length > 3 &&
     imageBuffer[0] === 0xFF && imageBuffer[1] === 0xD8 && imageBuffer[2] === 0xFF;
 
-  console.log(`[gate-monitor/scan] JPEG valid: ${isValidJpeg}, first bytes: ${
-    Array.from(imageBuffer.slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join(' ')
-  }`);
+  console.log(`[gate-monitor/scan] ${usedMethod} → ${imageBuffer.length}B, jpeg=${isValidJpeg}`);
 
   if (!isValidJpeg) {
     return NextResponse.json(
       {
-        error: `Image retrieved (${imageBuffer.length} bytes via ${usedMethod}) but is not a valid JPEG. First bytes: ${
+        error: `Image retrieved (${imageBuffer.length}B via ${usedMethod}) but not a valid JPEG. First bytes: ${
           Array.from(imageBuffer.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join(' ')
         }`,
-        debug: { esn: cam.een_camera_id, cluster, has_token: !!token, method: usedMethod, bytes: imageBuffer.length, hls: hlsDebug },
+        debug: { esn: cam.een_camera_id, cluster, has_token: !!token, method: usedMethod, ...debug },
       },
       { status: 502 }
     );
-  }
-
-  // Claude Vision max image size is 5MB base64 (~3.75MB raw). Warn if close.
-  if (imageBuffer.length > 3_500_000) {
-    console.warn(`[gate-monitor/scan] Image is ${imageBuffer.length} bytes — may exceed Claude's limit`);
   }
 
   const base64Image = imageBuffer.toString('base64');
@@ -333,6 +149,7 @@ export async function POST(request: Request) {
     configs,
     gates:       visionData.gates,
     image_data:  `data:image/jpeg;base64,${base64Image}`,
+    method:      usedMethod,
     scanned_at:  new Date().toISOString(),
   });
 }
