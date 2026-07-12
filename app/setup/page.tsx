@@ -788,8 +788,9 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
     image_data: string;
     gates: Array<{ label: string; status: string; traffic_flowing: boolean; vehicle_present: boolean; confidence: number }>;
     scanned_at: string;
+    method?: string;
     error?: string;
-    debug?: { esn?: string; cluster?: string; has_token?: boolean; hls?: Record<string, any> };
+    debug?: Record<string, any>;
   } | null>(null);
   const [gateEnabled,   setGateEnabled]  = useState(false);
   const [gateCount,     setGateCount]    = useState(1);
@@ -1159,16 +1160,28 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
                             ref={imgRef}
                             src={scanResult.image_data}
                             alt="Gate camera snapshot"
-                            className="w-full object-cover max-h-56 block"
+                            className="w-full object-cover max-h-64 block"
                             draggable={false}
                           />
-                          {/* Draw saved region overlays */}
+                          {/* Region overlays — colored boxes with AI verdict inside */}
                           {Array.from({ length: gateCount }, (_, i) => {
                             const r = gateRegions[i];
                             if (!r) return null;
                             const REGION_COLORS = ['#818cf8','#34d399','#fb923c'];
-                            const color = REGION_COLORS[i % REGION_COLORS.length];
-                            const label = gateLabels[i] || DEFAULT_GATE_LABELS[i] || `Gate ${i+1}`;
+                            const color     = REGION_COLORS[i % REGION_COLORS.length];
+                            const label     = gateLabels[i] || DEFAULT_GATE_LABELS[i] || `Gate ${i+1}`;
+                            // Find this gate's AI result (match by label)
+                            const aiResult  = scanResult.gates.find(g => g.label === label);
+                            const corrected = aiResult ? corrections[aiResult.label] : null;
+                            const displayStatus = corrected ?? aiResult?.status;
+                            const statusIcon =
+                              displayStatus === 'closed'  ? '✓' :
+                              displayStatus === 'open'    ? '!' :
+                              displayStatus === 'partial' ? '~' : '?';
+                            const statusBg =
+                              displayStatus === 'closed'  ? '#10b981' :
+                              displayStatus === 'open'    ? '#ef4444' :
+                              displayStatus === 'partial' ? '#f59e0b' : '#64748b';
                             return (
                               <div
                                 key={i}
@@ -1178,19 +1191,39 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
                                   top:    `${r.y * 100}%`,
                                   width:  `${r.w * 100}%`,
                                   height: `${r.h * 100}%`,
-                                  borderColor: color,
+                                  borderColor: aiResult ? statusBg : color,
                                 }}
                               >
-                                <span
-                                  className="absolute top-0 left-0 text-[8px] font-bold px-1 leading-tight"
-                                  style={{ backgroundColor: color + 'cc', color: '#fff' }}
+                                {/* Gate name + AI verdict chip in top-left of box */}
+                                <div
+                                  className="absolute top-0 left-0 flex items-center gap-0.5"
+                                  style={{ transform: 'translateY(-100%)' }}
                                 >
-                                  {label}
-                                </span>
+                                  <span
+                                    className="text-[7px] font-bold px-1 py-0.5 leading-none"
+                                    style={{ backgroundColor: color + 'ee', color: '#fff' }}
+                                  >
+                                    {label}
+                                  </span>
+                                  {aiResult && (
+                                    <span
+                                      className="text-[7px] font-bold px-1 py-0.5 leading-none"
+                                      style={{ backgroundColor: statusBg + 'ee', color: '#fff' }}
+                                    >
+                                      {statusIcon} {displayStatus?.toUpperCase()}
+                                      {!corrected && ` ${aiResult.confidence}%`}
+                                      {corrected && ' (corrected)'}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             );
                           })}
-                          <span className="absolute top-1 right-1 bg-black/60 text-[8px] text-slate-300 px-1.5 py-0.5 rounded">
+                          {/* Timestamp + method in bottom corners */}
+                          <span className="absolute bottom-1 left-1 bg-black/60 text-[7px] text-slate-400 px-1 py-0.5 rounded">
+                            {(scanResult as any).method && `via ${(scanResult as any).method}`}
+                          </span>
+                          <span className="absolute bottom-1 right-1 bg-black/60 text-[8px] text-slate-300 px-1.5 py-0.5 rounded">
                             {new Date(scanResult.scanned_at).toLocaleTimeString()}
                           </span>
                         </div>
@@ -1232,17 +1265,17 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
                               )}
                               <span className={`ml-auto text-[9px] ${confColor}`}>{g.confidence}%</span>
                             </div>
-                            {/* Correction buttons — shown when AI call could be wrong */}
-                            {g.confidence < 80 && !corrected && (
+                            {/* Correction buttons — always shown so you can override a wrong AI call */}
+                            {!corrected && (
                               <div className="flex items-center gap-1 pl-24">
-                                <span className="text-[8px] text-slate-700">AI wrong?</span>
-                                {['open','closed','partial'].filter(s => s !== g.status).map(s => (
+                                <span className="text-[8px] text-slate-600">AI wrong?</span>
+                                {(['open','closed','partial'] as const).filter(s => s !== displayStatus).map(s => (
                                   <button
                                     key={s}
                                     onClick={() => setCorrections(p => ({ ...p, [g.label]: s }))}
                                     className="text-[8px] px-1.5 py-0.5 rounded border border-white/[0.06] text-slate-500 hover:text-slate-300 hover:border-white/20 transition-all"
                                   >
-                                    it's {s}
+                                    it&apos;s {s}
                                   </button>
                                 ))}
                               </div>
