@@ -18,8 +18,33 @@ const sharp = require('sharp');
 export interface AnnotationGate {
   label:     string;
   gate_type: string;
-  region:    { x: number; y: number; w: number; h: number } | null;
+  /** Accepts both legacy rect {x,y,w,h} and new polygon {points:[{x,y},...]} formats. */
+  region:    { x: number; y: number; w: number; h: number }
+           | { points: Array<{ x: number; y: number }> }
+           | null;
   color:     string; // hex, e.g. "#818cf8"
+}
+
+/** Normalise any region format to an array of pixel-space points. Returns null if no region. */
+function regionToPixelPoints(
+  region: AnnotationGate['region'],
+  width:  number,
+  height: number,
+): Array<{ x: number; y: number }> | null {
+  if (!region) return null;
+  if ('points' in region && region.points.length >= 3) {
+    return region.points.map(p => ({ x: Math.round(p.x * width), y: Math.round(p.y * height) }));
+  }
+  if ('x' in region) {
+    const { x, y, w, h } = region as { x:number; y:number; w:number; h:number };
+    return [
+      { x: Math.round(x       * width), y: Math.round(y       * height) },
+      { x: Math.round((x + w) * width), y: Math.round(y       * height) },
+      { x: Math.round((x + w) * width), y: Math.round((y + h) * height) },
+      { x: Math.round(x       * width), y: Math.round((y + h) * height) },
+    ];
+  }
+  return null;
 }
 
 // Colors for up to 6 gates
@@ -49,35 +74,40 @@ export async function annotateGateRegions(
     const svgParts: string[] = [];
 
     for (const gate of gates) {
-      if (!gate.region) continue;
+      const pts = regionToPixelPoints(gate.region, width, height);
+      if (!pts) continue;
 
-      const { x, y, w, h } = gate.region;
-      const px = Math.round(x * width);
-      const py = Math.round(y * height);
-      const pw = Math.round(w * width);
-      const ph = Math.round(h * height);
-      const c  = gate.color;
+      const c        = gate.color;
+      const gateNum  = gates.indexOf(gate) + 1;
+      const polyPts  = pts.map(p => `${p.x},${p.y}`).join(' ');
 
-      // Chip height / font size — scale with region size but clamp
+      // Bounding box from polygon points (for chip placement)
+      const pxVals = pts.map(p => p.x);
+      const pyVals = pts.map(p => p.y);
+      const pxMin  = Math.min(...pxVals);
+      const pyMin  = Math.min(...pyVals);
+      const pxMax  = Math.max(...pxVals);
+      const pyMax  = Math.max(...pyVals);
+      const pw     = pxMax - pxMin;
+      const ph     = pyMax - pyMin;
+
+      // Chip height / font size — scale with region height but clamp
       const chipH    = Math.max(18, Math.min(28, Math.round(ph * 0.14)));
       const fontSize  = Math.max(11, Math.min(20, Math.round(chipH * 0.68)));
-      const chipY     = Math.max(0, py - chipH); // chip sits above the box (or flush at top if no room)
-
-      // Gate number (1-indexed) for extra clarity
-      const gateNum   = gates.indexOf(gate) + 1;
+      const chipY     = Math.max(0, pyMin - chipH); // chip sits above the bounding box
       const chipLabel = `${gateNum}: ${gate.label.toUpperCase()}`;
 
       svgParts.push(`
         <!-- Gate ${gateNum}: ${gate.label} -->
-        <rect x="${px}" y="${py}" width="${pw}" height="${ph}"
-              fill="none" stroke="${c}" stroke-width="3" opacity="0.9" rx="3"/>
+        <polygon points="${polyPts}"
+                 fill="none" stroke="${c}" stroke-width="3" opacity="0.9"/>
 
         <!-- Label chip background -->
-        <rect x="${px}" y="${chipY}" width="${pw}" height="${chipH}"
+        <rect x="${pxMin}" y="${chipY}" width="${pw}" height="${chipH}"
               fill="${c}" opacity="0.85" rx="2"/>
 
         <!-- Label text -->
-        <text x="${px + 6}" y="${chipY + chipH - 5}"
+        <text x="${pxMin + 6}" y="${chipY + chipH - 5}"
               fill="white"
               font-size="${fontSize}"
               font-family="Arial, Helvetica, sans-serif"
@@ -87,9 +117,9 @@ export async function annotateGateRegions(
         </text>
 
         <!-- Corner indicator: gate type abbreviation -->
-        <rect x="${px + pw - 38}" y="${py + 3}" width="35" height="16"
+        <rect x="${pxMax - 38}" y="${pyMin + 3}" width="35" height="16"
               fill="black" opacity="0.55" rx="2"/>
-        <text x="${px + pw - 20}" y="${py + 14}"
+        <text x="${pxMax - 20}" y="${pyMin + 14}"
               fill="${c}"
               font-size="10"
               font-family="Arial, Helvetica, sans-serif"

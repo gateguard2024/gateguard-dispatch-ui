@@ -758,6 +758,7 @@ function BrivoTab({ accountId }: { accountId: string; zoneId: string }) {
 
 const DEFAULT_GATE_LABELS = ['Main Gate', 'Resident', 'Guest'];
 const DEFAULT_GATE_TYPE   = 'barrier_arm';
+const REGION_COLORS       = ['#818cf8', '#34d399', '#fb923c'];
 
 const GATE_TYPE_OPTIONS = [
   { value: 'barrier_arm',    label: 'Barrier Arm',    hint: 'Horizontal arm raises/lowers' },
@@ -766,13 +767,47 @@ const GATE_TYPE_OPTIONS = [
   { value: 'vertical_lift',  label: 'Vertical Lift',  hint: 'Panel lifts straight up' },
 ];
 
-type GateRegion = { x: number; y: number; w: number; h: number };
+type Pt = { x: number; y: number };
+// Canonical region format: 4-corner quadrilateral in 0-1 fractions (TL → TR → BR → BL).
+// Stored as JSONB in gate_camera_configs.region.
+type GateRegion = { points: [Pt, Pt, Pt, Pt] };
+
+// DB may return legacy rect format {x,y,w,h} — normalise on load.
+function normalizeRegion(r: unknown): GateRegion | null {
+  if (!r || typeof r !== 'object') return null;
+  const obj = r as Record<string, unknown>;
+  if (Array.isArray(obj.points) && obj.points.length >= 4) {
+    return { points: obj.points.slice(0, 4) as [Pt,Pt,Pt,Pt] };
+  }
+  if (Array.isArray(obj.points) && obj.points.length >= 3) {
+    const p = obj.points as Pt[];
+    return { points: [p[0], p[1], p[2], p[2]] as [Pt,Pt,Pt,Pt] };
+  }
+  if (typeof obj.x === 'number') {
+    const { x, y, w, h } = obj as { x:number; y:number; w:number; h:number };
+    return { points: [
+      { x,     y     },
+      { x:x+w, y     },
+      { x:x+w, y:y+h },
+      { x,     y:y+h },
+    ]};
+  }
+  return null;
+}
+function ptsBBox(pts: Pt[]) {
+  const xs = pts.map(p=>p.x), ys = pts.map(p=>p.y);
+  return { minX:Math.min(...xs), minY:Math.min(...ys), maxX:Math.max(...xs), maxY:Math.max(...ys) };
+}
+function ptsCentroid(pts: Pt[]): Pt {
+  return { x: pts.reduce((a,p)=>a+p.x,0)/pts.length, y: pts.reduce((a,p)=>a+p.y,0)/pts.length };
+}
+function clamp01(v: number) { return Math.max(0, Math.min(1, v)); }
 
 interface GateConfig {
   gate_index:             number;
   gate_label:             string;
   gate_type:              string;
-  region:                 GateRegion | null;
+  region:                 unknown;   // may be legacy {x,y,w,h} or new {points:[...]} — normalised on load
   idle_threshold_seconds: number;
   enabled:                boolean;
 }
@@ -798,9 +833,12 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
   const [gateTypes,     setGateTypes]    = useState<string[]>(['barrier_arm', 'barrier_arm', 'barrier_arm']);
   const [gateRegions,   setGateRegions]  = useState<(GateRegion | null)[]>([null, null, null]);
   const [idleThreshold, setIdleThreshold] = useState(300);
-  // Canvas drawing state
-  const [drawingFor,    setDrawingFor]   = useState<number | null>(null); // gate index being drawn
-  const [drawStart,     setDrawStart]    = useState<{ x: number; y: number } | null>(null);
+  // Region draw / edit state
+  const [drawingFor,    setDrawingFor]   = useState<number | null>(null); // gate targeted by the Draw button
+  const [liveRect,      setLiveRect]     = useState<{x0:number;y0:number;x1:number;y1:number}|null>(null);
+  const [activeCorner,  setActiveCorner] = useState<{gi:number;pi:number}|null>(null);
+  const [movingGate,    setMovingGate]   = useState<{gi:number;anchorMouse:Pt;anchorPts:Pt[]}|null>(null);
+  const drawStart = useRef<Pt|null>(null); // raw mousedown point for new-region drag
   const [corrections,   setCorrections]  = useState<Record<string, string>>({}); // label → corrected status
   const imgRef = useRef<HTMLImageElement>(null);
 
@@ -816,7 +854,7 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
           setGateCount(gates.length);
           setGateLabels(gates.map(g => g.gate_label));
           setGateTypes(gates.map(g => g.gate_type ?? DEFAULT_GATE_TYPE));
-          setGateRegions(gates.map(g => g.region ?? null));
+          setGateRegions(gates.map(g => normalizeRegion(g.region)));
           setIdleThreshold(gates[0].idle_threshold_seconds);
         }
       })
@@ -1091,69 +1129,131 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
                   </div>
                 ) : (
                   <>
-                    {/* Image with drag-to-draw region boxes */}
+                    {/* Image with polygon region drawing + editing */}
                     {scanResult.image_data && (
                       <div className="space-y-1">
-                        {/* Gate selector for drawing */}
+                        {/* Gate selector — draw new or redraw existing region */}
                         {gateEnabled && gateCount > 0 && (
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-[9px] text-slate-600">Draw region for:</span>
+                            <span className="text-[9px] text-slate-600">Regions:</span>
                             {Array.from({ length: gateCount }, (_, i) => {
-                              const label = gateLabels[i] || DEFAULT_GATE_LABELS[i] || `Gate ${i+1}`;
-                              const REGION_COLORS = ['#818cf8','#34d399','#fb923c'];
+                              const label    = gateLabels[i] || DEFAULT_GATE_LABELS[i] || `Gate ${i+1}`;
+                              const color    = REGION_COLORS[i % REGION_COLORS.length];
                               const hasRegion = !!gateRegions[i];
                               return (
-                                <button
-                                  key={i}
-                                  onClick={() => setDrawingFor(drawingFor === i ? null : i)}
-                                  className={`px-2 py-0.5 rounded text-[9px] font-medium border transition-all ${
-                                    drawingFor === i
-                                      ? 'border-transparent text-white'
-                                      : 'border-white/[0.08] text-slate-500 hover:text-slate-300'
-                                  }`}
-                                  style={drawingFor === i ? { backgroundColor: REGION_COLORS[i % REGION_COLORS.length] + '40', borderColor: REGION_COLORS[i % REGION_COLORS.length] } : {}}
-                                >
-                                  {hasRegion ? '✓ ' : ''}{label}
-                                </button>
+                                <div key={i} className="flex items-center gap-0.5">
+                                  <button
+                                    onClick={() => { setDrawingFor(drawingFor === i ? null : i); setLiveRect(null); }}
+                                    className={`px-2 py-0.5 rounded text-[9px] font-medium border transition-all ${
+                                      drawingFor === i
+                                        ? 'border-transparent text-white'
+                                        : 'border-white/[0.08] text-slate-500 hover:text-slate-300'
+                                    }`}
+                                    style={drawingFor === i ? { backgroundColor: color+'40', borderColor: color } : {}}
+                                  >
+                                    {hasRegion ? '↺ Redraw' : '+ Draw'} {label}
+                                  </button>
+                                  {hasRegion && (
+                                    <button
+                                      onClick={() => {
+                                        setGateRegions(prev => { const n=[...prev]; n[i]=null; return n; });
+                                        if (drawingFor === i) { setDrawingFor(null); setLiveRect(null); }
+                                      }}
+                                      className="text-[9px] text-slate-600 hover:text-red-400 px-1 transition-colors"
+                                      title={`Clear ${label} region`}
+                                    >✕</button>
+                                  )}
+                                </div>
                               );
                             })}
                             {drawingFor !== null && (
-                              <span className="text-[9px] text-violet-400 animate-pulse">drag on image →</span>
+                              <span className="text-[9px] text-violet-400 animate-pulse">drag on image to draw →</span>
+                            )}
+                            {gateRegions.some(r=>r) && drawingFor === null && (
+                              <span className="text-[9px] text-slate-600">drag corners to reshape · drag ✥ to move</span>
                             )}
                           </div>
                         )}
 
-                        {/* The image — click+drag draws a region box */}
+                        {/* The image — drag draws; corner handles reshape; ✥ moves */}
                         <div
                           className="relative rounded overflow-hidden border border-white/[0.06] select-none"
-                          style={{ cursor: drawingFor !== null ? 'crosshair' : 'default' }}
+                          style={{ cursor: drawingFor !== null ? 'crosshair' : (activeCorner ? 'grabbing' : movingGate ? 'grabbing' : 'default') }}
                           onMouseDown={e => {
-                            if (drawingFor === null || !imgRef.current) return;
+                            if (!imgRef.current) return;
                             const rect = imgRef.current.getBoundingClientRect();
-                            setDrawStart({
-                              x: (e.clientX - rect.left) / rect.width,
-                              y: (e.clientY - rect.top)  / rect.height,
-                            });
+                            const nx = (e.clientX - rect.left) / rect.width;
+                            const ny = (e.clientY - rect.top)  / rect.height;
+                            if (drawingFor !== null) {
+                              drawStart.current = { x: nx, y: ny };
+                              setLiveRect({ x0: nx, y0: ny, x1: nx, y1: ny });
+                            }
                           }}
-                          onMouseUp={e => {
-                            if (drawingFor === null || !drawStart || !imgRef.current) return;
+                          onMouseMove={e => {
+                            if (!imgRef.current) return;
                             const rect = imgRef.current.getBoundingClientRect();
-                            const ex = (e.clientX - rect.left)  / rect.width;
-                            const ey = (e.clientY - rect.top)   / rect.height;
-                            const x  = Math.min(drawStart.x, ex);
-                            const y  = Math.min(drawStart.y, ey);
-                            const w  = Math.abs(ex - drawStart.x);
-                            const h  = Math.abs(ey - drawStart.y);
-                            if (w > 0.02 && h > 0.02) {
-                              const idx = drawingFor;
+                            const nx = clamp01((e.clientX - rect.left) / rect.width);
+                            const ny = clamp01((e.clientY - rect.top)  / rect.height);
+                            if (drawStart.current && drawingFor !== null) {
+                              setLiveRect({ x0: drawStart.current.x, y0: drawStart.current.y, x1: nx, y1: ny });
+                            } else if (activeCorner) {
+                              const { gi, pi } = activeCorner;
                               setGateRegions(prev => {
                                 const next = [...prev];
-                                next[idx] = { x, y, w, h };
+                                const r = next[gi];
+                                if (!r) return prev;
+                                const pts = [...r.points] as [Pt,Pt,Pt,Pt];
+                                pts[pi] = { x: nx, y: ny };
+                                next[gi] = { points: pts };
+                                return next;
+                              });
+                            } else if (movingGate) {
+                              const { gi, anchorMouse, anchorPts } = movingGate;
+                              const dx = nx - anchorMouse.x;
+                              const dy = ny - anchorMouse.y;
+                              setGateRegions(prev => {
+                                const next = [...prev];
+                                next[gi] = { points: anchorPts.map(p => ({
+                                  x: clamp01(p.x + dx),
+                                  y: clamp01(p.y + dy),
+                                })) as [Pt,Pt,Pt,Pt] };
                                 return next;
                               });
                             }
-                            setDrawStart(null);
-                            setDrawingFor(null);
+                          }}
+                          onMouseUp={e => {
+                            if (drawStart.current && drawingFor !== null && imgRef.current) {
+                              const rect = imgRef.current.getBoundingClientRect();
+                              const nx = clamp01((e.clientX - rect.left) / rect.width);
+                              const ny = clamp01((e.clientY - rect.top)  / rect.height);
+                              const x0 = drawStart.current.x, y0 = drawStart.current.y;
+                              const w = Math.abs(nx - x0), h = Math.abs(ny - y0);
+                              if (w > 0.02 && h > 0.02) {
+                                const mx = Math.min(x0, nx), my = Math.min(y0, ny);
+                                const idx = drawingFor;
+                                setGateRegions(prev => {
+                                  const next = [...prev];
+                                  next[idx] = { points: [
+                                    { x: mx,   y: my   },
+                                    { x: mx+w, y: my   },
+                                    { x: mx+w, y: my+h },
+                                    { x: mx,   y: my+h },
+                                  ]};
+                                  return next;
+                                });
+                              }
+                              drawStart.current = null;
+                              setLiveRect(null);
+                              setDrawingFor(null);
+                            }
+                            setActiveCorner(null);
+                            setMovingGate(null);
+                          }}
+                          onMouseLeave={() => {
+                            drawStart.current = null;
+                            setLiveRect(null);
+                            setActiveCorner(null);
+                            setMovingGate(null);
                           }}
                         >
                           <img
@@ -1163,60 +1263,126 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
                             className="w-full object-cover max-h-64 block"
                             draggable={false}
                           />
-                          {/* Region overlays — colored boxes with AI verdict inside */}
+
+                          {/* ── SVG polygon outlines + live-draw preview ── */}
+                          <svg
+                            className="absolute inset-0 w-full h-full pointer-events-none"
+                            viewBox="0 0 1 1"
+                            preserveAspectRatio="none"
+                          >
+                            {Array.from({ length: gateCount }, (_, i) => {
+                              const r = gateRegions[i];
+                              if (!r) return null;
+                              const label        = gateLabels[i] || DEFAULT_GATE_LABELS[i] || `Gate ${i+1}`;
+                              const color        = REGION_COLORS[i % REGION_COLORS.length];
+                              const aiResult     = scanResult.gates.find(g => g.label === label);
+                              const corrected    = aiResult ? corrections[aiResult.label] : null;
+                              const displayStatus = corrected ?? aiResult?.status;
+                              const strokeColor  = displayStatus === 'closed' ? '#10b981' : displayStatus === 'open' ? '#ef4444' : displayStatus === 'partial' ? '#f59e0b' : color;
+                              const polyPts      = r.points.map(p=>`${p.x},${p.y}`).join(' ');
+                              return (
+                                <polygon
+                                  key={i}
+                                  points={polyPts}
+                                  fill={strokeColor+'18'}
+                                  stroke={strokeColor}
+                                  strokeWidth="0.003"
+                                  vectorEffect="non-scaling-stroke"
+                                />
+                              );
+                            })}
+                            {/* Live rubber-band preview while drawing */}
+                            {liveRect && drawingFor !== null && (() => {
+                              const { x0, y0, x1, y1 } = liveRect;
+                              const mx = Math.min(x0,x1), my = Math.min(y0,y1);
+                              const mw = Math.abs(x1-x0), mh = Math.abs(y1-y0);
+                              const color = REGION_COLORS[drawingFor % REGION_COLORS.length];
+                              return (
+                                <polygon
+                                  points={`${mx},${my} ${mx+mw},${my} ${mx+mw},${my+mh} ${mx},${my+mh}`}
+                                  fill={color+'20'}
+                                  stroke={color}
+                                  strokeWidth="0.003"
+                                  strokeDasharray="0.02,0.01"
+                                  vectorEffect="non-scaling-stroke"
+                                />
+                              );
+                            })()}
+                          </svg>
+
+                          {/* ── Label chips (positioned via polygon bounding box) ── */}
                           {Array.from({ length: gateCount }, (_, i) => {
                             const r = gateRegions[i];
                             if (!r) return null;
-                            const REGION_COLORS = ['#818cf8','#34d399','#fb923c'];
-                            const color     = REGION_COLORS[i % REGION_COLORS.length];
-                            const label     = gateLabels[i] || DEFAULT_GATE_LABELS[i] || `Gate ${i+1}`;
-                            // Find this gate's AI result (match by label)
-                            const aiResult  = scanResult.gates.find(g => g.label === label);
-                            const corrected = aiResult ? corrections[aiResult.label] : null;
+                            const color        = REGION_COLORS[i % REGION_COLORS.length];
+                            const label        = gateLabels[i] || DEFAULT_GATE_LABELS[i] || `Gate ${i+1}`;
+                            const aiResult     = scanResult.gates.find(g => g.label === label);
+                            const corrected    = aiResult ? corrections[aiResult.label] : null;
                             const displayStatus = corrected ?? aiResult?.status;
-                            const statusIcon =
-                              displayStatus === 'closed'  ? '✓' :
-                              displayStatus === 'open'    ? '!' :
-                              displayStatus === 'partial' ? '~' : '?';
-                            const statusBg =
-                              displayStatus === 'closed'  ? '#10b981' :
-                              displayStatus === 'open'    ? '#ef4444' :
-                              displayStatus === 'partial' ? '#f59e0b' : '#64748b';
+                            const statusIcon   = displayStatus === 'closed' ? '✓' : displayStatus === 'open' ? '!' : displayStatus === 'partial' ? '~' : '?';
+                            const statusBg     = displayStatus === 'closed' ? '#10b981' : displayStatus === 'open' ? '#ef4444' : displayStatus === 'partial' ? '#f59e0b' : '#64748b';
+                            const bbox         = ptsBBox(r.points);
                             return (
                               <div
-                                key={i}
-                                className="absolute border-2 pointer-events-none"
-                                style={{
-                                  left:   `${r.x * 100}%`,
-                                  top:    `${r.y * 100}%`,
-                                  width:  `${r.w * 100}%`,
-                                  height: `${r.h * 100}%`,
-                                  borderColor: aiResult ? statusBg : color,
-                                }}
+                                key={`chip-${i}`}
+                                className="absolute flex items-center gap-0.5 pointer-events-none"
+                                style={{ left: `${bbox.minX*100}%`, top: `${bbox.minY*100}%`, transform: 'translateY(-100%)' }}
                               >
-                                {/* Gate name + AI verdict chip in top-left of box */}
-                                <div
-                                  className="absolute top-0 left-0 flex items-center gap-0.5"
-                                  style={{ transform: 'translateY(-100%)' }}
-                                >
-                                  <span
-                                    className="text-[7px] font-bold px-1 py-0.5 leading-none"
-                                    style={{ backgroundColor: color + 'ee', color: '#fff' }}
-                                  >
-                                    {label}
+                                <span className="text-[7px] font-bold px-1 py-0.5 leading-none" style={{ backgroundColor: color+'ee', color:'#fff' }}>{label}</span>
+                                {aiResult && (
+                                  <span className="text-[7px] font-bold px-1 py-0.5 leading-none" style={{ backgroundColor: statusBg+'ee', color:'#fff' }}>
+                                    {statusIcon} {displayStatus?.toUpperCase()}{!corrected && ` ${aiResult.confidence}%`}{corrected && ' (corrected)'}
                                   </span>
-                                  {aiResult && (
-                                    <span
-                                      className="text-[7px] font-bold px-1 py-0.5 leading-none"
-                                      style={{ backgroundColor: statusBg + 'ee', color: '#fff' }}
-                                    >
-                                      {statusIcon} {displayStatus?.toUpperCase()}
-                                      {!corrected && ` ${aiResult.confidence}%`}
-                                      {corrected && ' (corrected)'}
-                                    </span>
-                                  )}
-                                </div>
+                                )}
                               </div>
+                            );
+                          })}
+
+                          {/* ── Corner handles (drag to reshape) ── */}
+                          {Array.from({ length: gateCount }, (_, i) => {
+                            const r = gateRegions[i];
+                            if (!r) return null;
+                            const color = REGION_COLORS[i % REGION_COLORS.length];
+                            return r.points.map((pt, pi) => (
+                              <div
+                                key={`corner-${i}-${pi}`}
+                                className="absolute z-10"
+                                style={{
+                                  left: `${pt.x*100}%`, top: `${pt.y*100}%`,
+                                  width: 12, height: 12, borderRadius: '50%',
+                                  backgroundColor: color, border: '2px solid #fff',
+                                  transform: 'translate(-50%,-50%)', cursor: 'grab',
+                                }}
+                                onMouseDown={e => { e.stopPropagation(); e.preventDefault(); setActiveCorner({ gi: i, pi }); }}
+                              />
+                            ));
+                          })}
+
+                          {/* ── Centre handles (drag to move whole region) ── */}
+                          {Array.from({ length: gateCount }, (_, i) => {
+                            const r = gateRegions[i];
+                            if (!r) return null;
+                            const color = REGION_COLORS[i % REGION_COLORS.length];
+                            const c     = ptsCentroid(r.points);
+                            return (
+                              <div
+                                key={`move-${i}`}
+                                className="absolute z-10 flex items-center justify-center text-[8px] font-bold"
+                                style={{
+                                  left: `${c.x*100}%`, top: `${c.y*100}%`,
+                                  width: 16, height: 16, borderRadius: '50%',
+                                  backgroundColor: 'rgba(0,0,0,0.65)', border: `2px solid ${color}`,
+                                  transform: 'translate(-50%,-50%)', cursor: 'move', color,
+                                }}
+                                onMouseDown={e => {
+                                  e.stopPropagation(); e.preventDefault();
+                                  const rect = imgRef.current?.getBoundingClientRect();
+                                  if (!rect) return;
+                                  const nx = (e.clientX - rect.left) / rect.width;
+                                  const ny = (e.clientY - rect.top)  / rect.height;
+                                  setMovingGate({ gi: i, anchorMouse: {x:nx,y:ny}, anchorPts: [...r.points] });
+                                }}
+                              >✥</div>
                             );
                           })}
                           {/* Timestamp + method in bottom corners */}

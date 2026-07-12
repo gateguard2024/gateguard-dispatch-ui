@@ -10,10 +10,30 @@
 
 export type GateType = 'barrier_arm' | 'swing' | 'slide' | 'vertical_lift';
 
+// Two supported region formats:
+//   Legacy rect   — { x, y, w, h } (all 0-1 fractions)
+//   New polygon   — { points: [{x,y}, ...] }  (4+ corners, 0-1 fractions)
+export type RegionRect = { x: number; y: number; w: number; h: number };
+export type RegionPoly = { points: Array<{ x: number; y: number }> };
+export type GateRegionDef = RegionRect | RegionPoly;
+
 export interface GateConfig {
   gate_label: string;
   gate_type:  GateType;
-  region:     { x: number; y: number; w: number; h: number } | null;
+  region:     GateRegionDef | null;
+}
+
+/** Compute centroid, area and bounding-box centre for either region format. */
+function getRegionStats(r: GateRegionDef): { cx: number; cy: number; area: number } {
+  if ('points' in r && r.points.length >= 3) {
+    const xs = r.points.map(p => p.x);
+    const ys = r.points.map(p => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    return { cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, area: (maxX - minX) * (maxY - minY) };
+  }
+  const { x, y, w, h } = r as RegionRect;
+  return { cx: x + w / 2, cy: y + h / 2, area: w * h };
 }
 
 // Per-type visual descriptions of open vs closed states.
@@ -45,15 +65,13 @@ PARTIAL: The panel is at an unusual angle — neither fully closed across the la
 };
 
 // ─── Region → spatial language ────────────────────────────────────────────────
-// Converts a 0-1 bounding box to natural language that tells Claude where to look.
+// Converts a region (rect or polygon) to natural language that tells Claude where to look.
 // Accounts for perspective depth: gates that are smaller and higher in the frame
 // are farther from the camera (background); gates that are larger and lower are
 // closer (foreground). This is critical for cameras that show multiple gates in
 // a single wide-angle perspective view.
-function regionToWords(r: { x: number; y: number; w: number; h: number }): string {
-  const cx   = r.x + r.w / 2;
-  const cy   = r.y + r.h / 2;
-  const area = r.w * r.h;
+function regionToWords(r: GateRegionDef): string {
+  const { cx, cy, area } = getRegionStats(r);
 
   // Horizontal position
   const hPos = cx < 0.35 ? 'left side' : cx > 0.65 ? 'right side' : 'center';
