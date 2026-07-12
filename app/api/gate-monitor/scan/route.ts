@@ -130,6 +130,35 @@ export async function POST(request: Request) {
       hlsDebug.feed_count = feedsData?.results?.length ?? 0;
 
       if (hlsUrl) {
+        // ── Attempt 2a: EEN media server JPEG endpoint ─────────────────────
+        // EEN media servers typically expose a parallel JPEG snapshot endpoint at
+        // /media/streams/main/jpg/getJpeg with the same query params as the HLS URL.
+        // e.g. /media/streams/main/hls/getPlaylist?e=... → /media/streams/main/jpg/getJpeg?e=...
+        try {
+          const jpegUrl = hlsUrl
+            .replace('/hls/getPlaylist', '/jpg/getJpeg')
+            .replace('/hls/getLivePlaylist', '/jpg/getJpeg');
+          if (jpegUrl !== hlsUrl) {
+            hlsDebug.jpeg_endpoint_tried = jpegUrl.slice(0, 80) + '…';
+            const jpegRes = await fetch(jpegUrl, {
+              headers: { Authorization: `Bearer ${token}`, Accept: 'image/jpeg, */*' },
+              signal:  AbortSignal.timeout(10000),
+            });
+            hlsDebug.jpeg_endpoint_status = jpegRes.status;
+            hlsDebug.jpeg_endpoint_type   = jpegRes.headers.get('content-type');
+            if (jpegRes.ok && jpegRes.headers.get('content-type')?.includes('image')) {
+              imageBuffer = Buffer.from(await jpegRes.arrayBuffer());
+              usedMethod  = 'media-jpeg-endpoint';
+              console.log(`[gate-monitor/scan] ✓ Got JPEG from media server endpoint (${imageBuffer.length} bytes)`);
+            }
+          }
+        } catch (e: any) {
+          hlsDebug.jpeg_endpoint_error = e.message;
+        }
+
+        if (imageBuffer) {
+          // Skip HLS segment approach — we got the image from the JPEG endpoint
+        } else {
         // EEN media server requires Bearer token auth — same as /api/cameras/proxy.
         // Media servers are slower than API servers; use generous timeouts.
         const authHlsHeaders = {
@@ -208,6 +237,7 @@ export async function POST(request: Request) {
             }
           }
         }
+        } // end else (jpeg endpoint failed)
       }
     } catch (err: any) {
       hlsDebug.error = err.message;
