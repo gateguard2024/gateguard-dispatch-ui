@@ -10,12 +10,13 @@
 //
 // Does NOT write to gate_monitor_states — read-only diagnostic only.
 
-import { NextResponse }          from 'next/server';
-import { createClient }          from '@supabase/supabase-js';
-import Anthropic                 from '@anthropic-ai/sdk';
-import { getValidEENToken }      from '@/lib/een';
-import { buildGateVisionPrompt } from '@/lib/gate-vision';
-import { fetchEenCameraImage }   from '@/lib/een-image';
+import { NextResponse }                    from 'next/server';
+import { createClient }                    from '@supabase/supabase-js';
+import Anthropic                           from '@anthropic-ai/sdk';
+import { getValidEENToken }                from '@/lib/een';
+import { buildGateVisionPrompt }           from '@/lib/gate-vision';
+import { fetchEenCameraImage }             from '@/lib/een-image';
+import { annotateGateRegions, GATE_COLORS } from '@/lib/image-annotate';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
@@ -103,7 +104,19 @@ export async function POST(request: Request) {
     );
   }
 
-  const base64Image = imageBuffer.toString('base64');
+  // ── Burn gate labels into the image so Claude can read them directly ────────
+  // This is the digital equivalent of painting "G1 EXIT / G2 GUEST / G3 RESIDENT"
+  // on the pavement in each lane. Claude sees the text IN the frame and never
+  // has to guess which gate is which from verbal spatial descriptions alone.
+  const annotationGates = configs.map((c, i) => ({
+    label:     c.gate_label,
+    gate_type: c.gate_type ?? 'barrier_arm',
+    region:    c.region    ?? null,
+    color:     GATE_COLORS[i % GATE_COLORS.length],
+  }));
+  const annotatedBuffer = await annotateGateRegions(imageBuffer, annotationGates);
+
+  const base64Image = annotatedBuffer.toString('base64');
   const mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' = 'image/jpeg';
 
   // Run Claude Vision with full gate context
@@ -145,11 +158,12 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({
-    camera_name: cam.name,
+    camera_name:    cam.name,
     configs,
-    gates:       visionData.gates,
-    image_data:  `data:image/jpeg;base64,${base64Image}`,
-    method:      usedMethod,
-    scanned_at:  new Date().toISOString(),
+    gates:          visionData.gates,
+    image_data:     `data:image/jpeg;base64,${base64Image}`, // annotated — what Claude actually saw
+    method:         usedMethod,
+    annotated:      annotationGates.some(g => g.region !== null),
+    scanned_at:     new Date().toISOString(),
   });
 }

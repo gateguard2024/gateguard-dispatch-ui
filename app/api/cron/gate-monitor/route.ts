@@ -19,12 +19,13 @@
 // Cost: ~$0.0002/Vision call. Only runs while monitoring_until > now().
 // Monitoring windows are opened by the EEN motion webhook on gate cameras.
 
-import { NextResponse }          from 'next/server';
-import { createClient }          from '@supabase/supabase-js';
-import Anthropic                 from '@anthropic-ai/sdk';
-import { getValidEENToken }      from '@/lib/een';
-import { buildGateVisionPrompt } from '@/lib/gate-vision';
-import { fetchEenCameraImage }   from '@/lib/een-image';
+import { NextResponse }                     from 'next/server';
+import { createClient }                     from '@supabase/supabase-js';
+import Anthropic                            from '@anthropic-ai/sdk';
+import { getValidEENToken }                 from '@/lib/een';
+import { buildGateVisionPrompt }            from '@/lib/gate-vision';
+import { fetchEenCameraImage }              from '@/lib/een-image';
+import { annotateGateRegions, GATE_COLORS } from '@/lib/image-annotate';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
@@ -153,10 +154,21 @@ export async function GET(request: Request) {
       }
 
       console.log(`[gate-monitor] Got image via ${imgMethod} (${imgBuffer.length}B) for ${cam.name}`);
-      const base64Image = imgBuffer.toString('base64');
 
       // ── 4. Claude Haiku Vision ─────────────────────────────────────────────
       const configs      = (cam.gate_camera_configs as any[]) ?? [];
+
+      // Annotate the frame with gate labels before sending to Claude Vision.
+      // Burns "1: EXIT GATE", "2: GUEST GATE", etc. into the JPEG so Claude
+      // reads gate identities directly from the image — no spatial guessing.
+      const annotationGates = configs.map((cfg: any, i: number) => ({
+        label:     cfg.gate_label,
+        gate_type: cfg.gate_type ?? 'barrier_arm',
+        region:    cfg.region    ?? null,
+        color:     GATE_COLORS[i % GATE_COLORS.length],
+      }));
+      const annotatedBuffer = await annotateGateRegions(imgBuffer, annotationGates);
+      const base64Image = annotatedBuffer.toString('base64');
       const gatePromptConfigs = states.map(s => {
         const cfg = configs.find((c: any) => c.gate_label === s.gate_label) ?? {};
         return {
