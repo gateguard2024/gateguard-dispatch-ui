@@ -306,6 +306,59 @@ export async function GET(request: Request) {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 // buildGateVisionPrompt is now in lib/gate-vision.ts (shared with scan endpoint)
 
+/**
+ * Fire-and-forget POST to portal.gateguard.co/api/webhooks/gate-alarm.
+ * Surfaces gate alarms in the dealer portal so individual dealers see alerts
+ * for their own properties on portal.gateguard.co/alerts.
+ *
+ * Requires env vars:
+ *   PORTAL_URL             — e.g. https://portal.gateguard.co
+ *   PORTAL_WEBHOOK_SECRET  — shared secret, verified by the portal webhook route
+ *
+ * Non-fatal: if the portal is unreachable or rejects the request, the SOC alarm
+ * is still recorded — portal notify is best-effort.
+ */
+async function notifyPortal(payload: {
+  event:         'gate_stuck_open' | 'gate_restored';
+  account_id:    string;
+  site_name:     string;
+  gate_label:    string;
+  alarm_id?:     string | null;
+  idle_minutes?: number;
+}): Promise<void> {
+  const portalUrl     = process.env.PORTAL_URL;
+  const webhookSecret = process.env.PORTAL_WEBHOOK_SECRET;
+
+  if (!portalUrl || !webhookSecret) {
+    console.warn('[gate-monitor] PORTAL_URL or PORTAL_WEBHOOK_SECRET not set — skipping portal notify');
+    return;
+  }
+
+  try {
+    const res = await fetch(`${portalUrl}/api/webhooks/gate-alarm`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':     'application/json',
+        'x-webhook-secret': webhookSecret,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.ok) {
+      const json = await res.json().catch(() => ({}));
+      console.log(
+        `[gate-monitor] ✓ Portal notified: ${payload.event} for ${payload.gate_label}`,
+        json.deduped ? '(deduped)' : `→ site ${json.site_name ?? json.site_id}`,
+      );
+    } else {
+      const text = await res.text().catch(() => '');
+      console.warn(`[gate-monitor] Portal webhook ${res.status}: ${text.slice(0, 200)}`);
+    }
+  } catch (err: any) {
+    console.warn('[gate-monitor] Portal webhook unreachable (non-fatal):', err.message);
+  }
+}
+
 async function upsertState(
   supabase:  any,
   cameraId:  string,
@@ -369,20 +422,15 @@ async function fireGateStuckOpen(
     `[gate-monitor] 🔴 STUCK OPEN: ${gateLabel} @ ${siteName} — ${minutesIdle}min → alarm ${alarm?.id}`
   );
 
-  // Write to portal site_events (non-fatal if portal uses different Supabase)
-  try {
-    await supabase.from('site_events').insert({
-      zone_id:     cam.zone_id,
-      event_type:  'gate_stuck_open',
-      title:       `Gate Left Open — ${gateLabel}`,
-      description: `${gateLabel} at ${siteName} open with no traffic for ${minutesIdle}min. Vision AI confirmed idle. SOC alerted — P1.`,
-      severity:    'critical',
-      metadata:    { camera_id: cameraId, gate_label: gateLabel, idle_minutes: minutesIdle, alarm_id: alarm?.id },
-      created_at:  new Date().toISOString(),
-    });
-  } catch {
-    console.warn('[gate-monitor] site_events write failed (non-fatal)');
-  }
+  // Notify portal so dealers see this alert on portal.gateguard.co/alerts
+  await notifyPortal({
+    event:        'gate_stuck_open',
+    account_id:   accountId,
+    site_name:    siteName,
+    gate_label:   gateLabel,
+    alarm_id:     alarm?.id ?? null,
+    idle_minutes: minutesIdle,
+  });
 
   return alarm?.id ?? null;
 }
@@ -421,17 +469,12 @@ async function fireGateRestored(
 
   console.log(`[gate-monitor] 🟢 RESTORED: ${gateLabel} @ ${siteName}`);
 
-  try {
-    await supabase.from('site_events').insert({
-      zone_id:     cam.zone_id,
-      event_type:  'gate_restored',
-      title:       `Gate Restored — ${gateLabel}`,
-      description: `${gateLabel} at ${siteName} confirmed closed by Vision AI. Gate is now secure.`,
-      severity:    'info',
-      metadata:    { camera_id: cameraId, gate_label: gateLabel, prior_alarm_id: state.stuck_alarm_id },
-      created_at:  new Date().toISOString(),
-    });
-  } catch {
-    // Non-fatal
-  }
+  // Notify portal to resolve the open alert and add an audit-trail event
+  await notifyPortal({
+    event:      'gate_restored',
+    account_id: accountId,
+    site_name:  siteName,
+    gate_label: gateLabel,
+    alarm_id:   state.stuck_alarm_id ?? null,
+  });
 }
