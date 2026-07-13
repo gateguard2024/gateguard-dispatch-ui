@@ -856,6 +856,10 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
           setGateTypes(gates.map(g => g.gate_type ?? DEFAULT_GATE_TYPE));
           setGateRegions(gates.map(g => normalizeRegion(g.region)));
           setIdleThreshold(gates[0].idle_threshold_seconds);
+          // Auto-scan on load so saved regions are immediately visible on the
+          // camera image. scanResult is ephemeral React state — it doesn't
+          // survive a page refresh, so we re-fetch the live frame automatically.
+          scan();
         }
       })
       .catch(() => {})
@@ -1104,6 +1108,14 @@ function GateMonitorConfig({ cam }: { cam: Camera }) {
             <p className="text-[9px] text-slate-600 mb-2">
               Fetches the live image and runs Vision now. Draw a box on the image to tell the AI exactly where each gate is — this improves accuracy especially for multi-gate cameras.
             </p>
+
+            {/* Scanning spinner — shown while auto-scan or manual scan is running */}
+            {scanning && !scanResult && (
+              <div className="flex items-center gap-2 py-3">
+                <div className="w-3 h-3 border-2 border-violet-500 border-t-transparent rounded-full animate-spin" />
+                <span className="text-[10px] text-slate-500">Loading camera image…</span>
+              </div>
+            )}
 
             {scanResult && (
               <div className="space-y-2">
